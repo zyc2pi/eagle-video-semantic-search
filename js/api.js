@@ -161,6 +161,15 @@ const Api = (() => {
     });
   }
 
+  /* 镜头分析：运镜（光流，CPU）+ 景别（DinoV2）。返回 tags 可直接写 Eagle */
+  function analyzeShot(videoPath, startFrame, endFrame) {
+    return post('/api/v1/analyze_shot', {
+      video_path: videoPath,
+      start_frame: startFrame,
+      end_frame: endFrame,
+    });
+  }
+
   /* 生成 H.264 片段文件并返回本地路径（供拖拽到剪辑软件） */
   function clipFile(videoPath, startFrame, endFrame) {
     return post('/api/v1/clip_file', {
@@ -189,6 +198,6 @@ const Api = (() => {
   return {
     health, listIndexes, listModels, startIndex, indexStatus, cancelIndex,
     search, searchVisual, searchHybrid, exportClips, shutdown, describe,
-    indexContents, clipFile, previewUrl, clipUrl,
+    analyzeShot, indexContents, clipFile, previewUrl, clipUrl,
   };
 })();
