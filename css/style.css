@@ -337,6 +337,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
   white-space: nowrap;
 }
 .drag-chip:active { cursor: grabbing; }
+.drag-note { color: var(--warn); font-size: 11.5px; }
 
 .mini-btn { padding: 3px 10px; font-size: 11.5px; }
 

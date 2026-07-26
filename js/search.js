@@ -495,12 +495,58 @@ const Search = (() => {
 
         const chip = document.createElement('div');
         chip.className = 'drag-chip';
-        chip.draggable = true;
         chip.textContent = '🎬 拖到剪辑软件';
         chip.title = clipPath;
+
+        const note = document.createElement('span');
+        note.className = 'drag-note';
+
+        const dragFail = (err) => {
+          console.error('[Drag] startDrag 失败', err);
+          note.textContent = '拖拽不可用，已打开文件夹，请从资源管理器拖入';
+          eagle.shell.showItemInFolder(clipPath);
+        };
+
+        const nativeDrag = () => {
+          try {
+            if (eagle.drag && typeof eagle.drag.startDrag === 'function') {
+              const r = eagle.drag.startDrag([clipPath]);
+              if (r && typeof r.catch === 'function') r.catch(dragFail);
+            } else {
+              dragFail(new Error('当前 Eagle 版本无 eagle.drag API'));
+            }
+          } catch (err) {
+            dragFail(err);
+          }
+        };
+
+        // 主路径：mousedown + 位移阈值直接触发原生拖拽（HTML5 dragstart 在部分
+        // Electron 环境里不触发 startDrag，改为手动判定拖动意图更可靠）
+        chip.addEventListener('mousedown', (downEv) => {
+          if (downEv.button !== 0) return;
+          const startX = downEv.clientX;
+          const startY = downEv.clientY;
+          let fired = false;
+          const onMove = (mv) => {
+            if (fired) return;
+            if (Math.abs(mv.clientX - startX) + Math.abs(mv.clientY - startY) > 6) {
+              fired = true;
+              cleanup();
+              nativeDrag();
+            }
+          };
+          const cleanup = () => {
+            document.removeEventListener('mousemove', onMove);
+            document.removeEventListener('mouseup', cleanup);
+          };
+          document.addEventListener('mousemove', onMove);
+          document.addEventListener('mouseup', cleanup);
+        });
+        // 备份路径：环境支持 HTML5 drag 时也能走
+        chip.draggable = true;
         chip.addEventListener('dragstart', (e) => {
           e.preventDefault();
-          eagle.drag.startDrag([clipPath]);
+          nativeDrag();
         });
 
         const reveal = document.createElement('button');
@@ -509,6 +555,7 @@ const Search = (() => {
 
         area.appendChild(chip);
         area.appendChild(reveal);
+        area.appendChild(note);
       } catch (e) {
         prepare.textContent = '准备拖拽片段';
         prepare.disabled = false;
