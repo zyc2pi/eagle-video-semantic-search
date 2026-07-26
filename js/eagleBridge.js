@@ -172,6 +172,10 @@ const Bridge = (() => {
           const folderId = item && Array.isArray(item.folders) && item.folders.length
             ? item.folders[0] : null;
           if (folderId) {
+            // 先选中再切文件夹：视图加载时带着已有选中项，更容易触发"滚动到选中"
+            if (typeof eagle.item.select === 'function') {
+              await eagle.item.select(itemIds).catch(() => {});
+            }
             await eagle.folder.open(folderId);
             await new Promise((r) => setTimeout(r, 400)); // 等视图切换完成
           }
