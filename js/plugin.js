@@ -521,6 +521,187 @@
     $('archive-dialog').showModal();
   }
 
+  // ---------- 提纯闭环：把视频交接给「视频自动提纯」插件 ----------
+  async function sendToPurify() {
+    const m = Search.getActiveMatch();
+    if (!m) return;
+    const item = Bridge.itemForPath(m.video_path);
+    if (!item) {
+      toast('素材已不在库中，无法提纯', true);
+      return;
+    }
+    try {
+      const fs = require('fs');
+      const path = require('path');
+      const inbox = path.join(Config.get().projectRoot, 'purify_inbox.json');
+      let list = [];
+      try {
+        if (fs.existsSync(inbox)) list = JSON.parse(fs.readFileSync(inbox, 'utf-8')) || [];
+      } catch { list = []; }
+      if (!list.some((x) => x.id === item.id)) {
+        list.push({
+          id: item.id,
+          name: item.name,
+          filePath: item.filePath,
+          folderId: Array.isArray(item.folders) && item.folders.length ? item.folders[0] : null,
+        });
+      }
+      fs.writeFileSync(inbox, JSON.stringify(list, null, 2), 'utf-8');
+      toast(`已发送「${item.name}」到提纯队列，打开「视频自动提纯」插件即可开始（可连发多个）`, false, 6000);
+    } catch (e) {
+      toast(`交接失败：${e.message}`, true);
+    }
+  }
+
+  // ---------- 素材库统计 ----------
+  function statsBar(label, count, max, extra = '') {
+    const pct = max > 0 ? Math.max((count / max) * 100, 1.5) : 0;
+    return `<div class="stat-row"><span class="stat-label" title="${label}">${label}</span>`
+      + `<span class="stat-track"><span class="stat-fill" style="width:${pct}%"></span></span>`
+      + `<span class="stat-num">${count}${extra}</span></div>`;
+  }
+
+  async function openStats() {
+    const body = $('stats-body');
+    body.innerHTML = '<p class="hint">统计中…</p>';
+    $('stats-dialog').showModal();
+    try {
+      const videos = await Bridge.collectLibraryVideos();
+      const total = videos.length;
+
+      // 索引覆盖率
+      let indexedCount = 0;
+      if (serviceOnline) {
+        const indices = await Search.findLibraryIndexes();
+        const indexed = new Set();
+        for (const p of indices) {
+          (await Api.indexContents(p)).forEach((v) => indexed.add(Bridge.normalizePath(v)));
+        }
+        indexedCount = videos.filter((v) => indexed.has(Bridge.normalizePath(v.filePath))).length;
+      }
+
+      // 标签分布 + 提纯产出
+      const tagCount = new Map();
+      let purified = 0;
+      videos.forEach((v) => {
+        const tags = Array.isArray(v.tags) ? v.tags : [];
+        tags.forEach((t) => tagCount.set(t, (tagCount.get(t) || 0) + 1));
+        if (tags.includes('自动提纯')) purified += 1;
+      });
+      const topTags = [...tagCount.entries()].sort((a, b) => b[1] - a[1]).slice(0, 20);
+
+      // 时长分布（Eagle 视频素材的 duration 单位为秒）
+      const buckets = [
+        ['0-2 秒', 0, 2], ['2-5 秒', 2, 5], ['5-15 秒', 5, 15],
+        ['15-60 秒', 15, 60], ['1-5 分钟', 60, 300], ['>5 分钟', 300, Infinity],
+      ];
+      const durCounts = buckets.map(() => 0);
+      let unknownDur = 0;
+      videos.forEach((v) => {
+        const d = Number(v.duration);
+        if (!Number.isFinite(d) || d <= 0) { unknownDur += 1; return; }
+        const i = buckets.findIndex(([, lo, hi]) => d >= lo && d < hi);
+        if (i >= 0) durCounts[i] += 1;
+      });
+
+      const maxTag = topTags.length ? topTags[0][1] : 0;
+      const maxDur = Math.max(...durCounts, 1);
+      body.innerHTML = `
+        <div class="stat-summary">
+          视频素材 <b>${total}</b> 个 ·
+          已索引 <b>${serviceOnline ? indexedCount : '?'}</b>（${serviceOnline && total ? Math.round(indexedCount / total * 100) : '?'}%） ·
+          提纯产出片段 <b>${purified}</b> 个
+        </div>
+        <h4>时长分布${unknownDur ? `（${unknownDur} 个未知时长未计入）` : ''}</h4>
+        ${buckets.map(([label], i) => statsBar(label, durCounts[i], maxDur)).join('')}
+        <h4>标签 Top ${topTags.length}</h4>
+        ${topTags.length ? topTags.map(([t, n]) => statsBar(t, n, maxTag)).join('')
+          : '<p class="hint">还没有任何标签（提纯或打标签后这里会出现分布）</p>'}
+      `;
+    } catch (e) {
+      body.innerHTML = `<p class="hint" style="color:var(--danger)">统计失败：${e.message}</p>`;
+    }
+  }
+
+  // ---------- 索引迁移（导出/导入 zip） ----------
+  function runPowerShell(args) {
+    return new Promise((resolve, reject) => {
+      const { execFile } = require('child_process');
+      execFile('powershell.exe', ['-NoProfile', '-Command', args],
+        { windowsHide: true }, (err, _out, stderr) => {
+          if (err) reject(new Error(stderr || err.message));
+          else resolve();
+        });
+    });
+  }
+
+  async function exportIndexes() {
+    const fs = require('fs');
+    const path = require('path');
+    const os = require('os');
+    const src = path.join(Config.get().projectRoot, 'indexes');
+    if (!fs.existsSync(src)) {
+      toast('还没有任何索引可导出', true);
+      return;
+    }
+    const stamp = new Date().toISOString().slice(0, 10).replaceAll('-', '');
+    const dest = path.join(os.homedir(), 'Desktop', `eagle_indexes_${stamp}.zip`);
+    toast('正在打包索引（大库可能要几分钟）…', false, 8000);
+    try {
+      await runPowerShell(`Compress-Archive -Path "${src}\\*" -DestinationPath "${dest}" -Force`);
+      toast(`已导出到桌面：${path.basename(dest)}`, false, 6000);
+      eagle.shell.showItemInFolder(dest);
+    } catch (e) {
+      toast(`导出失败：${e.message}`, true, 6000);
+    }
+  }
+
+  async function importIndexes() {
+    const path = require('path');
+    let zipPath = null;
+    try {
+      const r = await eagle.dialog.showOpenDialog({
+        properties: ['openFile'],
+        filters: [{ name: '索引包', extensions: ['zip'] }],
+      });
+      zipPath = r && !r.canceled && r.filePaths && r.filePaths[0];
+    } catch {
+      toast('当前 Eagle 版本不支持文件选择对话框；请手动把 zip 解压到项目 indexes 目录', true, 7000);
+      return;
+    }
+    if (!zipPath) return;
+    const dest = path.join(Config.get().projectRoot, 'indexes');
+    toast('正在导入索引…', false, 6000);
+    try {
+      await runPowerShell(`Expand-Archive -Path "${zipPath}" -DestinationPath "${dest}" -Force`);
+      toast('索引导入完成', false, 5000);
+      refreshIndexHint();
+    } catch (e) {
+      toast(`导入失败：${e.message}`, true, 6000);
+    }
+  }
+
+  // ---------- 动态模型列表（模型升级通道：models/ 目录放入新模型即出现在下拉） ----------
+  async function populateModelSelect() {
+    const sel = $('cfg-model');
+    try {
+      const models = await Api.listModels();
+      // 过滤掉非嵌入模型（重排/多模态大模型/工具目录）
+      const embeddable = models.filter((m) =>
+        !/reranker|minicpm|ffmpeg|shot_scale/i.test(m.name));
+      if (embeddable.length === 0) return; // 保留静态选项
+      const current = Config.get().modelName;
+      sel.innerHTML = '';
+      embeddable.forEach((m) => {
+        const opt = document.createElement('option');
+        opt.value = m.name;
+        opt.textContent = m.name + (/fg-?clip2/i.test(m.name) ? '（中文，推荐）' : '');
+        sel.appendChild(opt);
+      });
+      sel.value = embeddable.some((m) => m.name === current) ? current : embeddable[0].name;
+    } catch { /* 服务不在线时保留静态选项 */ }
+  }
+
   // ---------- 未索引提醒 / 静默自动索引 ----------
   async function countMissingVideos() {
     const videos = await Bridge.collectLibraryVideos();
@@ -634,6 +815,7 @@
   // ---------- 设置 ----------
   function openSettings() {
     const cfg = Config.get();
+    populateModelSelect(); // 异步刷新模型下拉（models/ 目录有什么就列什么）
     $('cfg-project-root').value = cfg.projectRoot;
     $('cfg-port').value = cfg.port;
     $('cfg-model').value = cfg.modelName;
@@ -776,6 +958,11 @@
     $('btn-rebuild-index').addEventListener('click', rebuildIndex);
     $('btn-view-log').addEventListener('click', viewServiceLog);
     $('btn-describe').addEventListener('click', describeAndSearch);
+    $('btn-purify').addEventListener('click', sendToPurify);
+    $('btn-stats').addEventListener('click', openStats);
+    $('btn-close-stats').addEventListener('click', () => $('stats-dialog').close());
+    $('btn-export-indexes').addEventListener('click', exportIndexes);
+    $('btn-import-indexes').addEventListener('click', importIndexes);
     // 视图栏：排序 / 时长过滤 / 分组
     $('view-sort').addEventListener('change', () => Search.setView({ sortBy: $('view-sort').value }));
     $('view-min-dur').addEventListener('change', () => {
