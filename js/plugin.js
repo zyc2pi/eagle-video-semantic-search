@@ -852,7 +852,11 @@
     $('cfg-idx-fp16').checked = !!cfg.indexFp16;
     $('cfg-deepseek-key').value = cfg.deepseekKey || '';
     $('cfg-ai-enhance').checked = !!cfg.aiEnhance;
+    $('cfg-ai-expand').checked = !!cfg.aiExpand;
+    $('cfg-ai-mode').value = cfg.aiMode || 'balanced';
     $('cfg-dedup').checked = !!cfg.dedup;
+    $('cfg-dedup-threshold').value = cfg.dedupThreshold != null ? cfg.dedupThreshold : 0.95;
+    $('cfg-export-mode').value = cfg.exportMode || 'copy';
     $('cfg-mini-rerank').checked = !!cfg.miniRerank;
     $('cfg-mini-keep').checked = !!cfg.miniKeepLoaded;
     $('cfg-auto-index').checked = !!cfg.autoIndex;
@@ -917,7 +921,11 @@
       indexLocalmaxOrder: parseInt($('cfg-idx-localmax').value, 10) || 2,
       indexFp16: $('cfg-idx-fp16').checked,
       aiEnhance: $('cfg-ai-enhance').checked,
+      aiExpand: $('cfg-ai-expand').checked,
+      aiMode: $('cfg-ai-mode').value || 'balanced',
       dedup: $('cfg-dedup').checked,
+      dedupThreshold: Math.min(Math.max(parseFloat($('cfg-dedup-threshold').value) || 0.95, 0.8), 0.99),
+      exportMode: $('cfg-export-mode').value === 'precision' ? 'precision' : 'copy',
       miniRerank: $('cfg-mini-rerank').checked,
       miniKeepLoaded: $('cfg-mini-keep').checked,
       autoIndex: $('cfg-auto-index').checked,

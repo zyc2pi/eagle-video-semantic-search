@@ -195,7 +195,24 @@
         <input id="cfg-deepseek-key" type="password" spellcheck="false" placeholder="sk-...">
       </label>
       <label class="check-row"><input id="cfg-ai-enhance" type="checkbox"> AI 查询增强（deepseek-v4-flash 中英双语改写）</label>
+      <label class="check-row"><input id="cfg-ai-expand" type="checkbox"> AI 语义扩展（在双语之外再生成同义/场景变体查询，多路合并检索，召回更全）</label>
+      <label>AI 增强档位（变体数量与耗时权衡）
+        <select id="cfg-ai-mode">
+          <option value="fast">fast — 变体少，最快</option>
+          <option value="balanced">balanced — 平衡（推荐）</option>
+          <option value="quality">quality — 变体多，最全</option>
+        </select>
+      </label>
       <label class="check-row"><input id="cfg-dedup" type="checkbox"> 跨视频去重（重复片段只保留一条）</label>
+      <label>去重相似度阈值（0.80~0.99，越低合并越激进）
+        <input id="cfg-dedup-threshold" type="number" min="0.8" max="0.99" step="0.01">
+      </label>
+      <label>导出片段模式
+        <select id="cfg-export-mode">
+          <option value="copy">copy — 流拷贝，快且无损（切点对齐关键帧，可能多带几帧）</option>
+          <option value="precision">precision — 精确到帧，重新编码（慢一些）</option>
+        </select>
+      </label>
       <label class="check-row"><input id="cfg-mini-rerank" type="checkbox"> 二阶段精搜（MiniCPM 复核，明显更慢、占显存大）</label>
       <label class="check-row"><input id="cfg-mini-keep" type="checkbox"> MiniCPM 常驻显存（生成提示词从 ~30 秒提速到 ~2 秒，需 8GB+ 显存）</label>
       <label class="check-row"><input id="cfg-auto-index" type="checkbox"> 静默自动索引（插件随 Eagle 后台运行，每 10 分钟检查新素材并自动增量索引）</label>
