@@ -1,23 +1,31 @@
 /* Auto-scenes-extraction 服务 /api/v1 客户端 */
 const Api = (() => {
-  async function fetchJson(url, options = {}, timeoutMs = 0) {
+  // 默认 5 分钟超时：服务端卡死时 UI 不至于永远停在「搜索中…」；
+  // 长任务（导出/mini-rerank 搜索）单独放宽到 10 分钟，传 0 表示不超时。
+  const DEFAULT_TIMEOUT_MS = 300000;
+  const LONG_TIMEOUT_MS = 600000;
+
+  async function fetchJson(url, options = {}, timeoutMs = DEFAULT_TIMEOUT_MS) {
     const controller = new AbortController();
     const timer = timeoutMs > 0 ? setTimeout(() => controller.abort(), timeoutMs) : null;
     try {
       const resp = await fetch(url, { ...options, signal: controller.signal });
       const data = await resp.json().catch(() => null);
       return { ok: resp.ok, status: resp.status, data };
+    } catch (e) {
+      if (e && e.name === 'AbortError') throw new Error('请求超时（服务可能繁忙或已卡死，可在设置里重启服务）');
+      throw e;
     } finally {
       if (timer) clearTimeout(timer);
     }
   }
 
-  function post(path, body) {
+  function post(path, body, timeoutMs = DEFAULT_TIMEOUT_MS) {
     return fetchJson(`${Config.baseUrl()}${path}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json; charset=utf-8' },
       body: JSON.stringify(body),
-    });
+    }, timeoutMs);
   }
 
   async function health(timeoutMs = 1500) {
@@ -100,7 +108,7 @@ const Api = (() => {
       bilingual_search: !!cfg.aiEnhance,
       use_dedup: !!cfg.dedup,
       use_mini_rerank: !!cfg.miniRerank,
-    });
+    }, cfg.miniRerank ? LONG_TIMEOUT_MS : DEFAULT_TIMEOUT_MS);
   }
 
   /* 批量导出片段为真实 MP4，clips: [{video_path, start_frame, end_frame}]，prompt 用作导出目录名 */
@@ -115,7 +123,7 @@ const Api = (() => {
       })),
       mode: 'copy',
       prompt,
-    });
+    }, LONG_TIMEOUT_MS);
   }
 
   function shutdown() {
@@ -130,14 +138,14 @@ const Api = (() => {
     });
   }
 
-  /* 混合检索：文本提示词 × 视觉片段 两路融合 */
-  function searchHybrid(query, payload, indices) {
+  /* 混合检索：文本提示词 × 视觉片段 两路融合。textThreshold 不传时退回配置值 */
+  function searchHybrid(query, payload, indices, textThreshold) {
     const cfg = Config.get();
     return post('/api/v1/search_hybrid', {
       query,
       ...payload,
       indices,
-      text_threshold: cfg.threshold,
+      text_threshold: textThreshold != null ? textThreshold : cfg.threshold,
       visual_threshold: cfg.visualThreshold,
       relative_margin: cfg.visualMargin,
       scene_aggregation: cfg.visualAgg || 'mean',

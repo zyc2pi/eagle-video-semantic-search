@@ -226,6 +226,7 @@ const Search = (() => {
     }
     lastQuery = query;
     lastMatches = applyScope(resp.data.matches || [], scopeSet);
+    selectedIdx.clear(); // 勾选下标相对上一轮结果，跨搜索保留会让批量操作命中错误素材
     render();
     return { ok: true, count: lastMatches.length, extra: resp.data };
   }
@@ -253,10 +254,10 @@ const Search = (() => {
   }
 
   /* 混合检索：文本提示词 × 视觉片段 融合（生成提示词搜索用） */
-  async function runHybrid(query, payload, scopeSet = null) {
+  async function runHybrid(query, payload, scopeSet = null, textThreshold = null) {
     const indices = await prepare();
     if (!indices) return NO_INDEX;
-    const resp = await Api.searchHybrid(query, payload, indices);
+    const resp = await Api.searchHybrid(query, payload, indices, textThreshold);
     return finishSearch(resp, scopeSet, query);
   }
 
@@ -413,6 +414,9 @@ const Search = (() => {
     [...selectedIdx].forEach((i) => { if (!visible.has(i)) selectedIdx.delete(i); });
 
     groups = view.grouped ? computeGroups() : [];
+    // 分组会重排视觉顺序：把 displayList 拍平成与渲染一致的顺序，
+    // openPreviewAt/时间轴/←→导航都以 displayList 位置为准，两者必须同构
+    if (view.grouped) displayList = groups.flatMap((g) => g.idxs);
     el.results.innerHTML = '';
     el.results.classList.toggle('grouped', view.grouped);
     flatPtr = 0;
@@ -570,6 +574,7 @@ const Search = (() => {
     await Bridge.refreshPathMap();
     lastMatches = Array.isArray(matches) ? matches : [];
     lastQuery = query || '';
+    selectedIdx.clear();
     render();
     return lastMatches.length;
   }
