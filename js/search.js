@@ -529,7 +529,7 @@ const Search = (() => {
           let fired = false;
           const onMove = (mv) => {
             if (fired) return;
-            if (Math.abs(mv.clientX - startX) + Math.abs(mv.clientY - startY) > 6) {
+            if (Math.abs(mv.clientX - startX) + Math.abs(mv.clientY - startY) > 3) {
               fired = true;
               cleanup();
               nativeDrag();
