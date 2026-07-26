@@ -1,0 +1,21 @@
+{
+  "id": "eagle.video.semantic.search",
+  "version": "1.0.0",
+  "platform": "win",
+  "arch": "x64",
+  "name": "视频语义搜索",
+  "logo": "/logo.png",
+  "keywords": ["video", "semantic", "search", "CLIP", "语义", "搜索"],
+  "devTools": false,
+  "main": {
+    "url": "index.html",
+    "width": 1100,
+    "height": 720,
+    "minWidth": 800,
+    "minHeight": 560,
+    "resizable": true,
+    "frame": true,
+    "multiple": false,
+    "serviceMode": true
+  }
+}

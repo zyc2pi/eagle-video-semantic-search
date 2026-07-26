@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>视频语义搜索</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="title">视频语义搜索</div>
+    <div class="service">
+      <span id="service-dot" class="dot offline"></span>
+      <span id="service-text">正在连接搜索服务…</span>
+    </div>
+    <button id="btn-settings" class="icon-btn" title="设置">⚙</button>
+  </header>
+
+  <section class="search-row">
+    <div class="query-wrap">
+      <input id="query" type="text" placeholder="用自然语言描述画面，如：夜晚的城市街道 / 人物特写（支持 -负向词）" autocomplete="off" autofocus>
+      <button id="btn-history" class="history-toggle" title="搜索历史" tabindex="-1">▾</button>
+      <div id="history-panel" class="history-panel hidden"></div>
+    </div>
+    <div class="threshold">
+      <label for="threshold">阈值</label>
+      <input id="threshold" type="range" min="5" max="35" step="0.5">
+      <span id="threshold-val">11</span>
+    </div>
+    <button id="btn-scope" class="scope-btn" title="设置搜索范围：整个库 / 跟随 Eagle 选中 / 指定多个文件夹（均含子文件夹）">范围: 整个库</button>
+    <button id="btn-search" class="primary" disabled>搜索</button>
+  </section>
+
+  <section class="toolbar">
+    <div class="index-actions">
+      <button id="btn-index-all" disabled>索引整个库</button>
+      <button id="btn-index-folder" disabled>索引选中文件夹</button>
+      <button id="btn-index-selected" disabled>索引选中素材</button>
+      <span id="index-hint" title="库内视频与索引内容的对比结果"></span>
+    </div>
+    <div id="index-progress" class="index-progress hidden">
+      <div class="bar"><div id="index-bar-fill"></div></div>
+      <span id="index-progress-text"></span>
+      <button id="btn-stop-index">停止</button>
+    </div>
+    <div class="spacer"></div>
+    <button id="btn-visual-selected" disabled title="以 Eagle 中选中的视频/图片素材为查询，搜索相似场景">以选中素材搜相似</button>
+    <button id="btn-export" class="hidden" title="把勾选的片段切成 MP4 并导入回 Eagle（自动放入文件夹、打上查询词标签）">导出片段</button>
+    <button id="btn-tag" class="hidden" title="给勾选结果对应的 Eagle 素材打上查询词标签（未勾选时应用到全部结果）">打标签</button>
+    <button id="btn-select-all-results" class="hidden">全部结果在 Eagle 中选中</button>
+  </section>
+
+  <section id="view-bar" class="view-bar hidden">
+    <label>排序
+      <select id="view-sort">
+        <option value="sim">相似度</option>
+        <option value="dur">时长</option>
+        <option value="name">视频名</option>
+      </select>
+    </label>
+    <label>时长 ≥
+      <input id="view-min-dur" type="number" min="0" max="600" step="0.5" value="0" title="只显示不短于此秒数的场景"> 秒
+    </label>
+    <label class="scope-toggle"><input id="view-grouped" type="checkbox"> 按视频分组</label>
+    <button id="btn-save-results" class="mini-btn" title="把当前结果保存为存档，之后可随时载入">存结果</button>
+    <button id="btn-archives" class="mini-btn" title="查看/载入已保存的搜索结果">存档…</button>
+    <span id="result-count" class="result-count"></span>
+  </section>
+
+  <section id="preview-panel" class="preview-panel hidden">
+    <video id="preview-video" controls preload="metadata"></video>
+    <div class="preview-side">
+      <div id="preview-info"></div>
+      <div id="preview-timeline" class="preview-timeline" title="此视频的全部命中场景，点击跳转"></div>
+      <div id="drag-area" class="drag-area"></div>
+      <div class="preview-actions">
+        <button id="btn-locate">在 Eagle 中定位</button>
+        <button id="btn-describe" title="用本地视觉模型分析这个片段的内容，生成搜索提示词并自动搜索">生成提示词搜索</button>
+        <button id="btn-close-preview">收起预览</button>
+      </div>
+    </div>
+  </section>
+
+  <main id="results" class="results"></main>
+  <div id="empty-state" class="empty-state">
+    <p>先对素材库建索引，然后输入描述开始搜索。</p>
+    <p class="hint">也可以：直接 Ctrl+V 粘贴一张图片以图搜视频；或在 Eagle 选中视频后点「以选中素材搜相似」。</p>
+    <p class="hint">首次建索引需要加载模型并逐个视频抽帧，耗时与视频数量成正比；之后为增量更新，可随时停止。</p>
+  </div>
+
+  <dialog id="scope-dialog">
+    <div class="settings-form">
+      <h3>搜索范围</h3>
+      <label class="check-row"><input type="radio" name="scope-mode" value="all"> 整个库</label>
+      <label class="check-row"><input type="radio" name="scope-mode" value="selected"> 跟随 Eagle 当前选中的文件夹（含子文件夹）</label>
+      <label class="check-row"><input type="radio" name="scope-mode" value="custom"> 指定以下文件夹（含子文件夹，可多选）：</label>
+      <div id="folder-tree" class="folder-tree"></div>
+      <p class="hint">勾选父文件夹即包含其下所有子文件夹；三种搜索方式（文本/以图/以片）都遵循此范围。</p>
+      <div class="dialog-actions">
+        <button id="btn-scope-apply" class="primary" type="button">应用</button>
+        <button id="btn-scope-cancel" type="button">取消</button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="archive-dialog">
+    <div class="settings-form">
+      <h3>结果存档</h3>
+      <div id="archive-list" class="archive-list"></div>
+      <div class="dialog-actions">
+        <button id="btn-close-archives" type="button">关闭</button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="settings-dialog">
+    <form method="dialog" class="settings-form">
+      <h3>设置</h3>
+      <label>Auto-scenes-extraction 项目路径
+        <input id="cfg-project-root" type="text" spellcheck="false">
+      </label>
+      <label>服务端口
+        <input id="cfg-port" type="number" min="1" max="65535">
+      </label>
+      <label>嵌入模型
+        <select id="cfg-model">
+          <option value="qihoo360-fg-clip2-base">qihoo360-fg-clip2-base（中文，推荐）</option>
+          <option value="openai-clip-vit-large-patch14">openai-clip-vit-large-patch14（仅英文）</option>
+        </select>
+      </label>
+      <label>以图/以片搜相似阈值
+        <input id="cfg-visual-threshold" type="number" min="0" max="120" step="1">
+      </label>
+      <label>以图/以片搜保留落差（只保留与最高分差距在此之内的结果，越小越严）
+        <input id="cfg-visual-margin" type="number" min="1" max="60" step="1">
+      </label>
+      <label>场景聚合方式（找相似时对候选场景 3 个向量的聚合）
+        <select id="cfg-visual-agg">
+          <option value="mean">mean — 整个场景都要像（严格，推荐）</option>
+          <option value="max">max — 一帧像即命中（宽松）</option>
+        </select>
+      </label>
+      <div class="field-pair">
+        <label>片段查询采样帧数
+          <input id="cfg-visual-scene-frames" type="number" min="1" max="16" step="1">
+        </label>
+        <label>整视频查询采样帧数
+          <input id="cfg-visual-video-frames" type="number" min="1" max="32" step="1">
+        </label>
+      </div>
+      <label class="check-row">
+        <input id="cfg-visual-centered" type="checkbox">
+        向量中心化（减去库平均画风再比相似度，整库画风相近时显著减少误命中；开启后视觉阈值失效，只按保留落差截断）
+      </label>
+      <details class="settings-group">
+        <summary>建索引参数（改动只影响之后索引的新视频）</summary>
+        <div class="field-pair">
+          <label>采样间隔（每 N 帧取 1，越小越精细越慢）
+            <input id="cfg-idx-sample-interval" type="number" min="1" max="30" step="1">
+          </label>
+          <label>抽帧短边分辨率（px）
+            <input id="cfg-idx-resolution" type="number" min="128" max="512" step="32">
+          </label>
+        </div>
+        <div class="field-pair">
+          <label>最小场景长度（帧，短于此合并）
+            <input id="cfg-idx-min-scene" type="number" min="1" max="120" step="1">
+          </label>
+          <label>GPU 批大小
+            <input id="cfg-idx-batch" type="number" min="8" max="1024" step="8">
+          </label>
+        </div>
+        <div class="field-pair">
+          <label>场景切分阈值（余弦，越高切得越碎）
+            <input id="cfg-idx-scene-threshold" type="number" min="0.5" max="0.99" step="0.01">
+          </label>
+          <label>边界检测阶数（局部极小值窗口）
+            <input id="cfg-idx-localmax" type="number" min="1" max="5" step="1">
+          </label>
+        </div>
+        <label class="check-row"><input id="cfg-idx-fp16" type="checkbox"> FP16 推理（仅 NVIDIA GPU 生效，省显存更快）</label>
+        <p class="hint">已索引的视频不受参数改动影响；想全库按新参数重建，删除原项目 indexes 下对应 .lance 文件夹后重新索引。</p>
+      </details>
+      <label>DeepSeek API Key（供 AI 查询增强使用，保存后需重启服务生效）
+        <input id="cfg-deepseek-key" type="password" spellcheck="false" placeholder="sk-...">
+      </label>
+      <label class="check-row"><input id="cfg-ai-enhance" type="checkbox"> AI 查询增强（deepseek-v4-flash 中英双语改写）</label>
+      <label class="check-row"><input id="cfg-dedup" type="checkbox"> 跨视频去重（重复片段只保留一条）</label>
+      <label class="check-row"><input id="cfg-mini-rerank" type="checkbox"> 二阶段精搜（MiniCPM 复核，明显更慢、占显存大）</label>
+      <label class="check-row"><input id="cfg-mini-keep" type="checkbox"> MiniCPM 常驻显存（生成提示词从 ~30 秒提速到 ~2 秒，需 8GB+ 显存）</label>
+      <label class="check-row"><input id="cfg-auto-index" type="checkbox"> 静默自动索引（插件随 Eagle 后台运行，每 10 分钟检查新素材并自动增量索引）</label>
+      <div class="btn-row">
+        <button id="btn-restart-service" type="button">重启搜索服务</button>
+        <button id="btn-rebuild-index" type="button" title="按当前库内素材全量重建索引，清理已删素材的失效条目并应用新索引参数">重建当前库索引</button>
+        <button id="btn-view-log" type="button">查看服务日志</button>
+      </div>
+      <p class="hint">FG-CLIP2 文本搜索建议阈值 11 左右；CLIP 建议 21 左右。切换模型后需对库重新建索引。<br>
+      以图/以片搜的图像相似度天然偏高，建议 40 左右（结果始终按相似度排序，最多返回 100 条）。</p>
+      <div class="dialog-actions">
+        <button id="btn-save-settings" value="save" class="primary">保存</button>
+        <button value="cancel">取消</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="js/config.js"></script>
+  <script src="js/api.js"></script>
+  <script src="js/service.js"></script>
+  <script src="js/eagleBridge.js"></script>
+  <script src="js/indexer.js"></script>
+  <script src="js/search.js"></script>
+  <script src="js/plugin.js"></script>
+</body>
+</html>
