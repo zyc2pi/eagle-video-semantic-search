@@ -578,11 +578,28 @@
         $('archive-dialog').close();
         $('query').value = meta.query || '';
         const n = await Search.loadResults(meta.matches || [], meta.query || '');
-        toast(`已载入存档「${meta.query}」（${n} 条）`);
+        // 跨库存档整页会显示"素材已不在库中"，提前说明原因
+        if (meta.library && meta.library !== eagle.library.path) {
+          toast(`注意：这份存档来自其他素材库（${meta.library.split(/[\\/]/).pop()}），当前库中素材可能无法定位`, true, 7000);
+        } else {
+          toast(`已载入存档「${meta.query}」（${n} 条）`);
+        }
       });
       const del = document.createElement('button');
       del.textContent = '删除';
       del.addEventListener('click', () => {
+        // 两步确认：首次点击变红提示，再点才真删（存档删除不可恢复）
+        if (del.dataset.confirming !== '1') {
+          del.dataset.confirming = '1';
+          del.textContent = '确认删除?';
+          del.style.color = 'var(--danger)';
+          setTimeout(() => {
+            del.dataset.confirming = '';
+            del.textContent = '删除';
+            del.style.color = '';
+          }, 3000);
+          return;
+        }
         try { fs.unlinkSync(full); } catch { /* 已被删除 */ }
         row.remove();
       });
@@ -1157,6 +1174,17 @@
     } else {
       applyAutoIndexSetting();
     }
+
+    // 低频心跳：服务中途崩溃时状态灯及时变灰（此前只在开窗时检查，绿灯会一直挂着）
+    setInterval(async () => {
+      if (Indexer.isRunning()) return; // 索引轮询期间状态由轮询维护
+      const ok = await Api.health();
+      if (ok && !serviceOnline) {
+        setServiceStatus('online', '搜索服务已连接');
+      } else if (!ok && serviceOnline) {
+        setServiceStatus('offline', '搜索服务已断开（可在设置里重启服务）');
+      }
+    }, 60000);
   });
 
   eagle.onPluginShow(() => {
