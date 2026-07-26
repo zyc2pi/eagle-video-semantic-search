@@ -357,6 +357,63 @@
     toast(`已给 ${tagged} 个素材打上标签「${query}」（${items.size - tagged} 个已有该标签）`);
   }
 
+  // ---------- 镜头分析打标签（运镜/景别） ----------
+  async function shotTagResults() {
+    const { matches, picked } = matchesForBatchAction();
+    if (matches.length === 0) return;
+    if (!picked && matches.length > 50) {
+      toast(`结果有 ${matches.length} 条，请先勾选要分析的片段（悬停卡片左上角勾选）`, true, 5000);
+      return;
+    }
+    const btn = $('btn-shot-tag');
+    btn.disabled = true;
+    // 每个 Eagle 素材聚合其全部命中片段的标签（同素材多场景取并集）
+    const perItem = new Map(); // itemId -> { item, tags:Set }
+    let analyzed = 0;
+    let failed = 0;
+    const notes = new Set();
+    try {
+      for (const m of matches) {
+        btn.textContent = `分析中 ${analyzed + failed}/${matches.length}…`;
+        const item = Bridge.itemForPath(m.video_path);
+        if (!item) { failed += 1; continue; }
+        try {
+          const resp = await Api.analyzeShot(m.video_path, m.start_frame, m.end_frame);
+          if (!resp.ok || !resp.data || !resp.data.success) {
+            failed += 1;
+            continue;
+          }
+          (resp.data.notes || []).forEach((n) => notes.add(n));
+          const entry = perItem.get(item.id) || { item, tags: new Set() };
+          (resp.data.tags || []).forEach((t) => entry.tags.add(t));
+          perItem.set(item.id, entry);
+          analyzed += 1;
+        } catch (e) {
+          console.error('镜头分析失败', m.video_path, e);
+          failed += 1;
+        }
+      }
+      let tagged = 0;
+      for (const { item, tags } of perItem.values()) {
+        const add = [...tags].filter((t) => !(item.tags || []).includes(t));
+        if (add.length === 0) continue;
+        try {
+          item.tags = [...(item.tags || []), ...add];
+          await item.save();
+          tagged += 1;
+        } catch (e) {
+          console.error('写标签失败', item.id, e);
+        }
+      }
+      notes.forEach((n) => toast(n, false, 5000));
+      toast(`镜头分析完成：${analyzed} 个片段，${tagged} 个素材新增了运镜/景别标签`
+        + (failed ? `（${failed} 个失败）` : ''), false, 6000);
+    } finally {
+      btn.textContent = '镜头标签';
+      btn.disabled = false;
+    }
+  }
+
   // ---------- 视频内容 → 提示词 → 搜索 ----------
   async function describeAndSearch() {
     const m = Search.getActiveMatch();
@@ -779,10 +836,12 @@
     const has = total > 0 || Search.getAllMatches().length > 0;
     $('btn-export').classList.toggle('hidden', !has);
     $('btn-tag').classList.toggle('hidden', !has);
+    $('btn-shot-tag').classList.toggle('hidden', !has);
     if (has) {
       const n = selectedCount || 0;
       $('btn-export').textContent = n > 0 ? `导出片段(${n})` : '导出片段';
       $('btn-tag').textContent = n > 0 ? `打标签(${n})` : '打标签';
+      $('btn-shot-tag').textContent = n > 0 ? `镜头标签(${n})` : '镜头标签';
     }
   }
 
@@ -980,6 +1039,7 @@
     $('btn-visual-selected').addEventListener('click', visualSearchFromSelection);
     $('btn-export').addEventListener('click', exportSelected);
     $('btn-tag').addEventListener('click', tagResults);
+    $('btn-shot-tag').addEventListener('click', shotTagResults);
     $('btn-restart-service').addEventListener('click', restartService);
     $('btn-rebuild-index').addEventListener('click', rebuildIndex);
     $('btn-view-log').addEventListener('click', viewServiceLog);
