@@ -262,6 +262,14 @@ const Search = (() => {
   }
 
   /* ---------- 渲染 ---------- */
+  /* 文件名等外部字符串进 innerHTML 前必须转义：本页面可 require Node 模块，
+     一个精心构造的文件名足以变成任意代码执行 */
+  function esc(s) {
+    return String(s ?? '').replace(/[&<>"']/g, (c) => (
+      { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+    ));
+  }
+
   function fmtTime(t) {
     return String(t || '').replace(/\.\d+$/, '');
   }
@@ -348,7 +356,7 @@ const Search = (() => {
     details.open = true;
     const summary = document.createElement('summary');
     const best = Number(lastMatches[g.idxs[0]].similarity || 0).toFixed(1);
-    summary.innerHTML = `<b>${g.name}</b><span class="vgroup-info">${g.idxs.length} 个场景 · 最高 ${best}</span>`;
+    summary.innerHTML = `<b>${esc(g.name)}</b><span class="vgroup-info">${g.idxs.length} 个场景 · 最高 ${best}</span>`;
     const body = document.createElement('div');
     body.className = 'vgroup-body';
     g.idxs.forEach((idx, i) => {
@@ -549,7 +557,7 @@ const Search = (() => {
       ? '<br><span class="badge-both">双</span> 文本与视觉两路均命中'
       : '';
     el.previewInfo.innerHTML =
-      `<b>${match.video_name}</b><br>`
+      `<b>${esc(match.video_name)}</b><br>`
       + `片段：${fmtTime(match.start)} – ${fmtTime(match.end)}（${match.duration_display || ''}）<br>`
       + `相似度：${Number(match.similarity).toFixed(2)}${hybridInfo}`
       + (item ? '' : '<br><span style="color:var(--danger)">素材已不在 Eagle 库中</span>')

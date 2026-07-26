@@ -3,6 +3,13 @@
   const $ = (id) => document.getElementById(id);
   let serviceOnline = false;
 
+  /* 外部字符串（文件名/标签/查询词）进 innerHTML 前必须转义 */
+  function esc(s) {
+    return String(s ?? '').replace(/[&<>"']/g, (c) => (
+      { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+    ));
+  }
+
   function toast(message, isError = false, ms = 3500) {
     document.querySelectorAll('.toast').forEach((t) => t.remove());
     const t = document.createElement('div');
@@ -506,8 +513,8 @@
       const row = document.createElement('div');
       row.className = 'archive-row';
       const date = (meta.savedAt || '').slice(0, 16).replace('T', ' ');
-      row.innerHTML = `<span class="archive-name" title="${f}"><b>${meta.query || '未命名'}</b>`
-        + ` · ${meta.count || (meta.matches || []).length} 条 · ${date}</span>`;
+      row.innerHTML = `<span class="archive-name" title="${esc(f)}"><b>${esc(meta.query || '未命名')}</b>`
+        + ` · ${meta.count || (meta.matches || []).length} 条 · ${esc(date)}</span>`;
       const load = document.createElement('button');
       load.textContent = '载入';
       load.addEventListener('click', async () => {
@@ -564,7 +571,7 @@
   // ---------- 素材库统计 ----------
   function statsBar(label, count, max, extra = '') {
     const pct = max > 0 ? Math.max((count / max) * 100, 1.5) : 0;
-    return `<div class="stat-row"><span class="stat-label" title="${label}">${label}</span>`
+    return `<div class="stat-row"><span class="stat-label" title="${esc(label)}">${esc(label)}</span>`
       + `<span class="stat-track"><span class="stat-fill" style="width:${pct}%"></span></span>`
       + `<span class="stat-num">${count}${extra}</span></div>`;
   }
