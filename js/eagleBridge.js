@@ -162,8 +162,9 @@ const Bridge = (() => {
   async function locateInEagle(itemIds) {
     if (!itemIds || itemIds.length === 0) return;
     try {
-      // 单素材定位：先把主窗口切到素材所在文件夹，否则 select 只改选中状态、
-      // 当前视图看不到任何变化（多素材定位不跳转——它们可能分散在不同文件夹）
+      // 单素材定位：先把主窗口切到素材所在文件夹，再用 item.open（不带 window
+      // 参数 = 在列表中显示并滚动到该文件），最后 select 高亮。
+      // 多素材定位只批量选中——它们可能分散在不同文件夹。
       if (itemIds.length === 1) {
         try {
           const item = await eagle.item.getById(itemIds[0]);
@@ -171,10 +172,14 @@ const Bridge = (() => {
             ? item.folders[0] : null;
           if (folderId) {
             await eagle.folder.open(folderId);
-            await new Promise((r) => setTimeout(r, 400)); // 等视图切换完成再选中
+            await new Promise((r) => setTimeout(r, 400)); // 等视图切换完成
+          }
+          if (typeof eagle.item.open === 'function') {
+            await eagle.item.open(itemIds[0]); // 列表内揭示 + 滚动到素材位置
+            await new Promise((r) => setTimeout(r, 200));
           }
         } catch (e) {
-          console.warn('跳转素材所在文件夹失败，仅执行选中', e);
+          console.warn('跳转/揭示素材失败，仅执行选中', e);
         }
       }
       if (typeof eagle.item.select === 'function') {
