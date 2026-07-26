@@ -314,15 +314,21 @@
     } finally {
       btn.textContent = '导出片段';
       btn.disabled = false;
-      updateBatchButtons();
+      const sel = Search.getSelectedMatches(); // 勾选仍在，按钮计数不能清零
+      updateBatchButtons(sel ? sel.length : 0, Search.getRawMatches().length);
     }
   }
 
   // ---------- 给结果素材打标签 ----------
   async function tagResults() {
-    const { matches } = matchesForBatchAction();
+    const { matches, picked } = matchesForBatchAction();
     const query = (Search.getLastQuery() || '').trim();
     if (!query || matches.length === 0) return;
+    if (!picked && matches.length > 50) {
+      // 与导出同一道闸门：打标签逐个写 Eagle 元数据且不可撤销，防误触全量
+      toast(`结果有 ${matches.length} 条，请先勾选要打标签的片段（悬停卡片左上角勾选）`, true, 5000);
+      return;
+    }
     const items = new Map();
     matches.forEach((m) => {
       const item = Bridge.itemForPath(m.video_path);
@@ -377,11 +383,13 @@
       pushHistory(prompts[0]);
       toast(`生成提示词：${prompts.join(' / ')}，正在做文本×视觉混合检索…`, false, 7000);
       const scope = await resolveSearchScope();
+      // 文本阈值取滑条现值（与文本搜索一致），而不是上次保存的配置值
+      const sliderThreshold = parseFloat($('threshold').value);
       const r = await Search.runHybrid(prompts[0], {
         video_path: m.video_path,
         start_frame: m.start_frame,
         end_frame: m.end_frame,
-      }, scope);
+      }, scope, Number.isFinite(sliderThreshold) ? sliderThreshold : null);
       if (!r.ok) toast(r.message, true, 5000);
       else toast(`混合检索找到 ${r.count} 个场景（带「双」标的两路均命中，最可信）`, false, 6000);
     } catch (e) {
@@ -624,11 +632,12 @@
   }
 
   // ---------- 索引迁移（导出/导入 zip） ----------
-  function runPowerShell(args) {
+  /* 路径经环境变量传入，避免拼进 -Command 字符串（路径里的引号/$()/分号会被 PS 解释执行） */
+  function runPowerShell(script, envVars = {}) {
     return new Promise((resolve, reject) => {
       const { execFile } = require('child_process');
-      execFile('powershell.exe', ['-NoProfile', '-Command', args],
-        { windowsHide: true }, (err, _out, stderr) => {
+      execFile('powershell.exe', ['-NoProfile', '-Command', script],
+        { windowsHide: true, env: { ...process.env, ...envVars } }, (err, _out, stderr) => {
           if (err) reject(new Error(stderr || err.message));
           else resolve();
         });
@@ -648,7 +657,8 @@
     const dest = path.join(os.homedir(), 'Desktop', `eagle_indexes_${stamp}.zip`);
     toast('正在打包索引（大库可能要几分钟）…', false, 8000);
     try {
-      await runPowerShell(`Compress-Archive -Path "${src}\\*" -DestinationPath "${dest}" -Force`);
+      await runPowerShell('Compress-Archive -Path "$env:EAGLE_ZIP_SRC\\*" -DestinationPath "$env:EAGLE_ZIP_DEST" -Force',
+        { EAGLE_ZIP_SRC: src, EAGLE_ZIP_DEST: dest });
       toast(`已导出到桌面：${path.basename(dest)}`, false, 6000);
       eagle.shell.showItemInFolder(dest);
     } catch (e) {
@@ -673,7 +683,8 @@
     const dest = path.join(Config.get().projectRoot, 'indexes');
     toast('正在导入索引…', false, 6000);
     try {
-      await runPowerShell(`Expand-Archive -Path "${zipPath}" -DestinationPath "${dest}" -Force`);
+      await runPowerShell('Expand-Archive -Path "$env:EAGLE_ZIP_SRC" -DestinationPath "$env:EAGLE_ZIP_DEST" -Force',
+        { EAGLE_ZIP_SRC: zipPath, EAGLE_ZIP_DEST: dest });
       toast('索引导入完成', false, 5000);
       refreshIndexHint();
     } catch (e) {

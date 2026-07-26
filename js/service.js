@@ -44,7 +44,8 @@ const Service = (() => {
       stdio = ['ignore', fd, fd];
     } catch { /* 日志不可写时退回丢弃输出 */ }
 
-    const child = spawn(pythonExe(projectRoot), ['text_search.py'], {
+    // 端口跟随设置：text_search.py 已支持 --port（不传则 5006），改端口后自动拉起才能对上健康检查
+    const child = spawn(pythonExe(projectRoot), ['text_search.py', '--port', String(Config.get().port || 5006)], {
       cwd: projectRoot,
       detached: true,
       windowsHide: true,

@@ -33,6 +33,11 @@ const Indexer = (() => {
       } else if (status.state === 'error') {
         stopPolling();
         listeners.onError?.(status.error || '索引任务失败');
+      } else {
+        // 'idle'：服务在索引期间被重启（状态被重置）。不收尾会让 running 恒为
+        // true、搜索/索引按钮永久禁用，只能重载插件。
+        stopPolling();
+        listeners.onError?.('索引任务状态丢失（服务可能被重启），可重新提交增量索引');
       }
     }, 2000);
   }
@@ -53,6 +58,7 @@ const Indexer = (() => {
    * 服务端支持任务队列：索引进行中再次提交会排队串行执行。
    */
   async function start(mode, handlers) {
+    stopPolling(); // 防御性：避免残留的旧轮询与本次并存
     listeners = handlers;
 
     let videos;
