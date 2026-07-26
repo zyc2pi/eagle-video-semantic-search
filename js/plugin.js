@@ -695,6 +695,70 @@
     }
   }
 
+  // ---------- 语义查重 ----------
+  async function runDedupScan() {
+    const body = $('dedup-body');
+    body.innerHTML = '<p class="hint">扫描中（读取索引向量并聚类）…</p>';
+    try {
+      const indices = await Search.findLibraryIndexes();
+      if (indices.length === 0) {
+        body.innerHTML = '<p class="hint">当前素材库还没有索引，请先建索引。</p>';
+        return;
+      }
+      await Bridge.refreshPathMap();
+      const threshold = Math.min(Math.max(parseFloat($('dedup-threshold').value) || 0.93, 0.8), 0.99);
+      const resp = await Api.dedupScan(indices, threshold);
+      if (!resp.ok || !resp.data || !resp.data.success) {
+        body.innerHTML = `<p class="hint" style="color:var(--danger)">扫描失败：${esc((resp.data && resp.data.error) || resp.status)}</p>`;
+        return;
+      }
+      const groups = resp.data.groups || [];
+      if (groups.length === 0) {
+        body.innerHTML = `<p class="hint">没有发现相似度 ≥ ${threshold} 的重复视频（共扫描 ${resp.data.video_count} 个）。可调低阈值再试。</p>`;
+        return;
+      }
+      body.innerHTML = '';
+      const head = document.createElement('p');
+      head.className = 'hint';
+      head.textContent = `共扫描 ${resp.data.video_count} 个视频，发现 ${resp.data.group_count} 组相似（每组保留哪个由你决定，可先「选中」在 Eagle 中查看）`;
+      body.appendChild(head);
+      groups.forEach((g, gi) => {
+        const box = document.createElement('div');
+        box.className = 'archive-row';
+        const info = document.createElement('span');
+        info.className = 'archive-name';
+        const names = g.videos.map((v) => {
+          const item = Bridge.itemForPath(v.video_path);
+          return item ? item.name : v.video_path.split(/[\\/]/).pop();
+        });
+        info.textContent = `组${gi + 1}（${g.videos.length} 个）：${names.join('、')}`;
+        info.title = g.videos.map((v) => `${v.video_path}（相似度 ${v.similarity}）`).join('\n');
+        const locate = document.createElement('button');
+        locate.textContent = '在 Eagle 中选中';
+        locate.addEventListener('click', async () => {
+          const ids = g.videos.map((v) => Bridge.itemForPath(v.video_path))
+            .filter(Boolean).map((it) => it.id);
+          if (ids.length === 0) {
+            toast('这组素材已不在库中', true);
+            return;
+          }
+          await Bridge.locateInEagle(ids);
+        });
+        box.appendChild(info);
+        box.appendChild(locate);
+        body.appendChild(box);
+      });
+    } catch (e) {
+      console.error(e);
+      body.innerHTML = `<p class="hint" style="color:var(--danger)">扫描出错：${esc(e.message)}</p>`;
+    }
+  }
+
+  function openDedupScan() {
+    $('dedup-dialog').showModal();
+    runDedupScan();
+  }
+
   // ---------- 索引迁移（导出/导入 zip） ----------
   /* 路径经环境变量传入，避免拼进 -Command 字符串（路径里的引号/$()/分号会被 PS 解释执行） */
   function runPowerShell(script, envVars = {}) {
@@ -1046,6 +1110,9 @@
     $('btn-describe').addEventListener('click', describeAndSearch);
     $('btn-purify').addEventListener('click', sendToPurify);
     $('btn-stats').addEventListener('click', openStats);
+    $('btn-dedup-scan').addEventListener('click', openDedupScan);
+    $('btn-dedup-rescan').addEventListener('click', runDedupScan);
+    $('btn-close-dedup').addEventListener('click', () => $('dedup-dialog').close());
     $('btn-close-stats').addEventListener('click', () => $('stats-dialog').close());
     $('btn-export-indexes').addEventListener('click', exportIndexes);
     $('btn-import-indexes').addEventListener('click', importIndexes);
