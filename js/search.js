@@ -129,7 +129,6 @@ const Search = (() => {
     el.viewBar = document.getElementById('view-bar');
     el.resultCount = document.getElementById('result-count');
     el.timeline = document.getElementById('preview-timeline');
-    el.dragArea = document.getElementById('drag-area');
 
     el.btnClosePreview.addEventListener('click', closePreview);
     el.btnLocate.addEventListener('click', async () => {
@@ -472,99 +471,6 @@ const Search = (() => {
     });
   }
 
-  /* ---------- 预览面板：拖拽片段到剪辑软件 ---------- */
-  function renderDragArea(match) {
-    const area = el.dragArea;
-    area.innerHTML = '';
-    const prepare = document.createElement('button');
-    prepare.textContent = '准备拖拽片段';
-    prepare.title = '把这个片段切成 H.264 文件（有缓存），之后可直接拖进 PR/剪映等剪辑软件';
-    prepare.addEventListener('click', async () => {
-      prepare.disabled = true;
-      prepare.textContent = '切割中…';
-      try {
-        const resp = await Api.clipFile(match.video_path, match.start_frame, match.end_frame);
-        if (!resp.ok || !resp.data || !resp.data.success) {
-          prepare.textContent = '准备拖拽片段';
-          prepare.disabled = false;
-          alert((resp.data && resp.data.error) || '切割失败');
-          return;
-        }
-        const clipPath = resp.data.path;
-        area.innerHTML = '';
-
-        const chip = document.createElement('div');
-        chip.className = 'drag-chip';
-        chip.textContent = '🎬 拖到剪辑软件';
-        chip.title = clipPath;
-
-        const note = document.createElement('span');
-        note.className = 'drag-note';
-
-        const dragFail = (err) => {
-          console.error('[Drag] startDrag 失败', err);
-          note.textContent = '拖拽不可用，已打开文件夹，请从资源管理器拖入';
-          eagle.shell.showItemInFolder(clipPath);
-        };
-
-        const nativeDrag = () => {
-          try {
-            if (eagle.drag && typeof eagle.drag.startDrag === 'function') {
-              const r = eagle.drag.startDrag([clipPath]);
-              if (r && typeof r.catch === 'function') r.catch(dragFail);
-            } else {
-              dragFail(new Error('当前 Eagle 版本无 eagle.drag API'));
-            }
-          } catch (err) {
-            dragFail(err);
-          }
-        };
-
-        // 主路径：mousedown + 位移阈值直接触发原生拖拽（HTML5 dragstart 在部分
-        // Electron 环境里不触发 startDrag，改为手动判定拖动意图更可靠）
-        chip.addEventListener('mousedown', (downEv) => {
-          if (downEv.button !== 0) return;
-          const startX = downEv.clientX;
-          const startY = downEv.clientY;
-          let fired = false;
-          const onMove = (mv) => {
-            if (fired) return;
-            if (Math.abs(mv.clientX - startX) + Math.abs(mv.clientY - startY) > 3) {
-              fired = true;
-              cleanup();
-              nativeDrag();
-            }
-          };
-          const cleanup = () => {
-            document.removeEventListener('mousemove', onMove);
-            document.removeEventListener('mouseup', cleanup);
-          };
-          document.addEventListener('mousemove', onMove);
-          document.addEventListener('mouseup', cleanup);
-        });
-        // 备份路径：环境支持 HTML5 drag 时也能走
-        chip.draggable = true;
-        chip.addEventListener('dragstart', (e) => {
-          e.preventDefault();
-          nativeDrag();
-        });
-
-        const reveal = document.createElement('button');
-        reveal.textContent = '在文件夹显示';
-        reveal.addEventListener('click', () => eagle.shell.showItemInFolder(clipPath));
-
-        area.appendChild(chip);
-        area.appendChild(reveal);
-        area.appendChild(note);
-      } catch (e) {
-        prepare.textContent = '准备拖拽片段';
-        prepare.disabled = false;
-        console.error(e);
-      }
-    });
-    area.appendChild(prepare);
-  }
-
   /* ---------- 点击预览（支持 ←/→ 键盘切换）---------- */
   function openPreviewAt(pos) {
     if (pos < 0 || pos >= displayList.length) return;
@@ -572,7 +478,6 @@ const Search = (() => {
     const match = lastMatches[displayList[pos]];
     openPreview(match);
     renderTimeline(match, pos);
-    renderDragArea(match);
   }
 
   function openPreview(match) {
