@@ -129,6 +129,7 @@ const Search = (() => {
     el.viewBar = document.getElementById('view-bar');
     el.resultCount = document.getElementById('result-count');
     el.timeline = document.getElementById('preview-timeline');
+    el.previewTags = document.getElementById('preview-tags');
 
     el.btnClosePreview.addEventListener('click', closePreview);
     el.btnLocate.addEventListener('click', async () => {
@@ -472,12 +473,35 @@ const Search = (() => {
   }
 
   /* ---------- 点击预览（支持 ←/→ 键盘切换）---------- */
+  /* 素材标签 chips：点击任意标签直接以它为查询词搜索（提纯打的标签由此形成闭环） */
+  function renderPreviewTags(match) {
+    const box = el.previewTags;
+    box.innerHTML = '';
+    const item = Bridge.itemForPath(match.video_path);
+    const tags = (item && Array.isArray(item.tags)) ? item.tags.slice(0, 12) : [];
+    box.classList.toggle('hidden', tags.length === 0);
+    tags.forEach((tag) => {
+      const chip = document.createElement('span');
+      chip.className = 'tag-chip';
+      chip.textContent = tag;
+      chip.title = `搜索「${tag}」`;
+      chip.addEventListener('click', () => {
+        const input = document.getElementById('query');
+        const btn = document.getElementById('btn-search');
+        input.value = tag;
+        if (!btn.disabled) btn.click();
+      });
+      box.appendChild(chip);
+    });
+  }
+
   function openPreviewAt(pos) {
     if (pos < 0 || pos >= displayList.length) return;
     activePos = pos;
     const match = lastMatches[displayList[pos]];
     openPreview(match);
     renderTimeline(match, pos);
+    renderPreviewTags(match);
   }
 
   function openPreview(match) {

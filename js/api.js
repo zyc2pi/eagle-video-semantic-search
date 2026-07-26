@@ -34,6 +34,11 @@ const Api = (() => {
     return (r.data && r.data.indexes) || [];
   }
 
+  async function listModels() {
+    const r = await fetchJson(`${Config.baseUrl()}/api/v1/models`);
+    return (r.data && r.data.models) || [];
+  }
+
   function startIndex(videoPaths, indexName, modelName, rebuild = false) {
     const cfg = Config.get();
     return post('/api/v1/index', {
@@ -171,7 +176,7 @@ const Api = (() => {
   }
 
   return {
-    health, listIndexes, startIndex, indexStatus, cancelIndex,
+    health, listIndexes, listModels, startIndex, indexStatus, cancelIndex,
     search, searchVisual, searchHybrid, exportClips, shutdown, describe,
     indexContents, clipFile, previewUrl, clipUrl,
   };
