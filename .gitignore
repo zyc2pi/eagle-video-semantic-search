@@ -1,0 +1,11 @@
+# 本地配置：含 DeepSeek API key，绝不入库
+config.json
+
+# 运行时产物
+service.log
+saves/
+
+# 打包产物：Pack Plugin 会把 config.json（含 key）一起打进去
+*.eagleplugin
+
+node_modules/
