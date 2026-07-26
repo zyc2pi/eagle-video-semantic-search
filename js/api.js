@@ -175,15 +175,6 @@ const Api = (() => {
     });
   }
 
-  /* 生成 H.264 片段文件并返回本地路径（供拖拽到剪辑软件） */
-  function clipFile(videoPath, startFrame, endFrame) {
-    return post('/api/v1/clip_file', {
-      video_path: videoPath,
-      start_frame: startFrame,
-      end_frame: endFrame,
-    });
-  }
-
   /* 查询索引内已收录的视频路径（供未索引提醒对比） */
   async function indexContents(lancePath) {
     const r = await fetchJson(
@@ -203,6 +194,6 @@ const Api = (() => {
   return {
     health, listIndexes, listModels, startIndex, indexStatus, cancelIndex,
     search, searchVisual, searchHybrid, exportClips, shutdown, describe,
-    analyzeShot, dedupScan, indexContents, clipFile, previewUrl, clipUrl,
+    analyzeShot, dedupScan, indexContents, previewUrl, clipUrl,
   };
 })();
