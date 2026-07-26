@@ -36,6 +36,9 @@ Eagle（素材管理软件）的窗口插件，提供视频的语义检索：中
 - 相似度分数 = cosine × logit_scale(≈100)。文本阈值 fgclip2≈11 / clip≈21；视觉检索独立阈值(≈40)+相对落差截断
 - 与提纯插件的交接文件：`<项目根>/purify_inbox.json`（数组 [{id,name,filePath,folderId}]），本插件写、提纯插件消费后删除
 - 改后端 Python 后必须重启 5006 服务（POST /api/v1/shutdown 再拉起）才生效
+- `text_search.py` 接受 `--port/--host`（默认 127.0.0.1:5006，安全起见不再绑 0.0.0.0）；两插件拉起时都传 `--port`
+- 标签契约：`自动提纯`/`场景直切`（提纯插件写、库统计读）；`运镜:*`/`景别:*`（「镜头标签」经 /api/v1/analyze_shot 写）
+- 迭代记录与后续方向见 ROADMAP.md
 
 ## 已踩过的坑（改 UI 前必读）
 
