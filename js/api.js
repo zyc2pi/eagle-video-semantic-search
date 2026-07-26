@@ -103,10 +103,13 @@ const Api = (() => {
       threshold,
       start_frame_offset: -2,
       end_frame_offset: 2,
-      // 设置页的增强开关
+      // 设置页的增强开关（ai_enhance/ai_mode 只在总开关打开时被后端采纳）
       ai_search_enabled: !!cfg.aiEnhance,
       bilingual_search: !!cfg.aiEnhance,
+      ai_enhance: !!cfg.aiExpand,
+      ai_mode: cfg.aiMode || 'balanced',
       use_dedup: !!cfg.dedup,
+      dedup_threshold: cfg.dedupThreshold != null ? cfg.dedupThreshold : 0.95,
       use_mini_rerank: !!cfg.miniRerank,
     }, cfg.miniRerank ? LONG_TIMEOUT_MS : DEFAULT_TIMEOUT_MS);
   }
@@ -121,7 +124,7 @@ const Api = (() => {
         start: m.start,
         end: m.end,
       })),
-      mode: 'copy',
+      mode: Config.get().exportMode === 'precision' ? 'precision' : 'copy',
       prompt,
     }, LONG_TIMEOUT_MS);
   }

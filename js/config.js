@@ -35,8 +35,12 @@ const Config = (() => {
     // 静默自动索引：插件随 Eagle 后台运行时，定时检查新素材并自动增量索引
     autoIndex: false,
     deepseekKey: '',    // DeepSeek API key，注入服务进程环境供 AI 查询增强使用
-    aiEnhance: false,   // AI 查询增强（需配置 DeepSeek key）
+    aiEnhance: false,   // AI 查询增强总开关：双语改写（需配置 DeepSeek key）
+    aiExpand: false,    // AI 语义扩展：额外生成同义/场景变体查询（最多 8 条，多路合并）
+    aiMode: 'balanced', // AI 查询增强档位 fast/balanced/quality（变体数量与质量权衡）
     dedup: false,       // 跨视频去重
+    dedupThreshold: 0.95, // 去重相似度阈值：越低合并越激进
+    exportMode: 'copy', // 导出片段模式：copy=流拷贝快无损；precision=逐帧精确重编码
     miniRerank: false,  // MiniCPM 二阶段精搜（慢，占显存大）
     history: [],        // 最近搜索词
   };

@@ -318,8 +318,13 @@ const Search = (() => {
     const sub = document.createElement('div');
     sub.className = 'sub';
     const badge = m.both_hit ? '<span class="badge-both" title="文本与视觉两路均命中">双</span>' : '';
+    // AI 查询增强下被多条改写查询同时命中的场景更可信，展示 ×N 徽标
+    const mq = Array.isArray(m.matched_queries) ? m.matched_queries : [];
+    const multi = mq.length > 1
+      ? `<span class="badge-multi" title="${esc(mq.map((q) => `${q.text}（${Number(q.similarity || 0).toFixed(1)}）`).join('\n'))}">×${mq.length}</span>`
+      : '';
     sub.innerHTML = `<span>${fmtTime(m.start)} – ${fmtTime(m.end)}</span>`
-      + `<span>${badge}<span class="sim">${Number(m.similarity).toFixed(1)}</span></span>`;
+      + `<span>${multi}${badge}<span class="sim">${Number(m.similarity).toFixed(1)}</span></span>`;
     meta.appendChild(name);
     meta.appendChild(sub);
     if (!item) {
@@ -556,10 +561,14 @@ const Search = (() => {
     const hybridInfo = match.both_hit
       ? '<br><span class="badge-both">双</span> 文本与视觉两路均命中'
       : '';
+    const mqList = Array.isArray(match.matched_queries) && match.matched_queries.length > 1
+      ? '<br>命中查询：' + match.matched_queries
+        .map((q) => `${esc(q.text)}（${Number(q.similarity || 0).toFixed(1)}）`).join('、')
+      : '';
     el.previewInfo.innerHTML =
       `<b>${esc(match.video_name)}</b><br>`
       + `片段：${fmtTime(match.start)} – ${fmtTime(match.end)}（${match.duration_display || ''}）<br>`
-      + `相似度：${Number(match.similarity).toFixed(2)}${hybridInfo}`
+      + `相似度：${Number(match.similarity).toFixed(2)}${hybridInfo}${mqList}`
       + (item ? '' : '<br><span style="color:var(--danger)">素材已不在 Eagle 库中</span>')
       + '<br><span class="hint-inline">←/→ 切换结果，Esc 收起</span>';
     el.btnLocate.disabled = !item;
