@@ -55,8 +55,10 @@ const Bridge = (() => {
   /* 递归收集文件夹及其所有子文件夹的 id */
   function collectFolderIdsRecursive(folders) {
     const ids = [];
+    const seen = new Set();
     const walk = (f) => {
-      if (!f || !f.id) return;
+      if (!f || !f.id || seen.has(f.id)) return;
+      seen.add(f.id);
       ids.push(f.id);
       (f.children || []).forEach(walk);
     };
@@ -64,18 +66,30 @@ const Bridge = (() => {
     return ids;
   }
 
+  /*
+   * Eagle 会把 folders 数组当作交集条件。父、子文件夹 id 一次传入时，
+   * 只会返回同时归属于所有文件夹的素材，通常就是空数组。逐文件夹查询后
+   * 再按素材 id 取并集，才能同时包含本级和全部子文件夹。
+   */
+  async function collectItemsFromFolderIds(folderIds) {
+    const groups = await Promise.all(
+      (folderIds || []).map((folderId) => eagle.item.get({ folders: [folderId] })),
+    );
+    const seen = new Set();
+    return groups.flat().filter((item) => {
+      if (!item || seen.has(item.id)) return false;
+      seen.add(item.id);
+      return true;
+    });
+  }
+
   /* 取选中文件夹（含子文件夹）内的所有视频素材，按 id 去重 */
   async function collectFolderVideos() {
     const folders = await eagle.folder.getSelected();
     if (!folders || folders.length === 0) return null;
     const ids = collectFolderIdsRecursive(folders);
-    const items = await eagle.item.get({ folders: ids });
-    const seen = new Set();
-    return items.filter((it) => {
-      if (!isVideoItem(it) || seen.has(it.id)) return false;
-      seen.add(it.id);
-      return true;
-    });
+    const items = await collectItemsFromFolderIds(ids);
+    return items.filter(isVideoItem);
   }
 
   /**
@@ -138,7 +152,7 @@ const Bridge = (() => {
     const folders = await eagle.folder.getByIds(folderIds);
     const ids = collectFolderIdsRecursive(folders || []);
     if (ids.length === 0) return new Set();
-    const items = await eagle.item.get({ folders: ids });
+    const items = await collectItemsFromFolderIds(ids);
     return new Set(items.filter(isVideoItem).map((it) => normalizePath(it.filePath)));
   }
 
