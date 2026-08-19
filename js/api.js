@@ -79,10 +79,15 @@ const Api = (() => {
    * 视觉检索。payload 查询源三选一：
    *   { image_base64 } | { image_path } | { video_path, start_frame?, end_frame? }
    */
-  function searchVisual(payload, indices, threshold) {
+  function withSearchScope(body, allowedVideoPaths) {
+    if (allowedVideoPaths == null) return body;
+    return { ...body, allowed_video_paths: Array.from(allowedVideoPaths) };
+  }
+
+  function searchVisual(payload, indices, threshold, allowedVideoPaths = null) {
     const cfg = Config.get();
     const isScene = payload.start_frame != null || payload.end_frame != null;
-    return post('/api/v1/search_visual', {
+    return post('/api/v1/search_visual', withSearchScope({
       ...payload,
       indices,
       threshold,
@@ -92,12 +97,12 @@ const Api = (() => {
       scene_aggregation: cfg.visualAgg || 'mean',
       centered: !!cfg.visualCentered,
       query_frames: isScene ? cfg.visualSceneFrames : cfg.visualVideoFrames,
-    });
+    }, allowedVideoPaths));
   }
 
-  function search(query, indices, threshold) {
+  function search(query, indices, threshold, allowedVideoPaths = null) {
     const cfg = Config.get();
-    return post('/api/v1/search', {
+    return post('/api/v1/search', withSearchScope({
       query,
       indices,
       threshold,
@@ -111,7 +116,7 @@ const Api = (() => {
       use_dedup: !!cfg.dedup,
       dedup_threshold: cfg.dedupThreshold != null ? cfg.dedupThreshold : 0.95,
       use_mini_rerank: !!cfg.miniRerank,
-    }, cfg.miniRerank ? LONG_TIMEOUT_MS : DEFAULT_TIMEOUT_MS);
+    }, allowedVideoPaths), cfg.miniRerank ? LONG_TIMEOUT_MS : DEFAULT_TIMEOUT_MS);
   }
 
   /* 批量导出片段为真实 MP4，clips: [{video_path, start_frame, end_frame}]，prompt 用作导出目录名 */
@@ -142,9 +147,9 @@ const Api = (() => {
   }
 
   /* 混合检索：文本提示词 × 视觉片段 两路融合。textThreshold 不传时退回配置值 */
-  function searchHybrid(query, payload, indices, textThreshold) {
+  function searchHybrid(query, payload, indices, textThreshold, allowedVideoPaths = null) {
     const cfg = Config.get();
-    return post('/api/v1/search_hybrid', {
+    return post('/api/v1/search_hybrid', withSearchScope({
       query,
       ...payload,
       indices,
@@ -158,7 +163,7 @@ const Api = (() => {
       exclude_self: true,
       start_frame_offset: -2,
       end_frame_offset: 2,
-    });
+    }, allowedVideoPaths));
   }
 
   /* 语义查重：场景向量 → 视频级相似分组（纯 CPU，不加载模型） */
@@ -175,11 +180,25 @@ const Api = (() => {
     });
   }
 
-  /* 查询索引内已收录的视频路径（供未索引提醒对比） */
-  async function indexContents(lancePath) {
+  /* 查询索引覆盖状态：可搜索路径 + 已检查但无有效场景的跳过路径。 */
+  async function indexCoverage(lancePath) {
     const r = await fetchJson(
       `${Config.baseUrl()}/api/v1/index/contents?path=${encodeURIComponent(lancePath)}`);
-    return (r.data && r.data.video_paths) || [];
+    const data = r.data || {};
+    const indexedPaths = data.video_paths || [];
+    const skippedPaths = data.skipped_paths || [];
+    const failedPaths = data.failed_paths || [];
+    return {
+      indexedPaths,
+      skippedPaths,
+      failedPaths,
+      // 兼容尚未升级的后端：旧响应没有 processed_paths 时退回已索引路径。
+      processedPaths: data.processed_paths || indexedPaths.concat(skippedPaths, failedPaths),
+    };
+  }
+
+  async function indexContents(lancePath) {
+    return (await indexCoverage(lancePath)).indexedPaths;
   }
 
   function previewUrl(videoPath, frame) {
@@ -194,6 +213,6 @@ const Api = (() => {
   return {
     health, listIndexes, listModels, startIndex, indexStatus, cancelIndex,
     search, searchVisual, searchHybrid, exportClips, shutdown, describe,
-    analyzeShot, dedupScan, indexContents, previewUrl, clipUrl,
+    analyzeShot, dedupScan, indexCoverage, indexContents, previewUrl, clipUrl,
   };
 })();

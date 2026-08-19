@@ -100,6 +100,59 @@ async function run() {
     ],
     '自定义文件夹范围也应包含本级及全部子文件夹中的视频',
   );
+
+  const coverage = bridge.summarizeIndexCoverage(
+    [
+      { filePath: 'D:\\library\\searchable.mp4' },
+      { filePath: 'D:\\library\\blank.mp4' },
+      { filePath: 'D:\\library\\broken.mp4' },
+      { filePath: 'D:\\library\\new.mp4' },
+    ],
+    [{
+      indexedPaths: ['d:/library/searchable.mp4'],
+      skippedPaths: ['D:/LIBRARY/blank.mp4'],
+      failedPaths: ['d:/library/broken.mp4'],
+      processedPaths: [
+        'd:/library/searchable.mp4',
+        'D:/LIBRARY/blank.mp4',
+        'd:/library/broken.mp4',
+      ],
+    }],
+  );
+  assert.deepStrictEqual(
+    { ...coverage },
+    { indexed: 1, skipped: 1, failed: 1, missing: 1 },
+    '无有效场景的素材应计为已处理跳过，而不是反复计入未索引',
+  );
+
+  assert.strictEqual(
+    bridge.indexHintText({ missing: 0, skipped: 620, failed: 1 }),
+    '',
+    '没有新素材时不应反复展示历史跳过和失败数量',
+  );
+  assert.strictEqual(
+    bridge.indexHintText({ missing: 4, skipped: 620, failed: 1 }),
+    '4 个新视频未索引',
+    '检测到新素材时只提示真正未索引的数量',
+  );
+  assert.deepStrictEqual(
+    { ...bridge.indexOutcomeDelta(
+      { skipped: 623, failed: 2 },
+      { skipped: 620, failed: 1 },
+      true,
+    ) },
+    { skipped: 3, failed: 1 },
+    '索引完成时只提示本轮新增的跳过和失败数量',
+  );
+  assert.deepStrictEqual(
+    { ...bridge.indexOutcomeDelta(
+      { skipped: 623, failed: 2 },
+      { skipped: 0, failed: 0 },
+      false,
+    ) },
+    { skipped: 0, failed: 0 },
+    '首次建立素材库基线时不应重放历史跳过提示',
+  );
 }
 
 run()

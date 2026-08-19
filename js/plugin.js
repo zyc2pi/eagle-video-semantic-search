@@ -2,6 +2,7 @@
 (() => {
   const $ = (id) => document.getElementById(id);
   let serviceOnline = false;
+  let lastIndexSummary = null;
 
   /* 外部字符串（文件名/标签/查询词）进 innerHTML 前必须转义 */
   function esc(s) {
@@ -54,6 +55,7 @@
 
   // ---------- 建索引 ----------
   async function startIndexing(mode) {
+    await ensureIndexOutcomeBaseline();
     const result = await Indexer.start(mode, {
       onProgress(status) {
         const pct = status.total > 0 ? Math.round((status.current / status.total) * 100) : 0;
@@ -62,15 +64,29 @@
         $('index-progress-text').textContent =
           `${status.current}/${status.total}  ${status.current_video || '准备中…'}${queued}`;
       },
-      onDone(status) {
+      async onDone(status) {
         $('index-progress').classList.add('hidden');
         updateButtons();
+        let outcome = { newSkipped: 0, newFailed: 0 };
+        try {
+          const refreshed = await refreshIndexHint({ announceOutcome: true });
+          if (refreshed) outcome = refreshed;
+        } catch { /* refreshIndexHint 内部已记录错误 */ }
         if (status.state === 'cancelled') {
           toast(`已停止索引（已完成 ${status.current}/${status.total}，已写入部分保留，再次点击可增量续跑）`, false, 5000);
         } else {
-          toast(`索引完成：本次新增 ${status.total} 个视频`);
+          let message = `索引完成：本轮处理 ${status.total} 个视频`;
+          if (outcome.newSkipped > 0) {
+            message += `，其中 ${outcome.newSkipped} 个无有效场景已跳过`;
+          }
+          if (outcome.newFailed > 0) {
+            message += `，${outcome.newFailed} 个处理失败`;
+          }
+          if (outcome.newSkipped > 0 || outcome.newFailed > 0) {
+            message += '（详情见服务日志）';
+          }
+          toast(message, false, 6000);
         }
-        refreshIndexHint();
       },
       onError(message) {
         $('index-progress').classList.add('hidden');
@@ -234,6 +250,7 @@
       return;
     }
     const btn = $('btn-search');
+    hideResolvedIndexHintForSearch();
     btn.disabled = true;
     btn.textContent = '搜索中…';
     toast(`正在以${label}搜索相似场景…`);
@@ -446,6 +463,7 @@
       prompts.slice(1).reverse().forEach((p) => pushHistory(p));
       pushHistory(prompts[0]);
       toast(`生成提示词：${prompts.join(' / ')}，正在做文本×视觉混合检索…`, false, 7000);
+      hideResolvedIndexHintForSearch();
       const scope = await resolveSearchScope();
       // 文本阈值取滑条现值（与文本搜索一致），而不是上次保存的配置值
       const sliderThreshold = parseFloat($('threshold').value);
@@ -662,11 +680,12 @@
       let indexedCount = 0;
       if (serviceOnline) {
         const indices = await Search.findLibraryIndexes();
-        const indexed = new Set();
+        const coverages = [];
         for (const p of indices) {
-          (await Api.indexContents(p)).forEach((v) => indexed.add(Bridge.normalizePath(v)));
+          coverages.push(await Api.indexCoverage(p));
         }
-        indexedCount = videos.filter((v) => indexed.has(Bridge.normalizePath(v.filePath))).length;
+        const summary = Bridge.summarizeIndexCoverage(videos, coverages);
+        indexedCount = summary.indexed;
       }
 
       // 标签分布 + 提纯产出
@@ -862,26 +881,68 @@
   async function countMissingVideos() {
     const videos = await Bridge.collectLibraryVideos();
     const indices = await Search.findLibraryIndexes();
-    if (indices.length === 0) return videos.length;
-    const indexed = new Set();
-    for (const p of indices) {
-      (await Api.indexContents(p)).forEach((v) => indexed.add(Bridge.normalizePath(v)));
+    if (indices.length === 0) {
+      return { indexed: 0, skipped: 0, failed: 0, missing: videos.length };
     }
-    return videos.filter((v) => !indexed.has(Bridge.normalizePath(v.filePath))).length;
+    const coverages = [];
+    for (const p of indices) {
+      coverages.push(await Api.indexCoverage(p));
+    }
+    return Bridge.summarizeIndexCoverage(videos, coverages);
   }
 
-  async function refreshIndexHint() {
+  async function ensureIndexOutcomeBaseline() {
+    const cfg = Config.get();
+    const library = eagle.library.path || '';
+    if (cfg.indexOutcomeLibrary === library) return;
+    try {
+      const summary = lastIndexSummary || await countMissingVideos();
+      lastIndexSummary = summary;
+      Config.save({
+        indexOutcomeLibrary: library,
+        indexOutcomeSkipped: summary.skipped,
+        indexOutcomeFailed: summary.failed,
+      });
+    } catch (e) {
+      console.warn('初始化索引结果提示基线失败', e);
+    }
+  }
+
+  function hideResolvedIndexHintForSearch() {
+    if (lastIndexSummary && lastIndexSummary.missing === 0) {
+      $('index-hint').classList.add('hidden');
+    }
+  }
+
+  async function refreshIndexHint({ announceOutcome = false } = {}) {
     if (!serviceOnline) return;
+    if (Indexer.isRunning() && !announceOutcome) return;
     const hint = $('index-hint');
     try {
-      const missing = await countMissingVideos();
-      hint.textContent = missing > 0 ? `${missing} 个新视频未索引` : '索引已同步';
-      hint.classList.toggle('warn', missing > 0);
-      if (missing > 0 && !Config.get().autoIndex) {
-        toast(`发现 ${missing} 个视频尚未索引，点「索引整个库」增量补齐`, false, 5000);
-      }
+      const summary = await countMissingVideos();
+      lastIndexSummary = summary;
+
+      const cfg = Config.get();
+      const library = eagle.library.path || '';
+      const sameLibrary = cfg.indexOutcomeLibrary === library;
+      const delta = Bridge.indexOutcomeDelta(summary, {
+        skipped: cfg.indexOutcomeSkipped,
+        failed: cfg.indexOutcomeFailed,
+      }, announceOutcome && sameLibrary);
+      Config.save({
+        indexOutcomeLibrary: library,
+        indexOutcomeSkipped: summary.skipped,
+        indexOutcomeFailed: summary.failed,
+      });
+
+      hint.textContent = Bridge.indexHintText(summary);
+      hint.title = hint.textContent ? '检测到新视频，完成增量索引后会自动隐藏' : '';
+      hint.classList.toggle('warn', summary.missing > 0);
+      hint.classList.toggle('hidden', summary.missing === 0);
+      return { ...summary, newSkipped: delta.skipped, newFailed: delta.failed };
     } catch (e) {
       console.warn('索引对比失败', e);
+      return { newSkipped: 0, newFailed: 0 };
     }
   }
 
@@ -892,7 +953,7 @@
     if (!Config.get().autoIndex || Indexer.isRunning()) return;
     try {
       if (!serviceOnline && !(await Service.ensure(setServiceStatus))) return;
-      const missing = await countMissingVideos();
+      const { missing } = await countMissingVideos();
       if (missing > 0) {
         console.log(`[AutoIndex] 发现 ${missing} 个新视频，自动增量索引`);
         await startIndexing('all');
@@ -947,6 +1008,7 @@
   async function doSearch() {
     const query = $('query').value.trim();
     if (!query) return;
+    hideResolvedIndexHintForSearch();
     const btn = $('btn-search');
     btn.disabled = true;
     btn.textContent = '搜索中…';
@@ -1056,7 +1118,7 @@
       indexSampleInterval: parseInt($('cfg-idx-sample-interval').value, 10) || 5,
       indexResolution: parseInt($('cfg-idx-resolution').value, 10) || 256,
       indexMinSceneLen: parseInt($('cfg-idx-min-scene').value, 10) || 7,
-      indexBatchSize: parseInt($('cfg-idx-batch').value, 10) || 128,
+      indexBatchSize: parseInt($('cfg-idx-batch').value, 10) || 8,
       indexSceneThreshold: parseFloat($('cfg-idx-scene-threshold').value) || 0.85,
       indexLocalmaxOrder: parseInt($('cfg-idx-localmax').value, 10) || 2,
       indexFp16: $('cfg-idx-fp16').checked,
@@ -1189,6 +1251,7 @@
 
   eagle.onPluginShow(() => {
     if (!serviceOnline) Service.ensure(setServiceStatus);
+    else if (!Indexer.isRunning()) refreshIndexHint();
   });
 
   eagle.onThemeChanged(() => applyTheme());

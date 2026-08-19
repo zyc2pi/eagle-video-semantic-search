@@ -243,13 +243,13 @@ const Search = (() => {
   async function run(query, threshold, scopeSet = null) {
     const indices = await prepare();
     if (!indices) return NO_INDEX;
-    return finishSearch(await Api.search(query, indices, threshold), scopeSet, query);
+    return finishSearch(await Api.search(query, indices, threshold, scopeSet), scopeSet, query);
   }
 
   async function runVisual(payload, scopeSet = null, label = '') {
     const indices = await prepare();
     if (!indices) return NO_INDEX;
-    const resp = await Api.searchVisual(payload, indices, Config.get().visualThreshold);
+    const resp = await Api.searchVisual(payload, indices, Config.get().visualThreshold, scopeSet);
     return finishSearch(resp, scopeSet, label || '视觉搜索');
   }
 
@@ -257,7 +257,7 @@ const Search = (() => {
   async function runHybrid(query, payload, scopeSet = null, textThreshold = null) {
     const indices = await prepare();
     if (!indices) return NO_INDEX;
-    const resp = await Api.searchHybrid(query, payload, indices, textThreshold);
+    const resp = await Api.searchHybrid(query, payload, indices, textThreshold, scopeSet);
     return finishSearch(resp, scopeSet, query);
   }
 

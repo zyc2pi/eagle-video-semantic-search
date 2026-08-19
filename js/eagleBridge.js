@@ -32,6 +32,59 @@ const Bridge = (() => {
     return String(p || '').replace(/\//g, '\\').toLowerCase();
   }
 
+  /* 把一个或多个索引的覆盖清单映射回当前 Eagle 素材库。 */
+  function summarizeIndexCoverage(videos, coverages) {
+    const indexed = new Set();
+    const skipped = new Set();
+    const failed = new Set();
+    const processed = new Set();
+    (coverages || []).forEach((coverage) => {
+      (coverage.indexedPaths || []).forEach((p) => indexed.add(normalizePath(p)));
+      (coverage.skippedPaths || []).forEach((p) => skipped.add(normalizePath(p)));
+      (coverage.failedPaths || []).forEach((p) => failed.add(normalizePath(p)));
+      (coverage.processedPaths || []).forEach((p) => processed.add(normalizePath(p)));
+    });
+    indexed.forEach((p) => processed.add(p));
+    skipped.forEach((p) => processed.add(p));
+    failed.forEach((p) => processed.add(p));
+
+    let indexedCount = 0;
+    let skippedCount = 0;
+    let failedCount = 0;
+    let missingCount = 0;
+    (videos || []).forEach((video) => {
+      const path = normalizePath(video.filePath);
+      if (indexed.has(path)) indexedCount += 1;
+      else if (skipped.has(path)) skippedCount += 1;
+      else if (failed.has(path)) failedCount += 1;
+      else if (!processed.has(path)) missingCount += 1;
+    });
+    return {
+      indexed: indexedCount,
+      skipped: skippedCount,
+      failed: failedCount,
+      missing: missingCount,
+    };
+  }
+
+  /* 常驻工具栏只提醒真正尚未处理的新视频；跳过/失败只在本轮结束时提示一次。 */
+  function indexHintText(coverage) {
+    const missing = Number(coverage && coverage.missing) || 0;
+    return missing > 0 ? `${missing} 个新视频未索引` : '';
+  }
+
+  function indexOutcomeDelta(coverage, previous, sameLibrary) {
+    if (!sameLibrary) return { skipped: 0, failed: 0 };
+    return {
+      skipped: Math.max(0,
+        (Number(coverage && coverage.skipped) || 0)
+        - (Number(previous && previous.skipped) || 0)),
+      failed: Math.max(0,
+        (Number(coverage && coverage.failed) || 0)
+        - (Number(previous && previous.failed) || 0)),
+    };
+  }
+
   /* 与 Python 侧 sanitize_name 对齐：保留字母数字（含中文）与 空格 . _ - */
   function sanitizeName(name) {
     const kept = Array.from(String(name || ''))
@@ -226,6 +279,9 @@ const Bridge = (() => {
     isImageItem,
     findOrCreateFolder,
     normalizePath,
+    summarizeIndexCoverage,
+    indexHintText,
+    indexOutcomeDelta,
     sanitizeName,
     indexNameForLibrary,
     collectLibraryVideos,
