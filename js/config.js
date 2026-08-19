@@ -23,7 +23,7 @@ const Config = (() => {
     indexSampleInterval: 5,      // 每 N 帧取 1 帧，越小越精细越慢
     indexResolution: 256,        // 抽帧短边像素
     indexMinSceneLen: 7,         // 最小场景长度（帧），更短的场景会被合并
-    indexBatchSize: 128,         // GPU 批大小
+    indexBatchSize: 8,           // GPU 流水线批大小（FG-CLIP2 微批上限为 8）
     indexSceneThreshold: 0.85,   // 场景切分余弦阈值，越高切得越碎
     indexLocalmaxOrder: 2,       // 边界检测局部极小值阶数
     indexFp16: true,             // FP16 推理（仅 NVIDIA GPU 生效）
@@ -34,6 +34,10 @@ const Config = (() => {
     scopeLibrary: '',            // 勾选时所在的库路径，换库后自动重置为 all
     // 静默自动索引：插件随 Eagle 后台运行时，定时检查新素材并自动增量索引
     autoIndex: false,
+    // 最近一次已确认的索引结果，仅用于计算“本轮新跳过/失败”并提示一次。
+    indexOutcomeLibrary: '',
+    indexOutcomeSkipped: 0,
+    indexOutcomeFailed: 0,
     deepseekKey: '',    // DeepSeek API key，注入服务进程环境供 AI 查询增强使用
     aiEnhance: false,   // AI 查询增强总开关：双语改写（需配置 DeepSeek key）
     aiExpand: false,    // AI 语义扩展：额外生成同义/场景变体查询（最多 8 条，多路合并）
