@@ -3,6 +3,12 @@
   const $ = (id) => document.getElementById(id);
   let serviceOnline = false;
   let lastIndexSummary = null;
+  let indexMode = 'all';
+  const INDEX_MODES = {
+    all: '索引整个库',
+    folder: '索引选中文件夹',
+    selected: '索引选中素材',
+  };
 
   /* 外部字符串（文件名/标签/查询词）进 innerHTML 前必须转义 */
   function esc(s) {
@@ -35,7 +41,16 @@
     $('service-dot').className = `dot ${state}`;
     $('service-text').textContent = message;
     updateButtons();
-    if (serviceOnline && !wasOnline) refreshIndexHint();
+    if (serviceOnline && !wasOnline) {
+      refreshIndexHint();
+      Indexer.recover(indexHandlers()).then((job) => {
+        if (job) {
+          $('index-progress').classList.remove('hidden');
+          $('index-progress-text').textContent = '已恢复未完成索引任务的监视';
+          updateButtons();
+        }
+      }).catch((error) => { $('index-hint').textContent = error.message; });
+    }
     // 新机器上项目路径多半不对：首次检测到路径无效时自动弹出设置页引导配置
     if (state === 'offline' && !settingsAutoOpened
         && /项目路径无效|找不到便携 Python/.test(message)) {
@@ -45,24 +60,53 @@
   }
 
   function updateButtons() {
-    const indexing = Indexer.isRunning();
+    const indexing = Indexer.isRunning() || Search.isBusy();
     $('btn-search').disabled = !serviceOnline || indexing;
-    $('btn-visual-selected').disabled = !serviceOnline || indexing;
-    ['btn-index-all', 'btn-index-folder', 'btn-index-selected'].forEach((id) => {
+    ['btn-index-primary', 'btn-index-menu-toggle'].forEach((id) => {
       $(id).disabled = !serviceOnline || indexing;
     });
+    if (indexing) closeIndexModeMenu();
+  }
+
+  function closeIndexModeMenu() {
+    $('index-mode-menu').classList.add('hidden');
+    $('index-mode-picker').classList.remove('open');
+    $('btn-index-menu-toggle').setAttribute('aria-expanded', 'false');
+  }
+
+  function toggleIndexModeMenu() {
+    if ($('btn-index-menu-toggle').disabled) return;
+    const opening = $('index-mode-menu').classList.contains('hidden');
+    $('index-mode-menu').classList.toggle('hidden', !opening);
+    $('index-mode-picker').classList.toggle('open', opening);
+    $('btn-index-menu-toggle').setAttribute('aria-expanded', String(opening));
+  }
+
+  function selectIndexMode(mode) {
+    if (!Object.prototype.hasOwnProperty.call(INDEX_MODES, mode)) return;
+    indexMode = mode;
+    $('btn-index-primary').textContent = INDEX_MODES[mode];
+    document.querySelectorAll('[data-index-mode]').forEach((option) => {
+      const active = option.dataset.indexMode === mode;
+      option.classList.toggle('active', active);
+      option.setAttribute('aria-checked', String(active));
+    });
+    closeIndexModeMenu();
   }
 
   // ---------- 建索引 ----------
-  async function startIndexing(mode) {
-    await ensureIndexOutcomeBaseline();
-    const result = await Indexer.start(mode, {
+  function indexHandlers() {
+    return {
+      onConnection(online, message) {
+        setServiceStatus(online ? 'online' : 'offline', message);
+        $('index-progress-text').textContent = message;
+      },
       onProgress(status) {
         const pct = status.total > 0 ? Math.round((status.current / status.total) * 100) : 0;
         $('index-bar-fill').style.width = `${pct}%`;
         const queued = status.queued > 0 ? `（队列还有 ${status.queued} 个任务）` : '';
         $('index-progress-text').textContent =
-          `${status.current}/${status.total}  ${status.current_video || '准备中…'}${queued}`;
+          status.state === 'queued' ? `任务已排队${queued}` : `${status.current}/${status.total}  ${status.current_video || '准备中…'}${queued}`;
       },
       async onDone(status) {
         $('index-progress').classList.add('hidden');
@@ -82,6 +126,9 @@
           if (outcome.newFailed > 0) {
             message += `，${outcome.newFailed} 个处理失败`;
           }
+          if (status.pruned > 0) {
+            message += `，清理 ${status.pruned} 个已删除素材`;
+          }
           if (outcome.newSkipped > 0 || outcome.newFailed > 0) {
             message += '（详情见服务日志）';
           }
@@ -93,8 +140,14 @@
         updateButtons();
         toast(`索引失败：${message}`, true, 6000);
       },
-    });
+    };
+  }
 
+  async function startIndexing(mode) {
+    if (Search.isBusy()) { toast('搜索进行中，请稍候再建索引'); return; }
+    closeIndexModeMenu();
+    await ensureIndexOutcomeBaseline();
+    const result = await Indexer.start(mode, indexHandlers());
     if (!result.started) {
       toast(result.message, true);
       return;
@@ -115,6 +168,8 @@
 
   // ---------- 搜索范围选择器（整库 / 跟随 Eagle 选中 / 指定文件夹，均递归子文件夹）----------
   let scopeDialogChecked = new Set(); // 对话框内当前勾选的文件夹 id
+  let scopeDialogExpanded = new Set(); // 对话框每次打开时默认全部折叠
+  let scopeFolderRoots = [];
 
   function updateScopeButton() {
     const cfg = Config.get();
@@ -134,34 +189,33 @@
     }
   }
 
-  /* 把任意形状的文件夹树安全地打平成 [{id, name, depth, childCount}]：
-     visited 防环、防重复；深度封顶，避免异常结构把行推到不可见位置 */
-  function flattenFolderTree(roots) {
-    const rows = [];
-    const visited = new Set();
-    const walk = (node, depth) => {
-      if (!node || typeof node !== 'object') return;
-      const id = node.id || node.folderId;
-      if (!id || visited.has(id)) return;
-      visited.add(id);
-      const children = Array.isArray(node.children) ? node.children : [];
-      rows.push({
-        id,
-        name: node.name || node.title || '(未命名)',
-        depth: Math.min(depth, 10),
-        childCount: children.length,
-      });
-      children.forEach((c) => walk(c, depth + 1));
-    };
-    (roots || []).forEach((r) => walk(r, 0));
-    return rows;
-  }
-
   function renderFolderRows(rows, container) {
+    const scrollTop = container.scrollTop;
+    container.innerHTML = '';
     rows.forEach((r) => {
       const row = document.createElement('div');
       row.className = 'folder-row';
-      row.style.paddingLeft = `${r.depth * 16}px`;
+      row.style.paddingLeft = `${r.depth * 18}px`;
+
+      if (r.hasChildren) {
+        const toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.className = 'folder-toggle';
+        toggle.textContent = r.expanded ? '▾' : '▸';
+        toggle.setAttribute('aria-expanded', String(r.expanded));
+        toggle.setAttribute('aria-label', `${r.expanded ? '收起' : '展开'} ${r.name}`);
+        toggle.addEventListener('click', () => {
+          if (r.expanded) scopeDialogExpanded.delete(r.id);
+          else scopeDialogExpanded.add(r.id);
+          renderFolderTree(container);
+        });
+        row.appendChild(toggle);
+      } else {
+        const spacer = document.createElement('span');
+        spacer.className = 'folder-toggle-spacer';
+        row.appendChild(spacer);
+      }
+
       const cb = document.createElement('input');
       cb.type = 'checkbox';
       cb.checked = scopeDialogChecked.has(r.id);
@@ -172,17 +226,26 @@
         document.querySelector('input[name="scope-mode"][value="custom"]').checked = true;
       });
       const name = document.createElement('span');
+      name.className = 'folder-name';
       name.textContent = r.name + (r.childCount ? `（${r.childCount} 个子文件夹）` : '');
       name.title = r.name;
       row.appendChild(cb);
       row.appendChild(name);
       container.appendChild(row);
     });
+    container.scrollTop = scrollTop;
+  }
+
+  function renderFolderTree(container) {
+    const rows = ScopeFolderTree.flattenVisible(scopeFolderRoots, scopeDialogExpanded);
+    renderFolderRows(rows, container);
   }
 
   async function openScopeDialog() {
     const cfg = Config.get();
     scopeDialogChecked = new Set(cfg.scopeFolderIds || []);
+    scopeDialogExpanded = new Set();
+    scopeFolderRoots = [];
     document.querySelectorAll('input[name="scope-mode"]').forEach((r) => {
       r.checked = r.value === (cfg.scopeMode || 'all');
     });
@@ -191,17 +254,17 @@
     $('scope-dialog').showModal();
     try {
       const roots = await Bridge.getFolderTree();
-      const rows = flattenFolderTree(roots);
-      console.log(`[Scope] 顶层 ${roots.length} 个，打平后 ${rows.length} 个文件夹`);
-      tree.innerHTML = '';
+      scopeFolderRoots = roots;
+      const rows = ScopeFolderTree.flattenVisible(roots, scopeDialogExpanded);
+      console.log(`[Scope] 顶层 ${roots.length} 个，初始显示 ${rows.length} 个文件夹`);
       if (rows.length === 0) {
-        // 打平后为空说明返回结构完全对不上，把原始结构的关键信息亮出来便于排查
+        // 可见行为空说明返回结构完全对不上，把原始结构的关键信息亮出来便于排查
         const sample = roots.length ? Object.keys(roots[0]).join(', ') : '(空列表)';
         tree.innerHTML = `<p class="hint">没有读取到文件夹。原始返回 ${roots.length} 项，`
           + `首项字段: ${sample}</p>`;
         return;
       }
-      renderFolderRows(rows, tree);
+      renderFolderTree(tree);
     } catch (e) {
       console.error('[Scope] 读取文件夹树失败', e);
       tree.innerHTML = `<p class="hint" style="color:var(--danger)">读取文件夹失败：${e.message}</p>`;
@@ -222,25 +285,10 @@
 
   /* 按当前范围设置返回路径集合；整库返回 null（不过滤） */
   async function resolveSearchScope() {
-    const cfg = Config.get();
-    if (cfg.scopeMode === 'selected') {
-      const scope = await Bridge.folderScopePathSet();
-      if (scope === null) {
-        throw new Error('范围是「跟随 Eagle 选中」，请先在 Eagle 中选中要搜索的文件夹');
-      }
-      if (scope.size === 0) {
-        throw new Error('选中的文件夹（含子文件夹）内没有视频素材');
-      }
-      return scope;
-    }
-    if (cfg.scopeMode === 'custom') {
-      const scope = await Bridge.pathSetFromFolderIds(cfg.scopeFolderIds);
-      if (scope.size === 0) {
-        throw new Error('指定的文件夹（含子文件夹）内没有视频素材，点「范围」重新选择');
-      }
-      return scope;
-    }
-    return null;
+    const context = await SearchRecipe.currentContext();
+    $('time-warning').textContent = context.missingDates
+      ? `${context.missingDates} 个素材缺少导入时间，已排除` : '';
+    return context;
   }
 
   // ---------- 视觉检索（以图搜视频 / 以片搜片） ----------
@@ -257,6 +305,7 @@
     try {
       const scope = await resolveSearchScope();
       const r = await Search.runVisual(payload, scope, label);
+      if (r.cancelled || r.stale) return;
       if (!r.ok) toast(r.message, true, 5000);
       else if (r.count === 0) toast('没有相似场景（可在设置中降低视觉阈值）');
       else toast(`找到 ${r.count} 个相似场景`);
@@ -264,222 +313,8 @@
       console.error(e);
       toast(`搜索出错：${e.message}`, true, 5000);
     } finally {
-      btn.textContent = '搜索';
+      btn.textContent = Search.isBusy() ? '搜索中…' : '搜索';
       updateButtons();
-    }
-  }
-
-  async function visualSearchFromSelection() {
-    const items = await eagle.item.getSelected();
-    const video = (items || []).find((it) => Bridge.isVideoItem(it));
-    if (video) {
-      await doVisualSearch({ video_path: video.filePath }, `素材「${video.name}」`);
-      return;
-    }
-    const image = (items || []).find((it) => Bridge.isImageItem(it));
-    if (image) {
-      await doVisualSearch({ image_path: image.filePath }, `图片「${image.name}」`);
-      return;
-    }
-    toast('请先在 Eagle 中选中一个视频或图片素材', true);
-  }
-
-  // ---------- 导出片段并导回 Eagle ----------
-  function matchesForBatchAction() {
-    const picked = Search.getSelectedMatches();
-    if (picked) return { matches: picked, picked: true };
-    const all = Search.getAllMatches();
-    return { matches: all, picked: false };
-  }
-
-  async function exportSelected() {
-    const { matches, picked } = matchesForBatchAction();
-    if (matches.length === 0) return;
-    if (!picked && matches.length > 50) {
-      toast(`结果有 ${matches.length} 条，请先勾选要导出的片段（悬停卡片左上角勾选）`, true, 5000);
-      return;
-    }
-    const query = Search.getLastQuery() || '语义搜索';
-    const btn = $('btn-export');
-    btn.disabled = true;
-    btn.textContent = `导出中 0/${matches.length}…`;
-    try {
-      const resp = await Api.exportClips(matches, query);
-      const data = resp.data;
-      if (!resp.ok || !data || !data.success) {
-        toast((data && data.error) || `导出失败（HTTP ${resp.status}）`, true, 6000);
-        return;
-      }
-      const files = data.exported_files || [];
-      btn.textContent = `导入 Eagle 0/${files.length}…`;
-      const folderId = await Bridge.findOrCreateFolder(`语义搜索_${query}`.slice(0, 60));
-      let imported = 0;
-      for (const f of files) {
-        try {
-          await eagle.item.addFromPath(f.output_path, {
-            name: f.filename.replace(/\.[^.]+$/, ''),
-            tags: [query],
-            folders: [folderId],
-            annotation: `来源: ${f.video_path}\n片段: ${f.start || ''} – ${f.end || ''}`,
-          });
-          imported += 1;
-          btn.textContent = `导入 Eagle ${imported}/${files.length}…`;
-        } catch (e) {
-          console.error('导入失败', f.output_path, e);
-        }
-      }
-      const failed = (data.errors || []).length;
-      toast(`导出 ${data.exported_count} 个片段，已导入 Eagle 文件夹「语义搜索_${query}」${imported} 个`
-        + (failed ? `（${failed} 个切割失败）` : ''), false, 6000);
-      await eagle.folder.open(folderId).catch(() => {});
-    } catch (e) {
-      console.error(e);
-      toast(`导出出错：${e.message}`, true, 6000);
-    } finally {
-      btn.textContent = '导出片段';
-      btn.disabled = false;
-      const sel = Search.getSelectedMatches(); // 勾选仍在，按钮计数不能清零
-      updateBatchButtons(sel ? sel.length : 0, Search.getRawMatches().length);
-    }
-  }
-
-  // ---------- 给结果素材打标签 ----------
-  async function tagResults() {
-    const { matches, picked } = matchesForBatchAction();
-    const query = (Search.getLastQuery() || '').trim();
-    if (!query || matches.length === 0) return;
-    if (!picked && matches.length > 50) {
-      // 与导出同一道闸门：打标签逐个写 Eagle 元数据且不可撤销，防误触全量
-      toast(`结果有 ${matches.length} 条，请先勾选要打标签的片段（悬停卡片左上角勾选）`, true, 5000);
-      return;
-    }
-    const items = new Map();
-    matches.forEach((m) => {
-      const item = Bridge.itemForPath(m.video_path);
-      if (item) items.set(item.id, item);
-    });
-    let tagged = 0;
-    for (const item of items.values()) {
-      try {
-        const tags = Array.isArray(item.tags) ? item.tags : [];
-        if (!tags.includes(query)) {
-          item.tags = [...tags, query];
-          await item.save();
-          tagged += 1;
-        }
-      } catch (e) {
-        console.error('打标签失败', item.id, e);
-      }
-    }
-    toast(`已给 ${tagged} 个素材打上标签「${query}」（${items.size - tagged} 个已有该标签）`);
-  }
-
-  // ---------- 镜头分析打标签（运镜/景别） ----------
-  async function shotTagResults() {
-    const { matches, picked } = matchesForBatchAction();
-    if (matches.length === 0) return;
-    if (!picked && matches.length > 50) {
-      toast(`结果有 ${matches.length} 条，请先勾选要分析的片段（悬停卡片左上角勾选）`, true, 5000);
-      return;
-    }
-    const btn = $('btn-shot-tag');
-    btn.disabled = true;
-    // 每个 Eagle 素材聚合其全部命中片段的标签（同素材多场景取并集）
-    const perItem = new Map(); // itemId -> { item, tags:Set }
-    let analyzed = 0;
-    let failed = 0;
-    const notes = new Set();
-    try {
-      for (const m of matches) {
-        btn.textContent = `分析中 ${analyzed + failed}/${matches.length}…`;
-        const item = Bridge.itemForPath(m.video_path);
-        if (!item) { failed += 1; continue; }
-        try {
-          const resp = await Api.analyzeShot(m.video_path, m.start_frame, m.end_frame);
-          if (!resp.ok || !resp.data || !resp.data.success) {
-            failed += 1;
-            continue;
-          }
-          (resp.data.notes || []).forEach((n) => notes.add(n));
-          const entry = perItem.get(item.id) || { item, tags: new Set() };
-          (resp.data.tags || []).forEach((t) => entry.tags.add(t));
-          perItem.set(item.id, entry);
-          analyzed += 1;
-        } catch (e) {
-          console.error('镜头分析失败', m.video_path, e);
-          failed += 1;
-        }
-      }
-      let tagged = 0;
-      for (const { item, tags } of perItem.values()) {
-        const add = [...tags].filter((t) => !(item.tags || []).includes(t));
-        if (add.length === 0) continue;
-        try {
-          item.tags = [...(item.tags || []), ...add];
-          await item.save();
-          tagged += 1;
-        } catch (e) {
-          console.error('写标签失败', item.id, e);
-        }
-      }
-      notes.forEach((n) => toast(n, false, 5000));
-      toast(`镜头分析完成：${analyzed} 个片段，${tagged} 个素材新增了运镜/景别标签`
-        + (failed ? `（${failed} 个失败）` : ''), false, 6000);
-    } finally {
-      btn.textContent = '镜头标签';
-      btn.disabled = false;
-    }
-  }
-
-  // ---------- 视频内容 → 提示词 → 搜索 ----------
-  async function describeAndSearch() {
-    const m = Search.getActiveMatch();
-    if (!m) return;
-    if (!serviceOnline || Indexer.isRunning()) {
-      toast('搜索服务未就绪或正在建索引', true);
-      return;
-    }
-    const btn = $('btn-describe');
-    btn.disabled = true;
-    btn.textContent = '分析画面中…';
-    toast('正在用视觉模型分析画面（首次需加载模型，约 20~40 秒）…', false, 8000);
-    try {
-      const resp = await Api.describe({
-        video_path: m.video_path,
-        start_frame: m.start_frame,
-        end_frame: m.end_frame,
-      });
-      if (!resp.ok || !resp.data || !resp.data.success) {
-        toast((resp.data && resp.data.error) || `分析失败（HTTP ${resp.status}）`, true, 6000);
-        return;
-      }
-      const prompts = resp.data.prompts || [];
-      if (prompts.length === 0) {
-        toast('没有生成出可用的提示词', true);
-        return;
-      }
-      // 混合检索：提示词文本 × 原片段视觉 两路融合，比单路更准
-      $('query').value = prompts[0];
-      prompts.slice(1).reverse().forEach((p) => pushHistory(p));
-      pushHistory(prompts[0]);
-      toast(`生成提示词：${prompts.join(' / ')}，正在做文本×视觉混合检索…`, false, 7000);
-      hideResolvedIndexHintForSearch();
-      const scope = await resolveSearchScope();
-      // 文本阈值取滑条现值（与文本搜索一致），而不是上次保存的配置值
-      const sliderThreshold = parseFloat($('threshold').value);
-      const r = await Search.runHybrid(prompts[0], {
-        video_path: m.video_path,
-        start_frame: m.start_frame,
-        end_frame: m.end_frame,
-      }, scope, Number.isFinite(sliderThreshold) ? sliderThreshold : null);
-      if (!r.ok) toast(r.message, true, 5000);
-      else toast(`混合检索找到 ${r.count} 个场景（带「双」标的两路均命中，最可信）`, false, 6000);
-    } catch (e) {
-      console.error(e);
-      toast(`分析出错：${e.message}`, true, 6000);
-    } finally {
-      btn.textContent = '生成提示词搜索';
-      btn.disabled = false;
     }
   }
 
@@ -537,127 +372,12 @@
   }
 
   // ---------- 结果存档 ----------
-  function savesDir() {
-    const path = require('path');
-    return path.join(Config.pluginPath(), 'saves');
-  }
-
   function saveResults() {
-    const matches = Search.getRawMatches();
-    if (matches.length === 0) return;
-    const fs = require('fs');
-    const path = require('path');
-    const query = Search.getLastQuery() || '未命名';
-    try {
-      fs.mkdirSync(savesDir(), { recursive: true });
-      const stamp = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 19);
-      const safe = query.replace(/[<>:"/\\|?*]/g, '_').slice(0, 40);
-      const file = path.join(savesDir(), `${stamp}_${safe}.json`);
-      fs.writeFileSync(file, JSON.stringify({
-        savedAt: new Date().toISOString(),
-        query,
-        library: eagle.library.path,
-        count: matches.length,
-        matches,
-      }), 'utf-8');
-      toast(`已保存 ${matches.length} 条结果为存档「${query}」`);
-    } catch (e) {
-      toast(`保存失败：${e.message}`, true);
-    }
+    Warehouse.saveCurrent();
   }
 
   function openArchives() {
-    const fs = require('fs');
-    const path = require('path');
-    const list = $('archive-list');
-    list.innerHTML = '';
-    let files = [];
-    try {
-      fs.mkdirSync(savesDir(), { recursive: true });
-      files = fs.readdirSync(savesDir()).filter((f) => f.endsWith('.json')).sort().reverse();
-    } catch { /* 目录不可读则显示空态 */ }
-    if (files.length === 0) {
-      list.innerHTML = '<p class="hint">还没有存档。搜索后点视图栏的「存结果」保存。</p>';
-    }
-    files.forEach((f) => {
-      const full = path.join(savesDir(), f);
-      let meta = null;
-      try {
-        meta = JSON.parse(fs.readFileSync(full, 'utf-8'));
-      } catch { return; }
-      const row = document.createElement('div');
-      row.className = 'archive-row';
-      const date = (meta.savedAt || '').slice(0, 16).replace('T', ' ');
-      row.innerHTML = `<span class="archive-name" title="${esc(f)}"><b>${esc(meta.query || '未命名')}</b>`
-        + ` · ${meta.count || (meta.matches || []).length} 条 · ${esc(date)}</span>`;
-      const load = document.createElement('button');
-      load.textContent = '载入';
-      load.addEventListener('click', async () => {
-        $('archive-dialog').close();
-        $('query').value = meta.query || '';
-        const n = await Search.loadResults(meta.matches || [], meta.query || '');
-        // 跨库存档整页会显示"素材已不在库中"，提前说明原因
-        if (meta.library && meta.library !== eagle.library.path) {
-          toast(`注意：这份存档来自其他素材库（${meta.library.split(/[\\/]/).pop()}），当前库中素材可能无法定位`, true, 7000);
-        } else {
-          toast(`已载入存档「${meta.query}」（${n} 条）`);
-        }
-      });
-      const del = document.createElement('button');
-      del.textContent = '删除';
-      del.addEventListener('click', () => {
-        // 两步确认：首次点击变红提示，再点才真删（存档删除不可恢复）
-        if (del.dataset.confirming !== '1') {
-          del.dataset.confirming = '1';
-          del.textContent = '确认删除?';
-          del.style.color = 'var(--danger)';
-          setTimeout(() => {
-            del.dataset.confirming = '';
-            del.textContent = '删除';
-            del.style.color = '';
-          }, 3000);
-          return;
-        }
-        try { fs.unlinkSync(full); } catch { /* 已被删除 */ }
-        row.remove();
-      });
-      row.appendChild(load);
-      row.appendChild(del);
-      list.appendChild(row);
-    });
-    $('archive-dialog').showModal();
-  }
-
-  // ---------- 提纯闭环：把视频交接给「视频自动提纯」插件 ----------
-  async function sendToPurify() {
-    const m = Search.getActiveMatch();
-    if (!m) return;
-    const item = Bridge.itemForPath(m.video_path);
-    if (!item) {
-      toast('素材已不在库中，无法提纯', true);
-      return;
-    }
-    try {
-      const fs = require('fs');
-      const path = require('path');
-      const inbox = path.join(Config.get().projectRoot, 'purify_inbox.json');
-      let list = [];
-      try {
-        if (fs.existsSync(inbox)) list = JSON.parse(fs.readFileSync(inbox, 'utf-8')) || [];
-      } catch { list = []; }
-      if (!list.some((x) => x.id === item.id)) {
-        list.push({
-          id: item.id,
-          name: item.name,
-          filePath: item.filePath,
-          folderId: Array.isArray(item.folders) && item.folders.length ? item.folders[0] : null,
-        });
-      }
-      fs.writeFileSync(inbox, JSON.stringify(list, null, 2), 'utf-8');
-      toast(`已发送「${item.name}」到提纯队列，打开「视频自动提纯」插件即可开始（可连发多个）`, false, 6000);
-    } catch (e) {
-      toast(`交接失败：${e.message}`, true);
-    }
+    Warehouse.open();
   }
 
   // ---------- 素材库统计 ----------
@@ -795,65 +515,61 @@
     runDedupScan();
   }
 
-  // ---------- 索引迁移（导出/导入 zip） ----------
-  /* 路径经环境变量传入，避免拼进 -Command 字符串（路径里的引号/$()/分号会被 PS 解释执行） */
-  function runPowerShell(script, envVars = {}) {
-    return new Promise((resolve, reject) => {
-      const { execFile } = require('child_process');
-      execFile('powershell.exe', ['-NoProfile', '-Command', script],
-        { windowsHide: true, env: { ...process.env, ...envVars } }, (err, _out, stderr) => {
-          if (err) reject(new Error(stderr || err.message));
-          else resolve();
-        });
-    });
-  }
-
+  // 在线目录不能直接覆盖；离线维护工具会校验进程锁、包清单并保存回滚记录。
   async function exportIndexes() {
-    const fs = require('fs');
-    const path = require('path');
-    const os = require('os');
-    const src = path.join(Config.get().projectRoot, 'indexes');
-    if (!fs.existsSync(src)) {
-      toast('还没有任何索引可导出', true);
-      return;
-    }
-    const stamp = new Date().toISOString().slice(0, 10).replaceAll('-', '');
-    const dest = path.join(os.homedir(), 'Desktop', `eagle_indexes_${stamp}.zip`);
-    toast('正在打包索引（大库可能要几分钟）…', false, 8000);
-    try {
-      await runPowerShell('Compress-Archive -Path "$env:EAGLE_ZIP_SRC\\*" -DestinationPath "$env:EAGLE_ZIP_DEST" -Force',
-        { EAGLE_ZIP_SRC: src, EAGLE_ZIP_DEST: dest });
-      toast(`已导出到桌面：${path.basename(dest)}`, false, 6000);
-      eagle.shell.showItemInFolder(dest);
-    } catch (e) {
-      toast(`导出失败：${e.message}`, true, 6000);
-    }
+    toast('索引导出已改为安全离线维护：关闭 5006/5007 服务后，使用后端 tools/index_package.py export；详见更新说明。不会压缩运行中的索引。', true, 10000);
   }
 
   async function importIndexes() {
-    const path = require('path');
-    let zipPath = null;
-    try {
-      const r = await eagle.dialog.showOpenDialog({
-        properties: ['openFile'],
-        filters: [{ name: '索引包', extensions: ['zip'] }],
-      });
-      zipPath = r && !r.canceled && r.filePaths && r.filePaths[0];
-    } catch {
-      toast('当前 Eagle 版本不支持文件选择对话框；请手动把 zip 解压到项目 indexes 目录', true, 7000);
-      return;
+    toast('索引导入已改为安全离线维护：关闭 5006/5007 服务后，使用后端 tools/index_package.py import；自动校验并保留回滚备份。不会直接覆盖运行中的索引。', true, 10000);
+  }
+
+  async function openIndexJobs() {
+    let dialog = $('index-jobs-dialog');
+    if (!dialog) {
+      dialog = document.createElement('dialog');
+      dialog.id = 'index-jobs-dialog';
+      dialog.className = 'settings-form';
+      document.body.appendChild(dialog);
     }
-    if (!zipPath) return;
-    const dest = path.join(Config.get().projectRoot, 'indexes');
-    toast('正在导入索引…', false, 6000);
+    dialog.replaceChildren();
+    const title = document.createElement('h3'); title.textContent = '当前库的索引任务'; dialog.appendChild(title);
+    const body = document.createElement('div'); body.className = 'index-jobs-list'; dialog.appendChild(body);
+    const close = document.createElement('button'); close.type = 'button'; close.textContent = '关闭'; close.onclick = () => dialog.close(); dialog.appendChild(close);
+    if (!dialog.open) dialog.showModal();
+    body.textContent = '正在读取…';
     try {
-      await runPowerShell('Expand-Archive -Path "$env:EAGLE_ZIP_SRC" -DestinationPath "$env:EAGLE_ZIP_DEST" -Force',
-        { EAGLE_ZIP_SRC: zipPath, EAGLE_ZIP_DEST: dest });
-      toast('索引导入完成', false, 5000);
-      refreshIndexHint();
-    } catch (e) {
-      toast(`导入失败：${e.message}`, true, 6000);
-    }
+      const library = await Bridge.resolveLibraryIdentity();
+      const jobs = await Api.listIndexJobs(library.id);
+      body.textContent = `库 ID：${library.id}（搬家关联时使用；复制库不应复用）`;
+      if (!jobs.length) body.appendChild(document.createTextNode('；暂无任务。旧索引仍保留，新版按独立库身份重建或离线迁移。'));
+      for (const job of jobs.sort((a, b) => (b.created_at || 0) - (a.created_at || 0))) {
+        const row = document.createElement('details');
+        const summary = document.createElement('summary');
+        const labels = { queued: '排队中', running: '运行中', cancelling: '停止中', done: '已完成', error: '失败', cancelled: '已停止', interrupted: '已中断' };
+        summary.textContent = `${labels[job.state] || job.state} · ${job.source || '未知来源'} · ${job.current || 0}/${job.total || 0} · ${new Date((job.created_at || 0) * 1000).toLocaleString()}`;
+        row.appendChild(summary);
+        const detail = document.createElement('pre'); detail.className = 'job-details';
+        detail.textContent = `${job.job_id}\n${job.error || ''}\n` + (job.file_results || []).map((item) => `${item.status}: ${item.path}${item.error ? ` — ${item.error}` : ''}`).join('\n');
+        row.appendChild(detail);
+        const active = ['queued', 'running', 'cancelling'].includes(job.state);
+        if (active || (job.file_results || []).some((item) => item.retryable)) {
+          const action = document.createElement('button'); action.type = 'button'; action.textContent = active ? '停止此任务' : '仅重试失败项';
+          const key = require('crypto').randomUUID();
+          action.onclick = async () => {
+            action.disabled = true;
+            try {
+              if ((await Bridge.resolveLibraryIdentity()).id !== library.id) throw new Error('素材库已切换');
+              if (active) { const result = await Api.cancelIndex(job.job_id); if (!result.ok) throw new Error(result.data?.error || '取消失败'); }
+              else await Api.retryIndex(job.job_id, key);
+              await openIndexJobs();
+            } catch (error) { detail.textContent += `\n${error.message}`; action.disabled = false; }
+          };
+          row.appendChild(action);
+        }
+        body.appendChild(row);
+      }
+    } catch (error) { body.textContent = error.message; }
   }
 
   // ---------- 动态模型列表（模型升级通道：models/ 目录放入新模型即出现在下拉） ----------
@@ -882,7 +598,9 @@
     const videos = await Bridge.collectLibraryVideos();
     const indices = await Search.findLibraryIndexes();
     if (indices.length === 0) {
-      return { indexed: 0, skipped: 0, failed: 0, missing: videos.length };
+      return {
+        indexed: 0, skipped: 0, failed: 0, missing: videos.length, stale: 0,
+      };
     }
     const coverages = [];
     for (const p of indices) {
@@ -919,18 +637,32 @@
     if (Indexer.isRunning() && !announceOutcome) return;
     const hint = $('index-hint');
     try {
+      const library = await Bridge.resolveLibraryIdentity();
+      const legacy = await Indexer.detectLegacyIndex(library.path, library.index_name);
+
+      // 静默记录旧索引检测结果，不在UI显示，避免打扰用户
+      if (legacy && legacy.count > 0) {
+        console.info('[旧索引检测] 发现旧索引，但已配置为静默模式');
+        console.info('[旧索引检测] 旧索引:', legacy.name, '记录数:', legacy.count);
+        console.info('[旧索引检测] 新索引:', legacy.currentName);
+        console.info('[旧索引检测] 如需查看迁移步骤，请在控制台调用: window.showLegacyMigration()');
+        // 暴露全局方法供开发者或agent手动调用
+        window.showLegacyMigration = () => showLegacyIndexMigrationDialog(legacy);
+        // 不返回，继续显示正常的索引提示
+      }
+
       const summary = await countMissingVideos();
       lastIndexSummary = summary;
 
       const cfg = Config.get();
-      const library = eagle.library.path || '';
-      const sameLibrary = cfg.indexOutcomeLibrary === library;
+      const libraryPath = eagle.library.path || '';
+      const sameLibrary = cfg.indexOutcomeLibrary === libraryPath;
       const delta = Bridge.indexOutcomeDelta(summary, {
         skipped: cfg.indexOutcomeSkipped,
         failed: cfg.indexOutcomeFailed,
       }, announceOutcome && sameLibrary);
       Config.save({
-        indexOutcomeLibrary: library,
+        indexOutcomeLibrary: libraryPath,
         indexOutcomeSkipped: summary.skipped,
         indexOutcomeFailed: summary.failed,
       });
@@ -939,11 +671,75 @@
       hint.title = hint.textContent ? '检测到新视频，完成增量索引后会自动隐藏' : '';
       hint.classList.toggle('warn', summary.missing > 0);
       hint.classList.toggle('hidden', summary.missing === 0);
+      hint.classList.remove('legacy-index');
       return { ...summary, newSkipped: delta.skipped, newFailed: delta.failed };
     } catch (e) {
       console.warn('索引对比失败', e);
       return { newSkipped: 0, newFailed: 0 };
     }
+  }
+
+  function showLegacyIndexMigrationDialog(legacy) {
+    const dialog = document.createElement('dialog');
+    dialog.className = 'legacy-migration-dialog';
+
+    // 从旧索引名称移除 .lance 后缀
+    const sourceIndexName = legacy.name.replace(/\.lance$/, '');
+    const targetIndexName = legacy.currentName;
+    const model = legacy.model || 'qihoo360-fg-clip2-base';
+
+    const migrationCommand = `python\\python.exe tools\\index_package.py migrate --source "${sourceIndexName}" --target "${targetIndexName}" --model "${model}"`;
+
+    dialog.innerHTML = `
+      <h3>旧索引迁移指南</h3>
+      <p class="hint">检测到旧版本的索引数据（<strong>${legacy.count.toLocaleString()}</strong> 条记录），需要迁移到新版本才能使用。</p>
+      <div class="migration-info">
+        <p><strong>旧索引：</strong><code>${esc(sourceIndexName)}</code></p>
+        <p><strong>新索引：</strong><code>${esc(targetIndexName)}</code></p>
+        <p><strong>模型：</strong><code>${esc(model)}</code></p>
+      </div>
+      <h4>迁移步骤</h4>
+      <ol class="migration-steps">
+        <li><strong>关闭服务：</strong>在后端目录运行 <code>stop-service.bat</code>（或手动关闭 5006 和 5007 端口服务）</li>
+        <li><strong>运行迁移：</strong>在后端目录打开命令行，执行以下命令（已为您准备好，点击下方按钮可复制）：
+          <pre id="migration-command">${esc(migrationCommand)}</pre>
+        </li>
+        <li><strong>启动服务：</strong>运行 <code>start-service.bat</code> 重新启动搜索服务</li>
+        <li><strong>验证迁移：</strong>在插件中重新加载，索引提示应消失，搜索应正常工作</li>
+      </ol>
+      <div class="migration-warning">
+        <p>⚠️ <strong>重要提示：</strong></p>
+        <ul>
+          <li>迁移过程中不要操作 Eagle 或搜索插件</li>
+          <li>迁移会保留原索引，不会删除或覆盖数据</li>
+          <li>如果迁移失败，原索引仍然完整，可以重试</li>
+          <li>迁移成功后，旧索引仍然保留在后端，可手动删除或保留作为备份</li>
+        </ul>
+      </div>
+      <div class="dialog-actions">
+        <button id="migration-close" type="button">知道了</button>
+        <button id="migration-copy-command" type="button" class="primary">复制迁移命令</button>
+      </div>
+    `;
+    document.body.appendChild(dialog);
+    dialog.showModal();
+
+    $('migration-close').addEventListener('click', () => {
+      dialog.close();
+      dialog.remove();
+    });
+
+    $('migration-copy-command').addEventListener('click', async () => {
+      const command = $('migration-command').textContent;
+      try {
+        await navigator.clipboard.writeText(command);
+        toast('迁移命令已复制到剪贴板');
+      } catch (e) {
+        toast('复制失败，请手动复制命令', true);
+      }
+    });
+
+    dialog.addEventListener('close', () => dialog.remove());
   }
 
   const AUTO_INDEX_INTERVAL_MS = 10 * 60 * 1000;
@@ -953,9 +749,11 @@
     if (!Config.get().autoIndex || Indexer.isRunning()) return;
     try {
       if (!serviceOnline && !(await Service.ensure(setServiceStatus))) return;
-      const { missing } = await countMissingVideos();
-      if (missing > 0) {
-        console.log(`[AutoIndex] 发现 ${missing} 个新视频，自动增量索引`);
+      const { missing, stale } = await countMissingVideos();
+      if (missing > 0 || stale > 0) {
+        console.log(
+          `[AutoIndex] 发现 ${missing} 个新视频、${stale} 个失效路径，自动同步索引`,
+        );
         await startIndexing('all');
       }
     } catch (e) {
@@ -974,21 +772,9 @@
     }
   }
 
-  function updateBatchButtons(selectedCount = 0, total = 0) {
-    const has = total > 0 || Search.getAllMatches().length > 0;
-    $('btn-export').classList.toggle('hidden', !has);
-    $('btn-tag').classList.toggle('hidden', !has);
-    $('btn-shot-tag').classList.toggle('hidden', !has);
-    if (has) {
-      const n = selectedCount || 0;
-      $('btn-export').textContent = n > 0 ? `导出片段(${n})` : '导出片段';
-      $('btn-tag').textContent = n > 0 ? `打标签(${n})` : '打标签';
-      $('btn-shot-tag').textContent = n > 0 ? `镜头标签(${n})` : '镜头标签';
-    }
-  }
-
   /* Ctrl+V 粘贴图片 → 以图搜视频 */
   function handlePaste(e) {
+    if (document.querySelector('dialog[open]')) return;
     const items = e.clipboardData && e.clipboardData.items;
     if (!items) return;
     for (const it of items) {
@@ -1017,6 +803,7 @@
       const threshold = parseFloat($('threshold').value);
       Config.save({ threshold });
       const r = await Search.run(query, threshold, scope);
+      if (r.cancelled || r.stale) return;
       if (!r.ok) toast(r.message, true, 5000);
       else if (r.count === 0) toast('没有匹配结果，可尝试降低阈值');
       else {
@@ -1027,7 +814,7 @@
       console.error(e);
       toast(`搜索出错：${e.message}`, true, 5000);
     } finally {
-      btn.textContent = '搜索';
+      btn.textContent = Search.isBusy() ? '搜索中…' : '搜索';
       updateButtons();
     }
   }
@@ -1058,9 +845,9 @@
     $('cfg-ai-mode').value = cfg.aiMode || 'balanced';
     $('cfg-dedup').checked = !!cfg.dedup;
     $('cfg-dedup-threshold').value = cfg.dedupThreshold != null ? cfg.dedupThreshold : 0.95;
-    $('cfg-export-mode').value = cfg.exportMode || 'copy';
     $('cfg-mini-rerank').checked = !!cfg.miniRerank;
-    $('cfg-mini-keep').checked = !!cfg.miniKeepLoaded;
+    $('settings-error').textContent = Config.getLoadError?.() || '';
+    $('btn-recover-settings').classList.toggle('hidden', !Config.getLoadError?.());
     $('cfg-auto-index').checked = !!cfg.autoIndex;
     $('settings-dialog').showModal();
   }
@@ -1100,55 +887,138 @@
     Service.ensure(setServiceStatus);
   }
 
-  function saveSettings() {
+  function saveSettings(event, recover = false) {
+    event.preventDefault();
+    const form = $('settings-form');
+    $('settings-error').textContent = '';
+    if (!form.reportValidity()) return;
+    try {
     const prevModel = Config.get().modelName;
     const prevKey = Config.get().deepseekKey || '';
     const modelName = $('cfg-model').value;
     Config.save({
       deepseekKey: $('cfg-deepseek-key').value.trim(),
       projectRoot: $('cfg-project-root').value.trim(),
-      port: parseInt($('cfg-port').value, 10) || 5006,
+      port: $('cfg-port').value === '' ? NaN : Number($('cfg-port').value),
       modelName,
-      visualThreshold: parseFloat($('cfg-visual-threshold').value) || 40,
-      visualMargin: parseFloat($('cfg-visual-margin').value) || 15,
+      visualThreshold: $('cfg-visual-threshold').value === '' ? NaN : Number($('cfg-visual-threshold').value),
+      visualMargin: $('cfg-visual-margin').value === '' ? NaN : Number($('cfg-visual-margin').value),
       visualAgg: $('cfg-visual-agg').value,
       visualCentered: $('cfg-visual-centered').checked,
-      visualSceneFrames: parseInt($('cfg-visual-scene-frames').value, 10) || 5,
-      visualVideoFrames: parseInt($('cfg-visual-video-frames').value, 10) || 8,
-      indexSampleInterval: parseInt($('cfg-idx-sample-interval').value, 10) || 5,
-      indexResolution: parseInt($('cfg-idx-resolution').value, 10) || 256,
-      indexMinSceneLen: parseInt($('cfg-idx-min-scene').value, 10) || 7,
-      indexBatchSize: parseInt($('cfg-idx-batch').value, 10) || 8,
-      indexSceneThreshold: parseFloat($('cfg-idx-scene-threshold').value) || 0.85,
-      indexLocalmaxOrder: parseInt($('cfg-idx-localmax').value, 10) || 2,
+      visualSceneFrames: Number($('cfg-visual-scene-frames').value),
+      visualVideoFrames: Number($('cfg-visual-video-frames').value),
+      indexSampleInterval: Number($('cfg-idx-sample-interval').value),
+      indexResolution: Number($('cfg-idx-resolution').value),
+      indexMinSceneLen: Number($('cfg-idx-min-scene').value),
+      indexBatchSize: Number($('cfg-idx-batch').value),
+      indexSceneThreshold: Number($('cfg-idx-scene-threshold').value),
+      indexLocalmaxOrder: Number($('cfg-idx-localmax').value),
       indexFp16: $('cfg-idx-fp16').checked,
       aiEnhance: $('cfg-ai-enhance').checked,
       aiExpand: $('cfg-ai-expand').checked,
       aiMode: $('cfg-ai-mode').value || 'balanced',
       dedup: $('cfg-dedup').checked,
-      dedupThreshold: Math.min(Math.max(parseFloat($('cfg-dedup-threshold').value) || 0.95, 0.8), 0.99),
-      exportMode: $('cfg-export-mode').value === 'precision' ? 'precision' : 'copy',
+      dedupThreshold: Number($('cfg-dedup-threshold').value),
       miniRerank: $('cfg-mini-rerank').checked,
-      miniKeepLoaded: $('cfg-mini-keep').checked,
       autoIndex: $('cfg-auto-index').checked,
-    });
+      ...(modelName !== prevModel ? { threshold: modelName.includes('fg-clip2') ? 11 : 21 } : {}),
+    }, { recover });
     applyAutoIndexSetting();
     if (modelName !== prevModel) {
       const suggested = modelName.includes('fg-clip2') ? 11 : 21;
       $('threshold').value = suggested;
       $('threshold-val').textContent = suggested;
-      Config.save({ threshold: suggested });
       toast(`已切换模型，阈值建议调整为 ${suggested}，请对库重新建索引`);
     }
     if (Config.get().deepseekKey !== prevKey) {
       toast('DeepSeek Key 已更新，点击设置里的「重启搜索服务」后生效', false, 5000);
     }
     setServiceStatus('offline', '配置已更新，正在重新连接…');
+    $('settings-dialog').close();
     Service.ensure(setServiceStatus);
+    } catch (error) {
+      $('settings-error').textContent = error.message;
+    }
+  }
+
+  let organizeSelection = null;
+  let organizing = false;
+
+  function updateSelectionActions() {
+    const matches = Search.getSelectedMatches() || [];
+    $('btn-clear-selection').disabled = organizing || Search.isBusy() || matches.length === 0;
+    const targets = Bridge.selectionTargets(matches);
+    $('selection-count').textContent = matches.length
+      ? `已选 ${matches.length} 个片段 / ${targets.ids.length} 个素材` : '';
+    for (const id of ['btn-selection-tag', 'btn-selection-folder']) {
+      $(id).disabled = organizing || Search.isBusy() || targets.ids.length === 0;
+    }
+  }
+
+  function openOrganize(kind) {
+    if (organizing || Search.isBusy()) return;
+    const targets = Bridge.selectionTargets(Search.getSelectedMatches());
+    if (!targets.ids.length) return;
+    organizeSelection = { ...targets, kind, library: eagle.library.path };
+    $('organize-title').textContent = kind === 'tag' ? '添加标签' : '添加到 Eagle 新文件夹';
+    $('organize-summary').textContent = `将处理 ${targets.ids.length} 个素材（重复片段已合并）`
+      + (targets.missing ? `，另有 ${targets.missing} 个失效素材将跳过` : '')
+      + (kind === 'folder' ? '。在当前库根目录创建新文件夹。' : '。');
+    $('organize-name').value = Warehouse.getCurrentName() || Search.getLastQuery() || '搜索结果';
+    $('organize-name').disabled = false;
+    $('organize-submit').disabled = false;
+    $('organize-submit').textContent = '添加';
+    $('organize-cancel').textContent = '取消';
+    $('organize-status').textContent = '';
+    $('organize-dialog').showModal();
+    $('organize-name').select();
+  }
+
+  async function submitOrganize(event) {
+    event.preventDefault();
+    if (organizing || !organizeSelection) return;
+    const name = $('organize-name').value.trim();
+    if (!name) { $('organize-status').textContent = '请输入名称'; return; }
+    organizing = true;
+    $('organize-submit').disabled = true;
+    $('organize-name').disabled = true;
+    $('organize-cancel').disabled = true;
+    $('organize-status').textContent = '正在添加…';
+    updateSelectionActions();
+    try {
+      const selection = organizeSelection;
+      const result = await Bridge.organizeItems(selection.ids, selection.kind, name, selection.library, selection.folderId);
+      selection.folderId = result.folderId;
+      selection.ids = result.items.filter((item) => item.status === 'failed').map((item) => item.id);
+      $('organize-status').textContent = `完成：成功 ${result.success} 个，失败 ${result.failed} 个，失效跳过 ${result.missing + selection.missing} 个。`
+        + (result.folderId ? `新文件夹：${name}。` : '')
+        + (result.failed ? '\n成功项已保留，可仅重试失败项：\n' + result.items.filter((item) => item.status !== 'success').map((item) => `${item.name}：${item.reason}`).join('\n') : '');
+      if (result.failed) {
+        $('organize-submit').textContent = '仅重试失败项';
+        $('organize-submit').disabled = false;
+      }
+    } catch (error) {
+      $('organize-status').textContent = `操作未完成：${error.message}。已完成的修改会保留。`;
+      $('organize-submit').disabled = false;
+      $('organize-submit').textContent = '重试';
+    } finally {
+      organizing = false;
+      $('organize-cancel').disabled = false;
+      $('organize-cancel').textContent = '关闭';
+      updateSelectionActions();
+    }
   }
 
   // ---------- 初始化 ----------
   function wireEvents() {
+    Search.setSelectionHandler(updateSelectionActions);
+    $('btn-clear-selection').addEventListener('click', () => Search.clearSelection());
+    document.addEventListener('search-busy', updateSelectionActions);
+    $('btn-selection-tag').addEventListener('click', () => openOrganize('tag'));
+    $('btn-selection-folder').addEventListener('click', () => openOrganize('folder'));
+    $('organize-form').addEventListener('submit', submitOrganize);
+    $('organize-cancel').addEventListener('click', () => $('organize-dialog').close());
+    $('organize-dialog').addEventListener('cancel', (event) => { if (organizing) event.preventDefault(); });
     $('btn-search').addEventListener('click', doSearch);
     $('query').addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && !$('btn-search').disabled) {
@@ -1175,19 +1045,23 @@
     $('threshold').addEventListener('input', () => {
       $('threshold-val').textContent = $('threshold').value;
     });
-    $('btn-index-all').addEventListener('click', () => startIndexing('all'));
-    $('btn-index-folder').addEventListener('click', () => startIndexing('folder'));
-    $('btn-index-selected').addEventListener('click', () => startIndexing('selected'));
+    $('btn-index-primary').addEventListener('click', () => startIndexing(indexMode));
+    $('btn-index-menu-toggle').addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleIndexModeMenu();
+    });
+    document.querySelectorAll('[data-index-mode]').forEach((option) => {
+      option.addEventListener('click', () => selectIndexMode(option.dataset.indexMode));
+    });
     $('btn-stop-index').addEventListener('click', stopIndexing);
-    $('btn-visual-selected').addEventListener('click', visualSearchFromSelection);
-    $('btn-export').addEventListener('click', exportSelected);
-    $('btn-tag').addEventListener('click', tagResults);
-    $('btn-shot-tag').addEventListener('click', shotTagResults);
     $('btn-restart-service').addEventListener('click', restartService);
     $('btn-rebuild-index').addEventListener('click', rebuildIndex);
     $('btn-view-log').addEventListener('click', viewServiceLog);
-    $('btn-describe').addEventListener('click', describeAndSearch);
-    $('btn-purify').addEventListener('click', sendToPurify);
+    $('btn-index-jobs').addEventListener('click', openIndexJobs);
+    $('btn-refresh-library').addEventListener('click', async () => {
+      try { Bridge.invalidateCache(); await Bridge.refreshPathMap(true); toast('素材缓存已刷新，下次搜索使用最新素材范围'); }
+      catch (error) { toast(error.message, true); }
+    });
     $('btn-stats').addEventListener('click', openStats);
     $('btn-dedup-scan').addEventListener('click', openDedupScan);
     $('btn-dedup-rescan').addEventListener('click', runDedupScan);
@@ -1205,27 +1079,38 @@
     });
     $('btn-save-results').addEventListener('click', saveResults);
     $('btn-archives').addEventListener('click', openArchives);
-    $('btn-close-archives').addEventListener('click', () => $('archive-dialog').close());
     $('btn-scope').addEventListener('click', openScopeDialog);
     $('btn-scope-apply').addEventListener('click', applyScopeDialog);
     $('btn-scope-cancel').addEventListener('click', () => $('scope-dialog').close());
     document.addEventListener('paste', handlePaste);
     $('btn-settings').addEventListener('click', openSettings);
-    $('btn-save-settings').addEventListener('click', saveSettings);
+    $('settings-form').addEventListener('submit', saveSettings);
+    $('btn-recover-settings').addEventListener('click', (event) => saveSettings(event, true));
+    $('btn-cancel-settings').addEventListener('click', () => $('settings-dialog').close());
+    document.addEventListener('click', (e) => {
+      if (!$('index-mode-menu').classList.contains('hidden')
+          && !e.target.closest('#index-mode-picker')) {
+        closeIndexModeMenu();
+      }
+    });
     Search.setVisualHandler(doVisualSearch);
-    Search.setSelectionHandler(updateBatchButtons);
+    document.addEventListener('search-busy', updateButtons);
   }
 
   eagle.onPluginCreate((plugin) => {
     Config.init(plugin.path);
+    Config.onError?.((message) => toast(message, true, 7000));
+    if (Config.getLoadError?.()) toast(Config.getLoadError(), true, 10000);
     applyTheme();
     Search.bindDom();
+    Warehouse.init({ toast, canSearch: () => serviceOnline && !Indexer.isRunning() });
     wireEvents();
 
     const cfg = Config.get();
     $('threshold').value = cfg.threshold;
     $('threshold-val').textContent = cfg.threshold;
     renderHistory();
+    selectIndexMode('all');
     resetScopeIfLibraryChanged();
     updateScopeButton();
 
@@ -1239,7 +1124,6 @@
 
     // 低频心跳：服务中途崩溃时状态灯及时变灰（此前只在开窗时检查，绿灯会一直挂着）
     setInterval(async () => {
-      if (Indexer.isRunning()) return; // 索引轮询期间状态由轮询维护
       const ok = await Api.health();
       if (ok && !serviceOnline) {
         setServiceStatus('online', '搜索服务已连接');

@@ -32,9 +32,29 @@
 
   <section class="toolbar">
     <div class="index-actions">
-      <button id="btn-index-all" disabled>索引整个库</button>
-      <button id="btn-index-folder" disabled>索引选中文件夹</button>
-      <button id="btn-index-selected" disabled>索引选中素材</button>
+      <div id="index-mode-picker" class="index-mode-picker">
+        <div class="index-split-button">
+          <button id="btn-index-primary" type="button" disabled>索引整个库</button>
+          <button id="btn-index-menu-toggle" type="button" disabled
+                  title="切换索引范围" aria-label="切换索引范围"
+                  aria-haspopup="menu" aria-expanded="false">▾</button>
+        </div>
+        <div id="index-mode-menu" class="index-mode-menu hidden" role="menu"
+             aria-label="索引范围">
+          <button type="button" class="index-mode-option active" data-index-mode="all"
+                  role="menuitemradio" aria-checked="true">
+            <span>索引整个库</span><span class="index-mode-check" aria-hidden="true">✓</span>
+          </button>
+          <button type="button" class="index-mode-option" data-index-mode="folder"
+                  role="menuitemradio" aria-checked="false">
+            <span>索引选中文件夹</span><span class="index-mode-check" aria-hidden="true">✓</span>
+          </button>
+          <button type="button" class="index-mode-option" data-index-mode="selected"
+                  role="menuitemradio" aria-checked="false">
+            <span>索引选中素材</span><span class="index-mode-check" aria-hidden="true">✓</span>
+          </button>
+        </div>
+      </div>
       <span id="index-hint" title="库内视频与索引内容的对比结果"></span>
     </div>
     <div id="index-progress" class="index-progress hidden">
@@ -43,11 +63,53 @@
       <button id="btn-stop-index">停止</button>
     </div>
     <div class="spacer"></div>
-    <button id="btn-visual-selected" disabled title="以 Eagle 中选中的视频/图片素材为查询，搜索相似场景">以选中素材搜相似</button>
-    <button id="btn-export" class="hidden" title="把勾选的片段切成 MP4 并导入回 Eagle（自动放入文件夹、打上查询词标签）">导出片段</button>
-    <button id="btn-tag" class="hidden" title="给勾选结果对应的 Eagle 素材打上查询词标签（未勾选时应用到全部结果）">打标签</button>
-    <button id="btn-shot-tag" class="hidden" title="分析勾选片段的运镜（光流）与景别（DinoV2），写成「运镜:xx」「景别:xx」标签">镜头标签</button>
-    <button id="btn-select-all-results" class="hidden">全部结果在 Eagle 中选中</button>
+    <button id="btn-archives" title="打开主题仓库，查看保存结果与更新时间">搜索仓库</button>
+    <div class="time-filter" role="group" aria-label="素材加入时间">
+      <select id="search-time" aria-label="搜索时间范围">
+        <option value="all">不限时间</option><option value="6">近半年</option>
+        <option value="12">近 1 年</option><option value="24">近 2 年</option>
+        <option value="36">近 3 年</option><option value="48">近 4 年</option>
+        <option value="60">近 5 年</option><option value="custom">自定义日期</option>
+      </select>
+      <span id="search-time-dates" class="date-pair hidden">
+        <input id="search-time-start" type="date" aria-label="开始日期"><span>至</span>
+        <input id="search-time-end" type="date" aria-label="结束日期">
+      </span>
+      <span id="time-warning" class="hint" role="status"></span>
+    </div>
+  </section>
+
+  <section id="warehouse-page" class="warehouse-page hidden" aria-label="搜索仓库">
+    <header class="warehouse-header">
+      <div><p class="warehouse-eyebrow">已整理的素材，随时回来继续</p><h1>搜索仓库</h1>
+        <p id="warehouse-summary" class="hint"></p></div>
+      <button id="warehouse-back" type="button">返回搜索</button>
+    </header>
+    <div class="warehouse-filters">
+      <input id="warehouse-query" type="search" placeholder="查找主题名称…" aria-label="查找主题名称">
+      <select id="warehouse-category" aria-label="按分类筛选"></select>
+      <button id="warehouse-categories" type="button">管理分类</button>
+      <div class="warehouse-view-toggle" role="group" aria-label="视图方式">
+        <button id="warehouse-view-card" type="button" class="active" title="卡片视图">⊞</button>
+        <button id="warehouse-view-list" type="button" title="条栏视图">☰</button>
+      </div>
+    </div>
+    <div class="warehouse-actions">
+      <button id="warehouse-batch-category" type="button" disabled>批量修改分类</button>
+      <span id="warehouse-selection-count" class="hint"></span>
+    </div>
+    <p id="warehouse-warning" class="hint" role="status"></p>
+    <div id="warehouse-grid" class="warehouse-grid"></div>
+  </section>
+
+  <section id="warehouse-topic" class="warehouse-topic hidden">
+    <button id="topic-back" type="button">← 仓库</button>
+    <div class="topic-heading"><h2 id="topic-name"></h2><p id="topic-meta" class="hint"></p></div>
+    <div id="topic-time-filter"></div>
+    <button id="topic-edit" type="button">编辑条件</button>
+    <button id="topic-update" type="button" class="primary" title="按已保存的搜索条件重新搜索并替换结果">更新结果</button>
+    <button id="topic-search" type="button">新搜索</button>
+    <button id="topic-reset-cover" type="button" class="hidden">恢复默认封面</button>
   </section>
 
   <section id="view-bar" class="view-bar hidden">
@@ -62,8 +124,11 @@
       <input id="view-min-dur" type="number" min="0" max="600" step="0.5" value="0" title="只显示不短于此秒数的场景"> 秒
     </label>
     <label class="scope-toggle"><input id="view-grouped" type="checkbox"> 按视频分组</label>
-    <button id="btn-save-results" class="mini-btn" title="把当前结果保存为存档，之后可随时载入">存结果</button>
-    <button id="btn-archives" class="mini-btn" title="查看/载入已保存的搜索结果">存档…</button>
+    <button id="btn-save-results" class="mini-btn" title="保存当前筛选后的全部结果及搜索条件">保存到仓库</button>
+    <span id="selection-count" class="hint" aria-live="polite"></span>
+    <button id="btn-clear-selection" class="mini-btn" disabled>取消全部选择</button>
+    <button id="btn-selection-tag" class="mini-btn" disabled>添加标签</button>
+    <button id="btn-selection-folder" class="mini-btn" disabled>添加到新文件夹</button>
     <span id="result-count" class="result-count"></span>
   </section>
 
@@ -75,8 +140,11 @@
       <div id="preview-tags" class="preview-tags"></div>
       <div class="preview-actions">
         <button id="btn-locate">在 Eagle 中定位</button>
-        <button id="btn-describe" title="用本地视觉模型分析这个片段的内容，生成搜索提示词并自动搜索">生成提示词搜索</button>
-        <button id="btn-purify" title="把这个视频发送到「视频自动提纯」插件排队提纯">提纯此视频</button>
+        <div id="preview-cover-actions" class="preview-cover-actions hidden">
+          <button id="btn-cover-prev-frame" type="button" title="暂停并回退一帧">上一帧</button>
+          <button id="btn-cover-next-frame" type="button" title="暂停并前进一帧">下一帧</button>
+          <button id="btn-set-topic-cover" type="button" class="primary">当前帧设为封面</button>
+        </div>
         <button id="btn-close-preview">收起预览</button>
       </div>
     </div>
@@ -85,9 +153,23 @@
   <main id="results" class="results"></main>
   <div id="empty-state" class="empty-state">
     <p>先对素材库建索引，然后输入描述开始搜索。</p>
-    <p class="hint">也可以：直接 Ctrl+V 粘贴一张图片以图搜视频；或在 Eagle 选中视频后点「以选中素材搜相似」。</p>
+    <p class="hint">也可以：直接 Ctrl+V 粘贴一张图片以图搜视频。</p>
     <p class="hint">首次建索引需要加载模型并逐个视频抽帧，耗时与视频数量成正比；之后为增量更新，可随时停止。</p>
   </div>
+
+  <dialog id="organize-dialog" aria-labelledby="organize-title">
+    <form id="organize-form" class="settings-form">
+      <h3 id="organize-title">添加标签</h3>
+      <p id="organize-summary" class="hint"></p>
+      <label>名称<input id="organize-name" required autocomplete="off"></label>
+      <p class="hint">作用于完整素材，保留已有标签和文件夹归属。</p>
+      <p id="organize-status" role="status"></p>
+      <div class="dialog-actions">
+        <button id="organize-cancel" type="button">取消</button>
+        <button id="organize-submit" class="primary" type="submit">添加</button>
+      </div>
+    </form>
+  </dialog>
 
   <dialog id="scope-dialog">
     <div class="settings-form">
@@ -130,18 +212,77 @@
     </div>
   </dialog>
 
-  <dialog id="archive-dialog">
-    <div class="settings-form">
-      <h3>结果存档</h3>
-      <div id="archive-list" class="archive-list"></div>
-      <div class="dialog-actions">
-        <button id="btn-close-archives" type="button">关闭</button>
+  <dialog id="warehouse-editor">
+    <form id="warehouse-form" class="settings-form warehouse-form">
+      <h3 id="warehouse-editor-title">保存到仓库</h3>
+      <p id="warehouse-editor-hint" class="hint"></p>
+      <label>主题名称<input id="entry-name" maxlength="120" required></label>
+      <label>分类<select id="entry-category"></select></label>
+      <div id="entry-conditions">
+        <label>搜索词 / 查询名称<input id="entry-query" required></label>
+        <p id="entry-source" class="hint"></p>
+        <button id="entry-replace-source" type="button" class="hidden">使用 Eagle 当前选中素材作为查询来源</button>
+        <div class="field-pair">
+          <label>文本阈值<input id="entry-threshold" type="number" min="0" step="0.5" required></label>
+          <label>片段时长 ≥（秒）<input id="entry-duration" type="number" min="0" step="0.5" required></label>
+        </div>
+        <div class="field-pair">
+          <label>排序<select id="entry-sort"><option value="sim">相似度</option><option value="dur">时长</option><option value="name">视频名</option></select></label>
+          <label class="check-row"><input id="entry-grouped" type="checkbox">按视频分组</label>
+        </div>
+        <label><select id="entry-time" aria-label="搜索时间范围">
+          <option value="all">不限时间</option><option value="6">近半年</option>
+          <option value="12">近 1 年</option><option value="24">近 2 年</option>
+          <option value="36">近 3 年</option><option value="48">近 4 年</option>
+          <option value="60">近 5 年</option><option value="custom">自定义日期</option>
+        </select></label>
+        <div id="entry-time-dates" class="date-pair hidden">
+          <input id="entry-time-start" type="date" aria-label="开始日期"><span>至</span>
+          <input id="entry-time-end" type="date" aria-label="结束日期">
+        </div>
+        <label>文件夹范围<select id="entry-scope"><option value="all">整个库</option><option value="folders">指定文件夹（含子文件夹）</option></select></label>
+        <div id="entry-folders" class="entry-folders hidden"></div>
+        <details class="entry-advanced"><summary>更多搜索参数</summary>
+          <label>索引模型<input id="entry-model" required></label>
+          <div class="field-pair">
+            <label>视觉阈值<input id="entry-visualThreshold" type="number" min="0" step="0.5"></label>
+            <label>视觉相对落差<input id="entry-visualMargin" type="number" min="0" step="0.5"></label>
+          </div>
+          <label>视觉聚合<select id="entry-visualAgg"><option value="mean">平均</option><option value="max">最大值</option></select></label>
+          <label class="check-row"><input id="entry-visualCentered" type="checkbox">视觉向量中心化</label>
+          <div class="field-pair">
+            <label>片段查询帧数<input id="entry-visualSceneFrames" type="number" min="1" step="1"></label>
+            <label>视频查询帧数<input id="entry-visualVideoFrames" type="number" min="1" step="1"></label>
+          </div>
+          <label class="check-row"><input id="entry-aiEnhance" type="checkbox">AI 查询增强</label>
+          <label class="check-row"><input id="entry-aiExpand" type="checkbox">AI 语义扩展</label>
+          <label>AI 模式<select id="entry-aiMode"><option value="fast">快速</option><option value="balanced">均衡</option><option value="quality">质量</option></select></label>
+          <label class="check-row"><input id="entry-dedup" type="checkbox">跨视频去重</label>
+          <label>去重阈值<input id="entry-dedupThreshold" type="number" min="0" max="1" step="0.01"></label>
+          <label class="check-row"><input id="entry-miniRerank" type="checkbox">MiniCPM 精搜</label>
+        </details>
       </div>
-    </div>
+      <p id="warehouse-editor-error" class="form-error" role="alert"></p>
+      <div class="dialog-actions">
+        <button id="entry-delete" type="button" class="hidden">删除主题</button>
+        <button id="entry-cancel" type="button">取消</button>
+        <button id="entry-submit" class="primary" type="submit">保存</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="warehouse-category-dialog">
+    <form id="warehouse-category-form" class="settings-form">
+      <h3>管理分类</h3><p class="hint">删除分类后，其中的主题移到“未分类”。</p>
+      <div id="category-list"></div>
+      <label>新分类名称<input id="category-name" maxlength="60" required></label>
+      <p id="category-error" class="form-error" role="alert"></p>
+      <div class="dialog-actions"><button id="category-close" type="button">关闭</button><button class="primary" type="submit">新建分类</button></div>
+    </form>
   </dialog>
 
   <dialog id="settings-dialog">
-    <form method="dialog" class="settings-form">
+    <form id="settings-form" class="settings-form">
       <h3>设置</h3>
       <label>Auto-scenes-extraction 项目路径
         <input id="cfg-project-root" type="text" spellcheck="false">
@@ -206,7 +347,7 @@
           </label>
         </div>
         <label class="check-row"><input id="cfg-idx-fp16" type="checkbox"> FP16 推理（仅 NVIDIA GPU 生效，省显存更快）</label>
-        <p class="hint">已索引的视频不受参数改动影响；想全库按新参数重建，删除原项目 indexes 下对应 .lance 文件夹后重新索引。</p>
+        <p class="hint">已索引的视频不受参数改动影响；请使用“重建当前库索引”应用新参数，不要手动删除运行中的索引。</p>
       </details>
       <label>DeepSeek API Key（供 AI 查询增强使用，保存后需重启服务生效）
         <input id="cfg-deepseek-key" type="password" spellcheck="false" placeholder="sk-...">
@@ -224,31 +365,28 @@
       <label>去重相似度阈值（0.80~0.99，越低合并越激进）
         <input id="cfg-dedup-threshold" type="number" min="0.8" max="0.99" step="0.01">
       </label>
-      <label>导出片段模式
-        <select id="cfg-export-mode">
-          <option value="copy">copy — 流拷贝，快且无损（切点对齐关键帧，可能多带几帧）</option>
-          <option value="precision">precision — 精确到帧，重新编码（慢一些）</option>
-        </select>
-      </label>
       <label class="check-row"><input id="cfg-mini-rerank" type="checkbox"> 二阶段精搜（MiniCPM 复核，明显更慢、占显存大）</label>
-      <label class="check-row"><input id="cfg-mini-keep" type="checkbox"> MiniCPM 常驻显存（生成提示词从 ~30 秒提速到 ~2 秒，需 8GB+ 显存）</label>
       <label class="check-row"><input id="cfg-auto-index" type="checkbox"> 静默自动索引（插件随 Eagle 后台运行，每 10 分钟检查新素材并自动增量索引）</label>
       <div class="btn-row">
         <button id="btn-restart-service" type="button">重启搜索服务</button>
         <button id="btn-rebuild-index" type="button" title="按当前库内素材全量重建索引，清理已删素材的失效条目并应用新索引参数">重建当前库索引</button>
         <button id="btn-view-log" type="button">查看服务日志</button>
+        <button id="btn-index-jobs" type="button">索引任务记录</button>
+        <button id="btn-refresh-library" type="button">刷新素材缓存</button>
       </div>
       <div class="btn-row">
         <button id="btn-stats" type="button" title="素材库统计：标签分布、时长分布、索引覆盖率">库统计</button>
         <button id="btn-dedup-scan" type="button" title="用现有索引的场景向量找出语义重复的视频，分组展示并可在 Eagle 中选中处理">查重扫描</button>
-        <button id="btn-export-indexes" type="button" title="把全部索引打包成 zip（换机迁移用）">导出索引包</button>
-        <button id="btn-import-indexes" type="button" title="导入索引包 zip 并合并到当前索引目录">导入索引包</button>
+        <button id="btn-export-indexes" type="button" title="使用后端离线维护工具导出一致备份">离线导出说明</button>
+        <button id="btn-import-indexes" type="button" title="使用后端离线维护工具校验导入并保留回滚备份">离线导入说明</button>
       </div>
       <p class="hint">FG-CLIP2 文本搜索建议阈值 11 左右；CLIP 建议 21 左右。切换模型后需对库重新建索引。<br>
       以图/以片搜的图像相似度天然偏高，建议 40 左右（结果始终按相似度排序，最多返回 100 条）。</p>
       <div class="dialog-actions">
+        <p id="settings-error" class="form-error" role="alert"></p>
         <button id="btn-save-settings" value="save" class="primary">保存</button>
-        <button value="cancel">取消</button>
+        <button id="btn-recover-settings" type="button" class="hidden">备份损坏原件并保存新设置</button>
+        <button id="btn-cancel-settings" type="button">取消</button>
       </div>
     </form>
   </dialog>
@@ -257,8 +395,13 @@
   <script src="js/api.js"></script>
   <script src="js/service.js"></script>
   <script src="js/eagleBridge.js"></script>
+  <script src="js/searchRecipe.js"></script>
+  <script src="js/archiveStore.js"></script>
+  <script src="js/coverFrame.js"></script>
   <script src="js/indexer.js"></script>
   <script src="js/search.js"></script>
+  <script src="js/folderTree.js"></script>
+  <script src="js/warehouse.js"></script>
   <script src="js/plugin.js"></script>
 </body>
 </html>
