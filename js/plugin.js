@@ -111,6 +111,13 @@
       async onDone(status) {
         $('index-progress').classList.add('hidden');
         updateButtons();
+
+        // 清除搜索缓存，因为索引已更新
+        if (typeof SearchCache !== 'undefined') {
+          SearchCache.clear();
+          console.log('[搜索缓存] 索引更新后已清除所有缓存');
+        }
+
         let outcome = { newSkipped: 0, newFailed: 0 };
         try {
           const refreshed = await refreshIndexHint({ announceOutcome: true });
@@ -1009,6 +1016,68 @@
     }
   }
 
+  // ---------- 快捷键系统 ----------
+  function initShortcuts() {
+    // Ctrl+K: 聚焦搜索框
+    Shortcuts.register('ctrl+k', () => {
+      $('query').focus();
+      $('query').select();
+    }, { description: '聚焦搜索框' });
+
+    // Ctrl+I: 开始索引
+    Shortcuts.register('ctrl+i', () => {
+      if (!$('btn-index-primary').disabled) {
+        startIndexing(indexMode);
+      }
+    }, { description: '开始索引' });
+
+    // Ctrl+W: 打开仓库
+    Shortcuts.register('ctrl+w', () => {
+      Warehouse.open();
+    }, { description: '打开仓库' });
+
+    // Ctrl+,: 打开设置
+    Shortcuts.register('ctrl+,', () => {
+      openSettings();
+    }, { description: '打开设置' });
+
+    // Escape: 关闭对话框
+    Shortcuts.register('escape', (e) => {
+      const openDialog = document.querySelector('dialog[open]');
+      if (openDialog && !openDialog.hasAttribute('data-no-escape')) {
+        openDialog.close();
+      }
+    }, { description: '关闭对话框', preventDefault: false });
+
+    // Ctrl+/: 显示快捷键帮助
+    Shortcuts.register('ctrl+/', () => {
+      showShortcutsHelp();
+    }, { description: '显示快捷键帮助' });
+  }
+
+  function showShortcutsHelp() {
+    const shortcuts = Shortcuts.getAll();
+    const dialog = document.createElement('dialog');
+    dialog.className = 'shortcuts-help-dialog';
+    dialog.innerHTML = `
+      <h3>快捷键列表</h3>
+      <div class="shortcuts-list">
+        ${shortcuts.map(s => `
+          <div class="shortcut-item">
+            <kbd>${s.shortcut.replace(/\+/g, '</kbd> + <kbd>').replace('ctrl', '⌘/Ctrl')}</kbd>
+            <span>${s.description}</span>
+          </div>
+        `).join('')}
+      </div>
+      <div class="dialog-actions">
+        <button type="button" onclick="this.closest('dialog').close()">关闭</button>
+      </div>
+    `;
+    document.body.appendChild(dialog);
+    dialog.showModal();
+    dialog.addEventListener('close', () => dialog.remove());
+  }
+
   // ---------- 初始化 ----------
   function wireEvents() {
     Search.setSelectionHandler(updateSelectionActions);
@@ -1105,6 +1174,7 @@
     Search.bindDom();
     Warehouse.init({ toast, canSearch: () => serviceOnline && !Indexer.isRunning() });
     wireEvents();
+    initShortcuts();
 
     const cfg = Config.get();
     $('threshold').value = cfg.threshold;
