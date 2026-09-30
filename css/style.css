@@ -119,6 +119,9 @@ body {
 .warehouse-batch-dialog select { width: 100%; margin-bottom: 20px; padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-input); color: var(--text); }
 .warehouse-batch-dialog .dialog-actions { display: flex; gap: 10px; justify-content: flex-end; }
 .warehouse-batch-dialog button { padding: 8px 16px; }
+.warehouse-batch-status { max-height: 220px; overflow-y: auto; overflow-wrap: anywhere; }
+.warehouse-batch-status p { margin: 0 0 8px; }
+.warehouse-load-more { grid-column: 1 / -1; justify-self: center; margin: 8px 0; }
 .legacy-migration-dialog { border: 1px solid var(--border); border-radius: 8px; padding: 24px; background: var(--bg-panel); color: var(--text); max-width: 700px; max-height: 80vh; overflow-y: auto; }
 .legacy-migration-dialog h3 { margin-bottom: 12px; font-size: 18px; }
 .legacy-migration-dialog h4 { margin: 20px 0 12px; font-size: 15px; color: var(--accent); }
@@ -673,6 +676,17 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
   height: 100%;
   object-fit: cover;
   display: block;
+  background: linear-gradient(90deg, var(--bg-alt) 25%, var(--bg-panel) 50%, var(--bg-alt) 75%);
+  background-size: 200% 100%;
+  animation: loading-shimmer 1.5s ease-in-out infinite;
+}
+.card .thumb[src] {
+  background: none;
+  animation: none;
+}
+@keyframes loading-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
 }
 .card .meta { padding: 8px 10px; min-height: 44px; box-sizing: border-box; }
 .card .name {
@@ -777,3 +791,45 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.4); }
 .index-jobs-list { overflow-wrap: anywhere; }
 .index-jobs-list details { padding: 10px 0; border-bottom: 1px solid var(--border); }
 .job-details { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 240px; overflow: auto; font-size: 12px; }
+
+/* 快捷键帮助对话框 */
+.shortcuts-help-dialog {
+  width: min(500px, 90vw);
+  border-radius: 12px;
+  padding: 20px;
+  border: 1px solid var(--border);
+}
+.shortcuts-help-dialog h3 {
+  margin: 0 0 16px;
+  font-size: 18px;
+}
+.shortcuts-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 20px;
+  max-height: 400px;
+  overflow-y: auto;
+}
+.shortcut-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  background: var(--bg-alt);
+  border-radius: 6px;
+  gap: 16px;
+}
+.shortcut-item kbd {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 12px;
+  font-family: monospace;
+  white-space: nowrap;
+}
+.shortcut-item span {
+  flex: 1;
+  color: var(--text-dim);
+}

@@ -3,9 +3,34 @@ const Search = (() => {
   const CHUNK_SIZE = 60;        // 每批渲染的卡片数，滚动到底部续加（分组模式按组为粒度）
   const THUMB_CONCURRENCY = 6;  // 缩略图并发上限（每张图都是服务端一次 ffmpeg 抽帧进程）
   const HOVER_DELAY_MS = 260;   // 悬停多少毫秒后开始播放，避免扫过误触发
+  const PREVIEW_LEAD_IN_FRAMES = 2; // 跳过切点前两帧，避免转场/解码黑帧闪现
 
   let lastMatches = [];
-  let lastQuery = '';           // 最近一次查询，供导出目录名/打标签使用
+  let lastQuery = '';           // 最近一次查询，供保存主题使用
+  let lastRecipe = null;
+  let newKeys = new Set();
+  let archiveTime = { mode: 'all' };
+  let busy = false;
+  let requestGeneration = 0;
+  let activeRequest = null;
+  let phase = '';
+  function setPhase(value) {
+    phase = value;
+    if (el.searchPhase) el.searchPhase.textContent = value;
+  }
+  function cancel() {
+    if (!activeRequest) return;
+    activeRequest.abort();
+    activeRequest = null;
+    requestGeneration += 1;
+    setPhase('已取消等待；服务端计算可能仍在继续');
+    setBusy(false);
+  }
+  function setBusy(value) {
+    busy = value;
+    if (el.cancelSearch) el.cancelSearch.hidden = !activeRequest;
+    document.dispatchEvent(new CustomEvent('search-busy'));
+  }
   let selectedIdx = new Set();  // 勾选的结果下标（相对 lastMatches，视图变化不丢失）
   let visualHandler = null;     // 结果卡片「找相似」回调，由 plugin.js 注入
   let selectionHandler = null;  // 勾选数量变化回调，由 plugin.js 注入
@@ -18,7 +43,9 @@ const Search = (() => {
   let groupPtr = 0;             // 分组模式已渲染的组数
   let activePos = -1;           // 当前预览项在 displayList 中的位置（键盘导航用）
   let activeMatch = null;
+  let previewLoadToken = 0;     // 连续切换结果时废弃上一轮异步媒体事件
   let sentinelObserver = null;
+  let previewOffsetFrame = 0; // 转码片段的起点；源视频直播放时为 0。
 
   const el = {};
 
@@ -31,13 +58,13 @@ const Search = (() => {
       while (active < THUMB_CONCURRENCY && queue.length) {
         // 入队发生在卡片插入 DOM 之前，不能用 isConnected 过滤；
         // 换一轮结果时 clear() 已清空队列，不会有陈旧请求。
-        const { img, url } = queue.shift();
+        const { img, url, onError } = queue.shift();
         active += 1;
-        const done = () => {
+        const done = (event) => {
           active -= 1;
           img.onload = null;
           img.onerror = null;
-          pump();
+          try { if (event?.type === 'error') onError?.(); } finally { pump(); }
         };
         img.onload = done;
         img.onerror = done;
@@ -46,12 +73,25 @@ const Search = (() => {
     }
 
     return {
-      load(img, url) {
-        queue.push({ img, url });
-        pump();
+      load(img, url, onError) {
+        // 使用懒加载：图片进入视口时才加载
+        if (typeof LazyLoad !== 'undefined') {
+          LazyLoad.observe(img, url, () => {
+            if (onError) {
+              img.onerror = onError;
+            }
+          });
+        } else {
+          // 降级：直接加载
+          queue.push({ img, url, onError });
+          pump();
+        }
       },
       clear() {
         queue.length = 0;
+        if (typeof LazyLoad !== 'undefined') {
+          LazyLoad.clear();
+        }
       },
     };
   })();
@@ -83,18 +123,42 @@ const Search = (() => {
     if (!item || !item.fileURL || !Bridge.isWebPlayable(item)) return;
 
     const fps = m.fps || 25;
-    const startSec = m.start_frame / fps;
+    const startSec = previewStartFrame(m) / fps;
     const endSec = Math.max(m.end_frame / fps, startSec + 0.2);
 
     const v = document.createElement('video');
     v.className = 'hover-video';
     v.muted = true;
     v.playsInline = true;
-    v.preload = 'metadata';
+    v.preload = 'auto';
     v.src = item.fileURL;
+    let revealRequested = false;
+
+    const revealAfterPaint = () => {
+      if (revealRequested || hover.video !== v) return;
+      revealRequested = true;
+      const reveal = () => {
+        if (hover.video === v) v.classList.add('ready');
+      };
+      // loadeddata 只表示帧已解码；等待浏览器真正绘制后再盖住缩略图，消除黑闪。
+      if (typeof v.requestVideoFrameCallback === 'function') {
+        v.requestVideoFrameCallback(reveal);
+      } else {
+        requestAnimationFrame(reveal);
+      }
+    };
+
+    const playFromScene = () => {
+      if (hover.video !== v) return;
+      v.play().then(revealAfterPaint).catch(() => {});
+    };
     v.onloadedmetadata = () => {
-      v.currentTime = startSec;
-      v.play().catch(() => {});
+      if (Math.abs(v.currentTime - startSec) < 0.04) playFromScene();
+      else v.currentTime = startSec;
+    };
+    v.onseeked = playFromScene;
+    v.onerror = () => {
+      if (hover.video === v) stopHoverPreview();
     };
     v.ontimeupdate = () => {
       if (v.currentTime >= endSec) v.currentTime = startSec; // 片段内循环
@@ -125,22 +189,36 @@ const Search = (() => {
     el.previewInfo = document.getElementById('preview-info');
     el.btnLocate = document.getElementById('btn-locate');
     el.btnClosePreview = document.getElementById('btn-close-preview');
-    el.btnSelectAll = document.getElementById('btn-select-all-results');
     el.viewBar = document.getElementById('view-bar');
     el.resultCount = document.getElementById('result-count');
     el.timeline = document.getElementById('preview-timeline');
     el.previewTags = document.getElementById('preview-tags');
+    const searchButton = document.getElementById('btn-search');
+    el.cancelSearch = document.createElement('button');
+    el.cancelSearch.id = 'btn-cancel-search';
+    el.cancelSearch.type = 'button';
+    el.cancelSearch.textContent = '取消等待';
+    el.cancelSearch.hidden = true;
+    el.cancelSearch.addEventListener('click', cancel);
+    el.searchPhase = document.createElement('span');
+    el.searchPhase.id = 'search-phase';
+    el.searchPhase.setAttribute('role', 'status');
+    searchButton.parentNode.appendChild(el.cancelSearch);
+    searchButton.parentNode.appendChild(el.searchPhase);
+    el.previewStatus = document.createElement('div');
+    el.previewStatus.id = 'preview-status';
+    el.previewStatus.setAttribute('role', 'status');
+    el.previewRetry = document.createElement('button');
+    el.previewRetry.textContent = '重试预览';
+    el.previewRetry.hidden = true;
+    el.previewRetry.addEventListener('click', () => { if (activeMatch) openPreview(activeMatch); });
+    el.previewPanel.appendChild(el.previewStatus);
+    el.previewPanel.appendChild(el.previewRetry);
 
     el.btnClosePreview.addEventListener('click', closePreview);
     el.btnLocate.addEventListener('click', async () => {
       const item = activeMatch && Bridge.itemForPath(activeMatch.video_path);
       if (item) await Bridge.locateInEagle([item.id]);
-    });
-    el.btnSelectAll.addEventListener('click', async () => {
-      const ids = [...new Set(
-        lastMatches.map((m) => Bridge.itemForPath(m.video_path)).filter(Boolean).map((it) => it.id)
-      )];
-      if (ids.length) await Bridge.locateInEagle(ids);
     });
 
     // 键盘：Esc 收起预览；预览打开时 ←/→ 切换上一个/下一个结果
@@ -174,6 +252,11 @@ const Search = (() => {
 
   function computeDisplayList() {
     let idxs = lastMatches.map((_, i) => i);
+    if (archiveTime.mode !== 'all') {
+      const allowed = new Set(SearchRecipe.filterMatches(lastMatches, archiveTime,
+        (match) => Bridge.itemForPath(match.video_path)));
+      idxs = idxs.filter((i) => allowed.has(lastMatches[i]));
+    }
     if (view.minDur > 0) {
       idxs = idxs.filter((i) => (lastMatches[i].duration_seconds || 0) >= view.minDur);
     }
@@ -204,13 +287,12 @@ const Search = (() => {
   }
 
   /* ---------- 检索 ---------- */
-  async function findLibraryIndexes() {
-    const cfg = Config.get();
-    const prefix = `${Bridge.indexNameForLibrary()}_`;
-    const indexes = await Api.listIndexes();
-    return indexes
-      .filter((ix) => ix.model === cfg.modelName && ix.name.startsWith(prefix))
-      .map((ix) => ix.path);
+  async function findLibraryIndexes(modelName = Config.get().modelName) {
+    const identity = await Bridge.resolveLibraryIdentity();
+    if (!identity?.id || !identity.index_name) throw new Error('素材库身份不完整，请升级或重启搜索服务');
+    const indexes = await Api.listIndexes(identity.id);
+    return indexes.filter((ix) => ix.model === modelName
+      && ix.name === `${identity.index_name}_${modelName}.lance`).map((ix) => ix.path);
   }
 
   /* scopeSet 非空时只保留路径在集合内的结果（限定选中文件夹搜索） */
@@ -219,20 +301,24 @@ const Search = (() => {
     return matches.filter((m) => scopeSet.has(Bridge.normalizePath(m.video_path)));
   }
 
-  function finishSearch(resp, scopeSet, query) {
+  function finishSearch(resp, scopeSet, query, recipe) {
     if (!resp.ok || !resp.data || !resp.data.success) {
       const msg = (resp.data && resp.data.error) || `搜索失败（HTTP ${resp.status}）`;
       return { ok: false, message: msg };
     }
     lastQuery = query;
-    lastMatches = applyScope(resp.data.matches || [], scopeSet);
+    lastMatches = identifyMatches(applyScope(resp.data.matches || [], scopeSet));
+    archiveTime = { mode: 'all' };
+    lastRecipe = recipe;
+    newKeys.clear();
     selectedIdx.clear(); // 勾选下标相对上一轮结果，跨搜索保留会让批量操作命中错误素材
     render();
+    document.dispatchEvent(new CustomEvent('search-completed'));
     return { ok: true, count: lastMatches.length, extra: resp.data };
   }
 
-  async function prepare() {
-    const indices = await findLibraryIndexes();
+  async function prepare(modelName) {
+    const indices = await findLibraryIndexes(modelName);
     if (indices.length === 0) return null;
     await Bridge.refreshPathMap();
     return indices;
@@ -240,25 +326,132 @@ const Search = (() => {
 
   const NO_INDEX = { ok: false, message: '当前素材库还没有索引，请先点击「索引整个库」' };
 
-  async function run(query, threshold, scopeSet = null) {
-    const indices = await prepare();
-    if (!indices) return NO_INDEX;
-    return finishSearch(await Api.search(query, indices, threshold, scopeSet), scopeSet, query);
+  function identifyMatches(matches) {
+    return matches.map((match) => ({ ...match,
+      eagleItemId: Bridge.itemForPath(match.video_path)?.id || match.eagleItemId,
+    }));
   }
 
-  async function runVisual(payload, scopeSet = null, label = '') {
-    const indices = await prepare();
-    if (!indices) return NO_INDEX;
-    const resp = await Api.searchVisual(payload, indices, Config.get().visualThreshold, scopeSet);
-    return finishSearch(resp, scopeSet, label || '视觉搜索');
+  async function requestRecipe(recipe, context, signal) {
+    const indices = await prepare(recipe.config.modelName);
+    if (signal?.aborted) { const error = new Error('已取消等待'); error.name = 'AbortError'; throw error; }
+    if (!indices) throw new Error(NO_INDEX.message);
+    if (SearchRecipe.normalize(recipe.library) !== SearchRecipe.normalize(eagle.library.path)) {
+      throw new Error('素材库已切换，请重新搜索');
+    }
+    if (context.paths && context.paths.size === 0) {
+      return { ok: true, data: { success: true, matches: [] } };
+    }
+
+    // 尝试从缓存获取结果
+    if (typeof SearchCache !== 'undefined') {
+      const cacheParams = {
+        query: recipe.query,
+        imagePath: recipe.payload?.imagePath,
+        imageUrl: recipe.payload?.imageUrl,
+        model: recipe.config.modelName,
+        indexNames: indices,
+        topK: recipe.config.threshold
+      };
+
+      const cached = SearchCache.get(cacheParams);
+      if (cached) {
+        console.log('[搜索缓存] 命中缓存，跳过请求');
+        setPhase('从缓存加载结果…');
+        return { ok: true, data: { success: true, matches: cached } };
+      }
+    }
+
+    const payload = context.payload || recipe.payload;
+    const cfg = recipe.config;
+    setPhase('等待服务返回结果…');
+
+    let resp;
+    if (recipe.kind === 'visual') {
+      resp = await Api.searchVisual(payload, indices, cfg.visualThreshold, context.paths, cfg, { signal });
+    } else if (recipe.kind === 'hybrid') {
+      resp = await Api.searchHybrid(recipe.query, payload, indices, cfg.threshold, context.paths, cfg, { signal });
+    } else {
+      resp = await Api.search(recipe.query, indices, cfg.threshold, context.paths, cfg, { signal });
+    }
+
+    // 存储到缓存
+    if (typeof SearchCache !== 'undefined' && resp.ok && resp.data?.success && resp.data?.matches) {
+      const cacheParams = {
+        query: recipe.query,
+        imagePath: recipe.payload?.imagePath,
+        imageUrl: recipe.payload?.imageUrl,
+        model: recipe.config.modelName,
+        indexNames: indices,
+        topK: recipe.config.threshold
+      };
+      SearchCache.set(cacheParams, resp.data.matches);
+      console.log('[搜索缓存] 已缓存结果');
+    }
+
+    return resp;
+  }
+
+  async function runCaptured(kind, query, payload, context, threshold) {
+    if (busy) return { ok: false, message: '已有搜索正在进行，请稍候' };
+    const generation = ++requestGeneration;
+    const controller = new AbortController();
+    activeRequest = controller;
+    setBusy(true);
+    setPhase('准备搜索范围…');
+    try {
+      const recipe = SearchRecipe.capture(kind, query, payload, context, threshold);
+      const resp = await requestRecipe(recipe, context, controller.signal);
+      if (generation !== requestGeneration) return { ok: false, cancelled: true, stale: true };
+      if (SearchRecipe.normalize(recipe.library) !== SearchRecipe.normalize(eagle.library.path)) {
+        throw new Error('素材库已切换，已忽略旧搜索结果');
+      }
+      setPhase('渲染结果…');
+      return finishSearch(resp, context.paths, query, recipe);
+    } catch (error) {
+      if (generation !== requestGeneration || error.name === 'AbortError') return { ok: false, cancelled: true, stale: generation !== requestGeneration };
+      throw error;
+    } finally {
+      if (generation === requestGeneration) { activeRequest = null; setPhase(''); setBusy(false); }
+    }
+  }
+
+  function run(query, threshold, context) {
+    return runCaptured('text', query, null, context, threshold);
+  }
+
+  function runVisual(payload, context, label = '') {
+    return runCaptured('visual', label || '视觉搜索', payload, context);
   }
 
   /* 混合检索：文本提示词 × 视觉片段 融合（生成提示词搜索用） */
-  async function runHybrid(query, payload, scopeSet = null, textThreshold = null) {
-    const indices = await prepare();
-    if (!indices) return NO_INDEX;
-    const resp = await Api.searchHybrid(query, payload, indices, textThreshold, scopeSet);
-    return finishSearch(resp, scopeSet, query);
+  function runHybrid(query, payload, context, textThreshold = null) {
+    return runCaptured('hybrid', query, payload, context, textThreshold);
+  }
+
+  /* 仓库更新只返回候选；持久化成功后才改变当前显示。 */
+  async function replay(recipe) {
+    if (busy) throw new Error('已有搜索正在进行，请稍候');
+    const generation = ++requestGeneration;
+    const controller = new AbortController();
+    activeRequest = controller;
+    setBusy(true);
+    setPhase('准备更新范围…');
+    try {
+      const context = await SearchRecipe.resolve(recipe);
+      const resp = await requestRecipe(recipe, context, controller.signal);
+      if (generation !== requestGeneration || controller.signal.aborted) {
+        const error = new Error('已取消更新等待'); error.name = 'AbortError'; throw error;
+      }
+      if (SearchRecipe.normalize(recipe.library) !== SearchRecipe.normalize(eagle.library.path)) {
+        throw new Error('素材库已切换，已忽略旧更新结果');
+      }
+      if (!resp.ok || !resp.data?.success) throw new Error(resp.data?.error || '更新搜索失败');
+      return { matches: identifyMatches(applyScope(resp.data.matches || [], context.paths)),
+        missingDates: context.missingDates };
+    } finally {
+      if (generation === requestGeneration) { activeRequest = null; setPhase(''); setBusy(false); }
+    }
   }
 
   /* ---------- 渲染 ---------- */
@@ -279,14 +472,28 @@ const Search = (() => {
     return Math.min(Math.max(m.start_frame, 3), m.end_frame);
   }
 
+  function previewStartFrame(m) {
+    return Math.min(m.start_frame + PREVIEW_LEAD_IN_FRAMES, m.end_frame);
+  }
+
   function notifySelection() {
     selectionHandler?.(selectedIdx.size, lastMatches.length);
+  }
+
+  function setCardSelection(idx, checked, card, pick) {
+    if (checked) selectedIdx.add(idx);
+    else selectedIdx.delete(idx);
+    pick.checked = checked;
+    card.classList.toggle('selected', checked);
+    notifySelection();
   }
 
   function buildCard(m, idx, pos) {
     const item = Bridge.itemForPath(m.video_path);
     const card = document.createElement('div');
-    card.className = 'card' + (item ? '' : ' missing');
+    const initiallySelected = selectedIdx.has(idx);
+    card.className = 'card' + (item ? '' : ' missing') + (initiallySelected ? ' selected' : '');
+    card.title = '左键预览；右键选中或取消选择';
 
     const thumbBox = document.createElement('div');
     thumbBox.className = 'thumb-box';
@@ -300,13 +507,11 @@ const Search = (() => {
     const pick = document.createElement('input');
     pick.type = 'checkbox';
     pick.className = 'pick';
-    pick.title = '勾选后可批量导出/打标签';
-    pick.checked = selectedIdx.has(idx);
+    pick.title = '选中此片段';
+    pick.checked = initiallySelected;
     pick.addEventListener('click', (e) => e.stopPropagation());
     pick.addEventListener('change', () => {
-      if (pick.checked) selectedIdx.add(idx);
-      else selectedIdx.delete(idx);
-      notifySelection();
+      setCardSelection(idx, pick.checked, card, pick);
     });
 
     const meta = document.createElement('div');
@@ -327,6 +532,12 @@ const Search = (() => {
       + `<span>${multi}${badge}<span class="sim">${Number(m.similarity).toFixed(1)}</span></span>`;
     meta.appendChild(name);
     meta.appendChild(sub);
+    if (newKeys.has(ArchiveStore.sceneKey(m))) {
+      const badgeNew = document.createElement('span');
+      badgeNew.className = 'badge-new';
+      badgeNew.textContent = '本次新增';
+      thumbBox.appendChild(badgeNew);
+    }
     if (!item) {
       const tag = document.createElement('div');
       tag.className = 'missing-tag';
@@ -352,6 +563,11 @@ const Search = (() => {
     card.appendChild(similarBtn);
     card.appendChild(meta);
     card.addEventListener('click', () => openPreviewAt(pos));
+    card.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setCardSelection(idx, !selectedIdx.has(idx), card, pick);
+    });
     return card;
   }
 
@@ -360,15 +576,31 @@ const Search = (() => {
     details.className = 'vgroup';
     details.open = true;
     const summary = document.createElement('summary');
-    const best = Number(lastMatches[g.idxs[0]].similarity || 0).toFixed(1);
+    const scores = g.idxs.map((idx) => lastMatches[idx].similarity).filter(Number.isFinite);
+    const best = scores.length ? scores.reduce((a, b) => Math.max(a, b), -Infinity).toFixed(1) : '—';
     summary.innerHTML = `<b>${esc(g.name)}</b><span class="vgroup-info">${g.idxs.length} 个场景 · 最高 ${best}</span>`;
     const body = document.createElement('div');
     body.className = 'vgroup-body';
-    g.idxs.forEach((idx, i) => {
-      body.appendChild(buildCard(lastMatches[idx], idx, startPos + i));
-    });
+    let shown = 0;
+    const more = document.createElement('button');
+    more.type = 'button';
+    more.className = 'group-load-more';
+    const appendBatch = () => {
+      const end = Math.min(shown + CHUNK_SIZE, g.idxs.length);
+      for (let i = shown; i < end; i += 1) {
+        const idx = g.idxs[i];
+        body.appendChild(buildCard(lastMatches[idx], idx, startPos + i));
+      }
+      shown = end;
+      more.textContent = `加载更多场景（${shown}/${g.idxs.length}）`;
+      more.hidden = shown === g.idxs.length;
+    };
+    more.addEventListener('click', appendBatch);
+    details.addEventListener('toggle', () => { if (details.open && shown === 0) appendBatch(); });
+    appendBatch();
     details.appendChild(summary);
     details.appendChild(body);
+    details.appendChild(more);
     return details;
   }
 
@@ -438,13 +670,14 @@ const Search = (() => {
 
     const has = displayList.length > 0;
     el.emptyState.classList.toggle('hidden', has);
-    el.btnSelectAll.classList.toggle('hidden', !has);
     el.viewBar.classList.toggle('hidden', lastMatches.length === 0);
-    el.resultCount.textContent = view.minDur > 0
+    el.resultCount.textContent = view.minDur > 0 || archiveTime.mode !== 'all'
       ? `${displayList.length}/${lastMatches.length} 条`
       : `${lastMatches.length} 条`;
     if (!has) {
-      el.emptyState.innerHTML = lastMatches.length > 0
+      el.emptyState.innerHTML = lastMatches.length > 0 && archiveTime.mode !== 'all'
+        ? '<p>当前筛选下没有已保存的结果，可切回「不限时间」或调整时长。缺少加入 Eagle 时间的素材不参与时间筛选。</p>'
+        : lastMatches.length > 0
         ? '<p>当前时长过滤下没有结果，调低「≥秒」试试。</p>'
         : '<p>没有匹配结果，可尝试降低阈值或换个描述。</p>';
       return;
@@ -524,35 +757,74 @@ const Search = (() => {
   function openPreview(match) {
     stopHoverPreview();
     activeMatch = match;
+    const loadToken = ++previewLoadToken;
     const item = Bridge.itemForPath(match.video_path);
     const fps = match.fps || 25;
-    const startSec = match.start_frame / fps;
+    const startFrame = previewStartFrame(match);
+    const startSec = startFrame / fps;
     const endSec = match.end_frame / fps;
 
     const video = el.previewVideo;
     video.onloadedmetadata = null;
+    video.onseeked = null;
     video.ontimeupdate = null;
+    video.onplaying = null;
     video.onerror = null;
     video.pause();
+    previewOffsetFrame = 0;
+    video.poster = Api.previewUrl(match.video_path, thumbFrame(match));
+
+    const isCurrent = () => loadToken === previewLoadToken;
+    let fallbackUsed = false;
+    const setPreviewState = (state, message) => {
+      if (!isCurrent()) return;
+      el.previewPanel.dataset.state = state;
+      el.previewStatus.textContent = message;
+      el.previewRetry.hidden = state !== 'error';
+    };
+    setPreviewState('loading', '正在加载预览…');
+    const fail = () => setPreviewState('error', '预览失败：素材不可读取、编码不支持或转码服务不可用。可重试预览。');
+    const playCurrent = () => {
+      if (!isCurrent()) return;
+      setPreviewState('ready', fallbackUsed ? '转码预览已就绪' : '原生预览已就绪');
+      video.play().catch((error) => {
+        if (!isCurrent() || error.name === 'AbortError') return;
+        if (error.name === 'NotAllowedError') setPreviewState('ready', '预览已就绪，请点击播放');
+        else if (fallbackUsed) fail();
+        else useClipFallback();
+      });
+    };
 
     const useClipFallback = () => {
       // mkv/avi/flv、编码不支持或素材已删：走服务端转码片段
-      video.onerror = null;
+      if (!isCurrent()) return;
+      if (fallbackUsed) { fail(); return; }
+      fallbackUsed = true;
+      setPreviewState('transcoding', '正在请求转码预览…');
+      video.onerror = fail;
+      video.onseeked = null;
       video.ontimeupdate = null;
-      video.src = Api.clipUrl(match.video_path, match.start_frame, match.end_frame);
-      video.onloadedmetadata = () => video.play().catch(() => {});
+      previewOffsetFrame = startFrame;
+      video.src = Api.clipUrl(match.video_path, startFrame, match.end_frame);
+      video.onloadedmetadata = playCurrent;
     };
 
     if (item && item.fileURL && Bridge.isWebPlayable(item)) {
+      setPreviewState('native', '正在加载源视频…');
       // 直接播源文件，秒开且不产生转码缓存
       video.src = item.fileURL;
       video.onerror = useClipFallback;
       video.onloadedmetadata = () => {
-        video.currentTime = startSec;
-        video.play().catch(() => {});
+        if (!isCurrent()) return;
+        if (Math.abs(video.currentTime - startSec) < 0.04) playCurrent();
+        else {
+          // 只在初次定位后自动播放；用户暂停选帧时，后续 seek 不应重新播放。
+          video.onseeked = () => { video.onseeked = null; playCurrent(); };
+          video.currentTime = startSec;
+        }
       };
       video.ontimeupdate = () => {
-        if (video.currentTime >= endSec) video.pause();
+        if (isCurrent() && video.currentTime >= endSec) video.pause();
       };
     } else {
       useClipFallback();
@@ -576,30 +848,74 @@ const Search = (() => {
   }
 
   function closePreview() {
+    previewLoadToken += 1;
     activeMatch = null;
     activePos = -1;
     if (el.previewVideo) {
       el.previewVideo.pause();
+      el.previewVideo.onloadedmetadata = null;
+      el.previewVideo.onseeked = null;
+      el.previewVideo.ontimeupdate = null;
+      el.previewVideo.onerror = null;
       el.previewVideo.removeAttribute('src');
+      el.previewVideo.removeAttribute('poster');
       el.previewVideo.load();
       el.previewPanel.classList.add('hidden');
     }
   }
 
+  async function captureCover() {
+    const token = previewLoadToken;
+    const cover = await CoverFrame.capture(el.previewVideo, activeMatch, previewOffsetFrame);
+    if (token !== previewLoadToken) throw new Error('预览素材已切换，请重新选择封面画面');
+    return cover;
+  }
+
+  function stepPreviewFrame(direction) {
+    const video = el.previewVideo;
+    if (!activeMatch || video.readyState < 2 || video.seeking || video.error) {
+      throw new Error('请等待视频加载或定位完成');
+    }
+    video.pause();
+    video.onseeked = null;
+    video.currentTime = CoverFrame.stepTime(video.currentTime, direction, Number(activeMatch.fps) || 25, video.duration);
+  }
+
   /* ---------- 结果存档载入 ---------- */
-  async function loadResults(matches, query) {
-    await Bridge.refreshPathMap();
-    lastMatches = Array.isArray(matches) ? matches : [];
-    lastQuery = query || '';
-    selectedIdx.clear();
-    render();
-    return lastMatches.length;
+  async function loadResults(matches, query, recipe = null, savedView = null, addedKeys = [], time = { mode: 'all' }) {
+    if (busy) throw new Error('已有搜索正在进行，请稍候再打开主题');
+    setBusy(true);
+    try {
+      const pathMap = await Bridge.refreshPathMap();
+      const byId = new Map([...pathMap.values()].map((item) => [item.id, item]));
+      lastMatches = (Array.isArray(matches) ? matches : []).map((match) => {
+        const item = byId.get(match.eagleItemId);
+        return item ? { ...match, video_path: item.filePath, video_name: item.name } : match;
+      });
+      lastQuery = query || '';
+      lastRecipe = recipe;
+      archiveTime = SearchRecipe.clone(time);
+      newKeys = new Set(addedKeys);
+      if (savedView) Object.assign(view, savedView);
+      selectedIdx.clear();
+      render();
+      return lastMatches.length;
+    } finally { setBusy(false); }
   }
 
   /* ---------- 供 plugin.js 取数据 ---------- */
   function getSelectedMatches() {
     if (selectedIdx.size === 0) return null;
     return [...selectedIdx].sort((a, b) => a - b).map((i) => lastMatches[i]).filter(Boolean);
+  }
+
+  function clearSelection() {
+    selectedIdx.clear();
+    el.results.querySelectorAll('.card.selected').forEach((card) => {
+      card.classList.remove('selected');
+      card.querySelector('.pick').checked = false;
+    });
+    notifySelection();
   }
 
   function getAllMatches() {
@@ -617,7 +933,20 @@ const Search = (() => {
   return {
     bindDom, run, runVisual, runHybrid, setView, findLibraryIndexes, loadResults,
     setVisualHandler, setSelectionHandler,
-    getSelectedMatches, getAllMatches, getLastQuery, getActiveMatch,
+    getSelectedMatches, clearSelection, getAllMatches, getLastQuery, getActiveMatch,
     getRawMatches: () => lastMatches.slice(),
+    getRecipe: () => lastRecipe && SearchRecipe.clone(lastRecipe),
+    getView: () => ({ ...view }),
+    replay, cancel, getPhase: () => phase, isBusy: () => busy,
+    pausePreview() { closePreview(); stopHoverPreview(); },
+    captureCover, stepPreviewFrame,
+    loadThumbnail: (img, url, onError) => ThumbLoader.load(img, url, onError),
+    setArchiveTime(time) {
+      SearchRecipe.bounds(time);
+      if (JSON.stringify(archiveTime) === JSON.stringify(time)) return;
+      archiveTime = SearchRecipe.clone(time);
+      selectedIdx.clear();
+      render();
+    },
   };
 })();
