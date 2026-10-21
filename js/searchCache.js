@@ -11,8 +11,27 @@
 
 const SearchCache = (() => {
   const MAX_CACHE_SIZE = 50; // 最多缓存 50 个查询结果
-  const cache = new Map(); // key -> { results, timestamp }
+  const MAX_CACHE_AGE_MS = 5 * 60 * 1000; // 外部更新的兼容兜底，读取不延长有效期
+  const cache = new Map(); // key -> { results, timestamp, indexNames }
   const accessOrder = []; // LRU 顺序
+  const crypto = require('crypto');
+  const UNORDERED_FIELDS = new Set(['indexNames', 'index_names', 'allowedVideoPaths', 'allowed_video_paths']);
+
+  // 仅候选范围为无序集合；帧列表等其他数组保持顺序，避免改变查询语义。
+  function canonicalize(value, field = '') {
+    if (Array.isArray(value)) {
+      const entries = value.map(entry => canonicalize(entry));
+      return UNORDERED_FIELDS.has(field)
+        ? entries.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)))
+        : entries;
+    }
+    if (value && typeof value === 'object') {
+      return Object.fromEntries(Object.keys(value).sort()
+        .filter(key => value[key] !== undefined)
+        .map(key => [key, canonicalize(value[key], key)]));
+    }
+    return value;
+  }
 
   /**
    * 生成缓存键
@@ -20,33 +39,9 @@ const SearchCache = (() => {
    * @returns {string} 缓存键
    */
   function makeKey(params) {
-    const parts = [];
-
-    if (params.query) {
-      parts.push(`q:${params.query}`);
-    }
-
-    if (params.imagePath) {
-      parts.push(`img:${params.imagePath}`);
-    }
-
-    if (params.imageUrl) {
-      parts.push(`url:${params.imageUrl}`);
-    }
-
-    if (params.model) {
-      parts.push(`m:${params.model}`);
-    }
-
-    if (params.indexNames && params.indexNames.length > 0) {
-      parts.push(`idx:${params.indexNames.sort().join(',')}`);
-    }
-
-    if (params.topK) {
-      parts.push(`k:${params.topK}`);
-    }
-
-    return parts.join('|');
+    // 完整参数包含查询种类、帧/图片内容、设置、库身份和候选范围。
+    // 哈希后缓存键不会持有大幅 base64，也不会因分隔符或对象属性顺序碰撞。
+    return crypto.createHash('sha256').update(JSON.stringify(canonicalize(params))).digest('hex');
   }
 
   /**
@@ -59,6 +54,12 @@ const SearchCache = (() => {
     const cached = cache.get(key);
 
     if (!cached) {
+      return null;
+    }
+    if (Date.now() - cached.timestamp >= MAX_CACHE_AGE_MS) {
+      cache.delete(key);
+      const index = accessOrder.indexOf(key);
+      if (index > -1) accessOrder.splice(index, 1);
       return null;
     }
 
@@ -88,7 +89,8 @@ const SearchCache = (() => {
 
     cache.set(key, {
       results: results,
-      timestamp: Date.now()
+      timestamp: Date.now(),
+      indexNames: [...(params.indexNames || params.index_names || [])]
     });
 
     // 更新访问顺序
@@ -114,8 +116,8 @@ const SearchCache = (() => {
   function clearForIndex(indexName) {
     const keysToDelete = [];
 
-    for (const [key, _] of cache.entries()) {
-      if (key.includes(`idx:`) && key.includes(indexName)) {
+    for (const [key, entry] of cache.entries()) {
+      if (entry.indexNames.includes(indexName)) {
         keysToDelete.push(key);
       }
     }

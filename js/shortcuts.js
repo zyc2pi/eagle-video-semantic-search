@@ -99,27 +99,21 @@ function throttle(fn, delay) {
 /* 图片懒加载 */
 const LazyLoad = (() => {
   let observer = null;
-  const pending = new Map(); // element -> { url, onLoad }
+  const pending = new Map(); // element -> 入队函数；实际请求统一交给 ThumbLoader。
 
   function init() {
-    if (observer) return;
+    if (observer || typeof IntersectionObserver === 'undefined') return;
 
     observer = new IntersectionObserver((entries) => {
       entries.forEach(entry => {
         if (entry.isIntersecting) {
           const img = entry.target;
-          const data = pending.get(img);
+          const enqueue = pending.get(img);
 
-          if (data) {
-            img.src = data.url;
-            if (data.onLoad) {
-              img.onload = () => {
-                data.onLoad();
-                img.onload = null;
-              };
-            }
+          if (enqueue) {
             pending.delete(img);
             observer.unobserve(img);
+            enqueue();
           }
         }
       });
@@ -129,9 +123,10 @@ const LazyLoad = (() => {
     });
   }
 
-  function observe(img, url, onLoad) {
+  function observe(img, enqueue) {
     init();
-    pending.set(img, { url, onLoad });
+    if (!observer) { enqueue(); return; }
+    pending.set(img, enqueue);
     observer.observe(img);
   }
 

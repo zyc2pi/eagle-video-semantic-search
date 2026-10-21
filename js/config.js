@@ -27,7 +27,6 @@ const Config = (() => {
     indexSceneThreshold: 0.85,   // 场景切分余弦阈值，越高切得越碎
     indexLocalmaxOrder: 2,       // 边界检测局部极小值阶数
     indexFp16: true,             // FP16 推理（仅 NVIDIA GPU 生效）
-    miniKeepLoaded: false,       // MiniCPM 常驻显存（生成提示词提速，需 8GB+ 显存）
     // 搜索范围：all=整个库；selected=跟随 Eagle 当前选中文件夹；custom=指定文件夹列表
     scopeMode: 'all',
     scopeFolderIds: [],          // custom 模式勾选的文件夹 id（搜索时递归展开子文件夹）
@@ -44,7 +43,6 @@ const Config = (() => {
     aiMode: 'balanced', // AI 查询增强档位 fast/balanced/quality（变体数量与质量权衡）
     dedup: false,       // 跨视频去重
     dedupThreshold: 0.95, // 去重相似度阈值：越低合并越激进
-    exportMode: 'copy', // 导出片段模式：copy=流拷贝快无损；precision=逐帧精确重编码
     miniRerank: false,  // MiniCPM 二阶段精搜（慢，占显存大）
     history: [],        // 最近搜索词
   };
@@ -52,17 +50,52 @@ const Config = (() => {
   let configPath = null;
   let pluginDir = null;
   let current = { ...DEFAULTS };
+  let loadError = '';
+  let errorHandler = null;
+  const NUMBER_RULES = {
+    port: [1, 65535, true], threshold: [0, 120], visualThreshold: [0, 120],
+    visualMargin: [1, 60], visualSceneFrames: [1, 16, true], visualVideoFrames: [1, 32, true],
+    indexSampleInterval: [1, 30, true], indexResolution: [128, 512, true],
+    indexMinSceneLen: [1, 120, true], indexBatchSize: [8, 128, true],
+    indexSceneThreshold: [0.5, 0.99], indexLocalmaxOrder: [1, 5, true], dedupThreshold: [0.8, 0.99],
+  };
+
+  function validate(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('配置格式无效');
+    for (const [key, [min, max, integer]] of Object.entries(NUMBER_RULES)) {
+      const n = value[key];
+      if (!Number.isFinite(n) || n < min || n > max || (integer && !Number.isInteger(n))) {
+        throw new Error(`设置 ${key} 必须为 ${min}～${max} 范围内的${integer ? '整数' : '数值'}`);
+      }
+    }
+    if (value.indexResolution % 32 || value.indexBatchSize % 8) throw new Error('分辨率须为 32 的倍数，批大小须为 8 的倍数');
+    if (typeof value.projectRoot !== 'string' || !value.projectRoot.trim()
+        || typeof value.modelName !== 'string' || !value.modelName.trim()) throw new Error('项目路径和模型不能为空');
+    if (!['mean', 'max'].includes(value.visualAgg) || !['fast', 'balanced', 'quality'].includes(value.aiMode)
+        || !['all', 'selected', 'custom'].includes(value.scopeMode)) throw new Error('配置选项无效');
+    if (!Array.isArray(value.history) || !value.history.every((v) => typeof v === 'string')
+        || !Array.isArray(value.scopeFolderIds) || !value.scopeFolderIds.every((v) => typeof v === 'string')) throw new Error('配置列表格式无效');
+    for (const [key, fallback] of Object.entries(DEFAULTS)) {
+      if (typeof fallback === 'boolean' && typeof value[key] !== 'boolean') throw new Error(`设置 ${key} 必须为开关`);
+    }
+    if (typeof value.deepseekKey !== 'string') throw new Error('密钥字段格式无效');
+    return value;
+  }
 
   function init(pluginPath) {
     pluginDir = pluginPath;
     configPath = path.join(pluginPath, 'config.json');
+    current = { ...DEFAULTS };
+    loadError = '';
     try {
       if (fs.existsSync(configPath)) {
         const saved = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-        current = { ...DEFAULTS, ...saved };
+        if (!saved || typeof saved !== 'object' || Array.isArray(saved)) throw new Error('配置格式无效');
+        current = validate({ ...DEFAULTS, ...saved });
       }
     } catch (e) {
-      console.warn('读取配置失败，使用默认值', e);
+      loadError = '配置无法读取或格式无效，正在使用默认值；原文件已保留。请修复原文件后重载插件，当前禁止覆盖保存。';
+      console.warn(loadError);
       current = { ...DEFAULTS };
     }
     return current;
@@ -72,12 +105,27 @@ const Config = (() => {
     return current;
   }
 
-  function save(partial) {
-    current = { ...current, ...partial };
+  function save(partial, { recover = false } = {}) {
+    let temporary;
     try {
-      fs.writeFileSync(configPath, JSON.stringify(current, null, 2), 'utf-8');
+      if (loadError && !recover) throw new Error(loadError);
+      const next = validate({ ...current, ...partial });
+      if (loadError && recover && fs.existsSync(configPath)) {
+        fs.copyFileSync(configPath, `${configPath}.invalid-${require('crypto').randomUUID()}.bak`, fs.constants.COPYFILE_EXCL);
+      }
+      temporary = `${configPath}.${require('crypto').randomUUID()}.tmp`;
+      fs.writeFileSync(temporary, JSON.stringify(next, null, 2), { encoding: 'utf8', flag: 'wx' });
+      fs.renameSync(temporary, configPath);
+      current = next;
+      loadError = '';
     } catch (e) {
-      console.error('保存配置失败', e);
+      const error = new Error(loadError || `保存配置失败（${e.code || e.message}），旧配置未改变`);
+      errorHandler?.(error.message);
+      throw error;
+    } finally {
+      if (temporary) {
+        try { if (fs.existsSync(temporary)) fs.unlinkSync(temporary); } catch { /* 不掩盖原始错误 */ }
+      }
     }
     return current;
   }
@@ -90,5 +138,6 @@ const Config = (() => {
     return pluginDir;
   }
 
-  return { init, get, save, baseUrl, pluginPath, DEFAULTS };
+  return { init, get, save, validate, baseUrl, pluginPath, DEFAULTS,
+    getLoadError: () => loadError, onError: (handler) => { errorHandler = handler; } };
 })();

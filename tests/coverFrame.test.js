@@ -1,0 +1,17 @@
+const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
+const vm = require('vm');
+const context = {};
+vm.runInNewContext(`${fs.readFileSync(path.join(__dirname, '../js/coverFrame.js'), 'utf8')}\nthis.frame = CoverFrame;`, context);
+const frame = context.frame;
+assert.strictEqual(frame.sourceFrame(2, 25), 50, '直播放使用源视频时间');
+assert.strictEqual(frame.sourceFrame(2, 25, 100), 150, '转码片段必须加上截取起点');
+assert.strictEqual(frame.sourceFrame(1 / 29.97, 29.97, 30), 31);
+assert.strictEqual(frame.stepTime(0, -1, 25, 5), 0);
+assert.strictEqual(frame.stepTime(1, 1, 25, 5), 1.04);
+assert.strictEqual(frame.stepTime(1, -1, 25, 5), 0.96);
+assert.strictEqual(frame.stepTime(5, 1, 25, 5), 4.96, '不要定位到视频结束后的空画面');
+assert.throws(() => frame.sourceFrame(NaN, 25), /无法读取/);
+assert.throws(() => frame.stepTime(0, 1, 25, Infinity), /等待/);
+console.log('cover frame native/clip offsets and frame-step boundaries passed');

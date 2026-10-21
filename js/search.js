@@ -8,8 +8,11 @@ const Search = (() => {
   let lastMatches = [];
   let lastQuery = '';           // 最近一次查询，供保存主题使用
   let lastRecipe = null;
+  let temporalReport = null;
   let newKeys = new Set();
   let archiveTime = { mode: 'all' };
+  let archiveFilter = { query: '', source: 'all' };
+  let renderGeneration = 0;
   let busy = false;
   let requestGeneration = 0;
   let activeRequest = null;
@@ -32,8 +35,8 @@ const Search = (() => {
     document.dispatchEvent(new CustomEvent('search-busy'));
   }
   let selectedIdx = new Set();  // 勾选的结果下标（相对 lastMatches，视图变化不丢失）
-  let visualHandler = null;     // 结果卡片「找相似」回调，由 plugin.js 注入
   let selectionHandler = null;  // 勾选数量变化回调，由 plugin.js 注入
+  let contextMenuHandler = null; // 仓库主题可提供片段操作菜单；普通搜索仍以右键切换勾选。
 
   // 视图状态（过滤→排序→分组，均不修改 lastMatches 本体）
   const view = { sortBy: 'sim', minDur: 0, grouped: false };
@@ -53,18 +56,22 @@ const Search = (() => {
   const ThumbLoader = (() => {
     const queue = [];
     let active = 0;
+    let generation = 0;
 
     function pump() {
       while (active < THUMB_CONCURRENCY && queue.length) {
         // 入队发生在卡片插入 DOM 之前，不能用 isConnected 过滤；
         // 换一轮结果时 clear() 已清空队列，不会有陈旧请求。
-        const { img, url, onError } = queue.shift();
+        const { img, url, onError, token } = queue.shift();
         active += 1;
+        let settled = false;
         const done = (event) => {
+          if (settled) return;
+          settled = true;
           active -= 1;
           img.onload = null;
           img.onerror = null;
-          try { if (event?.type === 'error') onError?.(); } finally { pump(); }
+          try { if (event?.type === 'error' && token === generation) onError?.(); } finally { pump(); }
         };
         img.onload = done;
         img.onerror = done;
@@ -74,21 +81,23 @@ const Search = (() => {
 
     return {
       load(img, url, onError) {
-        // 使用懒加载：图片进入视口时才加载
-        if (typeof LazyLoad !== 'undefined') {
-          LazyLoad.observe(img, url, () => {
-            if (onError) {
-              img.onerror = onError;
-            }
-          });
-        } else {
-          // 降级：直接加载
-          queue.push({ img, url, onError });
+        const token = generation;
+        const enqueue = () => {
+          if (token !== generation) return;
+          queue.push({ img, url, onError, token });
           pump();
+        };
+        // 观察器只决定何时入队；所有实际图片请求共用六个槽位。
+        if (typeof LazyLoad !== 'undefined') {
+          LazyLoad.observe(img, enqueue);
+        } else {
+          enqueue();
         }
       },
       clear() {
+        generation += 1;
         queue.length = 0;
+        // 已开始请求仍占并发槽位直到完成；只废弃尚未开始和旧失败回退。
         if (typeof LazyLoad !== 'undefined') {
           LazyLoad.clear();
         }
@@ -223,6 +232,7 @@ const Search = (() => {
 
     // 键盘：Esc 收起预览；预览打开时 ←/→ 切换上一个/下一个结果
     document.addEventListener('keydown', (e) => {
+      if (document.querySelector('dialog[open]')) return;
       if (e.key === 'Escape') {
         closePreview();
         return;
@@ -234,10 +244,6 @@ const Search = (() => {
         openPreviewAt(activePos + (e.key === 'ArrowRight' ? 1 : -1));
       }
     });
-  }
-
-  function setVisualHandler(fn) {
-    visualHandler = fn;
   }
 
   function setSelectionHandler(fn) {
@@ -260,8 +266,14 @@ const Search = (() => {
     if (view.minDur > 0) {
       idxs = idxs.filter((i) => (lastMatches[i].duration_seconds || 0) >= view.minDur);
     }
+    const nameQuery = archiveFilter.query.trim().toLocaleLowerCase();
+    if (nameQuery) idxs = idxs.filter((i) => String(lastMatches[i].video_name || '').toLocaleLowerCase().includes(nameQuery));
+    if (archiveFilter.source !== 'all') {
+      idxs = idxs.filter((i) => !!lastMatches[i].manualScore === (archiveFilter.source === 'manual'));
+    }
     const cmp = {
-      sim: (a, b) => (lastMatches[b].similarity || 0) - (lastMatches[a].similarity || 0),
+      sim: (a, b) => (lastMatches[b].similarity || 0) - (lastMatches[a].similarity || 0)
+        || Number(lastMatches[b].manualScore?.mode === 'top') - Number(lastMatches[a].manualScore?.mode === 'top'),
       dur: (a, b) => (lastMatches[b].duration_seconds || 0) - (lastMatches[a].duration_seconds || 0),
       name: (a, b) => String(lastMatches[a].video_name).localeCompare(String(lastMatches[b].video_name), 'zh')
         || lastMatches[a].start_frame - lastMatches[b].start_frame,
@@ -287,12 +299,14 @@ const Search = (() => {
   }
 
   /* ---------- 检索 ---------- */
-  async function findLibraryIndexes(modelName = Config.get().modelName) {
+  async function findLibraryIndexes(modelName = Config.get().modelName, options = {}) {
     const identity = await Bridge.resolveLibraryIdentity();
     if (!identity?.id || !identity.index_name) throw new Error('素材库身份不完整，请升级或重启搜索服务');
     const indexes = await Api.listIndexes(identity.id);
-    return indexes.filter((ix) => ix.model === modelName
-      && ix.name === `${identity.index_name}_${modelName}.lance`).map((ix) => ix.path);
+    const matching = indexes.filter((ix) => ix.model === modelName
+      && ix.name === `${identity.index_name}_${modelName}.lance`);
+    const paths = matching.map((ix) => ix.path);
+    return options.withRevisions ? { paths, revisions: matching.map((ix) => ix.revision ?? null) } : paths;
   }
 
   /* scopeSet 非空时只保留路径在集合内的结果（限定选中文件夹搜索） */
@@ -301,14 +315,32 @@ const Search = (() => {
     return matches.filter((m) => scopeSet.has(Bridge.normalizePath(m.video_path)));
   }
 
+  function temporalSummary(report) {
+    return `动作核验：已检查 ${report.checked}/${report.candidates} 个候选，通过 ${report.matched} 个；`
+      + `无法判断 ${report.uncertain}，失败 ${report.errors}，尚未检查 ${report.unchecked}。`
+      + '长镜头仅检查局部连续窗口，未命中不代表素材库中没有该动作。'
+      + (report.intent === 'camera' ? '运镜按画面整体运动判断，含动画平移和缩放；穿梭按综合运镜召回。' : '');
+  }
+
+  function renderTemporalStatus() {
+    const status = document.getElementById('temporal-status');
+    if (!status) return;
+    const saved = lastMatches.filter((match) => match.temporal_verification?.verdict === 'match').length;
+    status.textContent = temporalReport ? temporalSummary(temporalReport)
+      : saved ? `已存结果中 ${saved} 个片段带动作核验依据；原始候选检查范围未保存在主题中。` : '';
+    status.classList.toggle('hidden', !status.textContent);
+  }
+
   function finishSearch(resp, scopeSet, query, recipe) {
     if (!resp.ok || !resp.data || !resp.data.success) {
       const msg = (resp.data && resp.data.error) || `搜索失败（HTTP ${resp.status}）`;
       return { ok: false, message: msg };
     }
     lastQuery = query;
+    temporalReport = resp.data.temporal_info || null;
     lastMatches = identifyMatches(applyScope(resp.data.matches || [], scopeSet));
     archiveTime = { mode: 'all' };
+    archiveFilter = { query: '', source: 'all' };
     lastRecipe = recipe;
     newKeys.clear();
     selectedIdx.clear(); // 勾选下标相对上一轮结果，跨搜索保留会让批量操作命中错误素材
@@ -318,8 +350,8 @@ const Search = (() => {
   }
 
   async function prepare(modelName) {
-    const indices = await findLibraryIndexes(modelName);
-    if (indices.length === 0) return null;
+    const indices = await findLibraryIndexes(modelName, { withRevisions: true });
+    if (indices.paths.length === 0) return null;
     await Bridge.refreshPathMap();
     return indices;
   }
@@ -333,9 +365,10 @@ const Search = (() => {
   }
 
   async function requestRecipe(recipe, context, signal) {
-    const indices = await prepare(recipe.config.modelName);
+    const snapshot = await prepare(recipe.config.modelName);
     if (signal?.aborted) { const error = new Error('已取消等待'); error.name = 'AbortError'; throw error; }
-    if (!indices) throw new Error(NO_INDEX.message);
+    if (!snapshot) throw new Error(NO_INDEX.message);
+    const indices = snapshot.paths;
     if (SearchRecipe.normalize(recipe.library) !== SearchRecipe.normalize(eagle.library.path)) {
       throw new Error('素材库已切换，请重新搜索');
     }
@@ -343,17 +376,19 @@ const Search = (() => {
       return { ok: true, data: { success: true, matches: [] } };
     }
 
-    // 尝试从缓存获取结果
-    if (typeof SearchCache !== 'undefined') {
-      const cacheParams = {
-        query: recipe.query,
-        imagePath: recipe.payload?.imagePath,
-        imageUrl: recipe.payload?.imageUrl,
-        model: recipe.config.modelName,
-        indexNames: indices,
-        topK: recipe.config.threshold
-      };
-
+    const payload = context.payload || recipe.payload;
+    const cfg = recipe.config;
+    const cacheParams = {
+      kind: recipe.kind, query: recipe.query, payload, config: cfg,
+      library: recipe.library, indexNames: indices,
+      indexRevisions: snapshot.revisions,
+      service: typeof Config.baseUrl === 'function' ? Config.baseUrl() : '',
+      allowedVideoPaths: context.paths == null ? null : Array.from(context.paths),
+    };
+    // 旧服务没有索引版本时仍可搜索，但不可把同路径误当作未更新。
+    const temporal = recipe.kind === 'text' && typeof Api.isTemporalQuery === 'function' && Api.isTemporalQuery(recipe.query);
+    const canCache = !temporal && snapshot.revisions.every((revision) => typeof revision === 'string' && revision.length > 0);
+    if (canCache && typeof SearchCache !== 'undefined') {
       const cached = SearchCache.get(cacheParams);
       if (cached) {
         console.log('[搜索缓存] 命中缓存，跳过请求');
@@ -362,9 +397,7 @@ const Search = (() => {
       }
     }
 
-    const payload = context.payload || recipe.payload;
-    const cfg = recipe.config;
-    setPhase('等待服务返回结果…');
+    setPhase(temporal ? '召回候选并核验连续画面中的动作，可能需要数分钟…' : '等待服务返回结果…');
 
     let resp;
     if (recipe.kind === 'visual') {
@@ -375,16 +408,11 @@ const Search = (() => {
       resp = await Api.search(recipe.query, indices, cfg.threshold, context.paths, cfg, { signal });
     }
 
+    if (temporal && resp.ok && resp.data?.success && !resp.data.temporal_info) {
+      throw new Error('当前服务尚未加载动作核验能力，请在设置中重启服务后重试');
+    }
     // 存储到缓存
-    if (typeof SearchCache !== 'undefined' && resp.ok && resp.data?.success && resp.data?.matches) {
-      const cacheParams = {
-        query: recipe.query,
-        imagePath: recipe.payload?.imagePath,
-        imageUrl: recipe.payload?.imageUrl,
-        model: recipe.config.modelName,
-        indexNames: indices,
-        topK: recipe.config.threshold
-      };
+    if (canCache && !signal?.aborted && typeof SearchCache !== 'undefined' && resp.ok && resp.data?.success && resp.data?.matches) {
       SearchCache.set(cacheParams, resp.data.matches);
       console.log('[搜索缓存] 已缓存结果');
     }
@@ -424,6 +452,10 @@ const Search = (() => {
     return runCaptured('visual', label || '视觉搜索', payload, context);
   }
 
+  function runFrameText(query, payload, context, threshold) {
+    return runCaptured('text', query, payload, context, threshold);
+  }
+
   /* 混合检索：文本提示词 × 视觉片段 融合（生成提示词搜索用） */
   function runHybrid(query, payload, context, textThreshold = null) {
     return runCaptured('hybrid', query, payload, context, textThreshold);
@@ -448,7 +480,7 @@ const Search = (() => {
       }
       if (!resp.ok || !resp.data?.success) throw new Error(resp.data?.error || '更新搜索失败');
       return { matches: identifyMatches(applyScope(resp.data.matches || [], context.paths)),
-        missingDates: context.missingDates };
+        missingDates: context.missingDates, temporal: resp.data.temporal_info || null };
     } finally {
       if (generation === requestGeneration) { activeRequest = null; setPhase(''); setBusy(false); }
     }
@@ -469,15 +501,21 @@ const Search = (() => {
 
   /* 视频头几帧可能是黑场/解码异常，缩略图从第 3 帧开始取（不超过场景尾帧） */
   function thumbFrame(m) {
+    const frames = m.temporal_verification?.evidence_frames;
+    const evidence = Array.isArray(frames) && frames[m.temporal_verification.intent === 'blink' ? 1 : 0];
+    if (Number.isInteger(evidence) && evidence >= m.start_frame && evidence < m.end_frame) return evidence;
     return Math.min(Math.max(m.start_frame, 3), m.end_frame);
   }
 
   function previewStartFrame(m) {
+    const evidence = m.temporal_verification?.evidence_frames?.[0];
+    if (Number.isInteger(evidence) && evidence >= m.start_frame && evidence < m.end_frame) return evidence;
     return Math.min(m.start_frame + PREVIEW_LEAD_IN_FRAMES, m.end_frame);
   }
 
   function notifySelection() {
     selectionHandler?.(selectedIdx.size, lastMatches.length);
+    document.dispatchEvent(new CustomEvent('search-selection'));
   }
 
   function setCardSelection(idx, checked, card, pick) {
@@ -493,7 +531,9 @@ const Search = (() => {
     const card = document.createElement('div');
     const initiallySelected = selectedIdx.has(idx);
     card.className = 'card' + (item ? '' : ' missing') + (initiallySelected ? ' selected' : '');
-    card.title = '左键预览；右键选中或取消选择';
+    card.dataset.sceneKey = String(ArchiveStore.sceneKey(m));
+    card.title = document.body?.dataset.topic === 'true'
+      ? '左键预览；右键从主题移除片段' : '左键预览；右键选中或取消选择';
 
     const thumbBox = document.createElement('div');
     thumbBox.className = 'thumb-box';
@@ -528,8 +568,9 @@ const Search = (() => {
     const multi = mq.length > 1
       ? `<span class="badge-multi" title="${esc(mq.map((q) => `${q.text}（${Number(q.similarity || 0).toFixed(1)}）`).join('\n'))}">×${mq.length}</span>`
       : '';
-    sub.innerHTML = `<span>${fmtTime(m.start)} – ${fmtTime(m.end)}</span>`
-      + `<span>${multi}${badge}<span class="sim">${Number(m.similarity).toFixed(1)}</span></span>`;
+    const manual = m.manualScore ? '<span class="badge-manual" title="人工分数，更新时保留">人工</span>' : '';
+    sub.innerHTML = `<span>${esc(fmtTime(m.start))} – ${esc(fmtTime(m.end))}</span>`
+      + `<span>${multi}${badge}${manual}<span class="sim">${Number(m.similarity).toFixed(1)}</span></span>`;
     meta.appendChild(name);
     meta.appendChild(sub);
     if (newKeys.has(ArchiveStore.sceneKey(m))) {
@@ -547,15 +588,11 @@ const Search = (() => {
 
     const similarBtn = document.createElement('button');
     similarBtn.className = 'similar-btn';
-    similarBtn.textContent = '找相似';
-    similarBtn.title = '以这个片段为查询，搜索相似场景';
+    similarBtn.textContent = '选帧找相似';
+    similarBtn.title = '打开预览，选定画面后找相似或转文字搜索';
     similarBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      visualHandler?.({
-        video_path: m.video_path,
-        start_frame: m.start_frame,
-        end_frame: m.end_frame,
-      }, `片段「${m.video_name}」`);
+      openPreviewAt(pos);
     });
 
     card.appendChild(thumbBox);
@@ -566,6 +603,7 @@ const Search = (() => {
     card.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       e.stopPropagation();
+      if (contextMenuHandler?.(e, m)) return;
       setCardSelection(idx, !selectedIdx.has(idx), card, pick);
     });
     return card;
@@ -574,6 +612,7 @@ const Search = (() => {
   function buildGroup(g, startPos) {
     const details = document.createElement('details');
     details.className = 'vgroup';
+    details.dataset.videoPath = Bridge.normalizePath(lastMatches[g.idxs[0]].video_path);
     details.open = true;
     const summary = document.createElement('summary');
     const scores = g.idxs.map((idx) => lastMatches[idx].similarity).filter(Number.isFinite);
@@ -592,6 +631,7 @@ const Search = (() => {
         body.appendChild(buildCard(lastMatches[idx], idx, startPos + i));
       }
       shown = end;
+      details.dataset.loaded = String(shown);
       more.textContent = `加载更多场景（${shown}/${g.idxs.length}）`;
       more.hidden = shown === g.idxs.length;
     };
@@ -645,6 +685,9 @@ const Search = (() => {
   }
 
   function render() {
+    renderTemporalStatus();
+    renderGeneration += 1;
+    document.dispatchEvent(new CustomEvent('search-context'));
     closePreview();
     stopHoverPreview();
     ThumbLoader.clear();
@@ -663,6 +706,7 @@ const Search = (() => {
     // openPreviewAt/时间轴/←→导航都以 displayList 位置为准，两者必须同构
     if (view.grouped) displayList = groups.flatMap((g) => g.idxs);
     el.results.innerHTML = '';
+    el.results.scrollTop = 0;
     el.results.classList.toggle('grouped', view.grouped);
     flatPtr = 0;
     groupPtr = 0;
@@ -671,11 +715,14 @@ const Search = (() => {
     const has = displayList.length > 0;
     el.emptyState.classList.toggle('hidden', has);
     el.viewBar.classList.toggle('hidden', lastMatches.length === 0);
-    el.resultCount.textContent = view.minDur > 0 || archiveTime.mode !== 'all'
+    const hasLocalFilter = archiveFilter.query.trim() || archiveFilter.source !== 'all';
+    el.resultCount.textContent = view.minDur > 0 || archiveTime.mode !== 'all' || hasLocalFilter
       ? `${displayList.length}/${lastMatches.length} 条`
       : `${lastMatches.length} 条`;
     if (!has) {
-      el.emptyState.innerHTML = lastMatches.length > 0 && archiveTime.mode !== 'all'
+      el.emptyState.innerHTML = lastMatches.length > 0 && hasLocalFilter
+        ? '<p>当前查找条件下没有片段，可清空视频名或切回“全部片段”，也可调整时间与时长。</p>'
+        : lastMatches.length > 0 && archiveTime.mode !== 'all'
         ? '<p>当前筛选下没有已保存的结果，可切回「不限时间」或调整时长。缺少加入 Eagle 时间的素材不参与时间筛选。</p>'
         : lastMatches.length > 0
         ? '<p>当前时长过滤下没有结果，调低「≥秒」试试。</p>'
@@ -754,9 +801,17 @@ const Search = (() => {
     renderPreviewTags(match);
   }
 
+  function openPreviewByKey(key) {
+    const pos = displayList.findIndex((index) => ArchiveStore.sceneKey(lastMatches[index]) === key);
+    if (pos < 0) return false;
+    openPreviewAt(pos);
+    return true;
+  }
+
   function openPreview(match) {
     stopHoverPreview();
     activeMatch = match;
+    document.dispatchEvent(new CustomEvent('preview-change'));
     const loadToken = ++previewLoadToken;
     const item = Bridge.itemForPath(match.video_path);
     const fps = match.fps || 25;
@@ -780,13 +835,14 @@ const Search = (() => {
       if (!isCurrent()) return;
       el.previewPanel.dataset.state = state;
       el.previewStatus.textContent = message;
+      el.previewStatus.hidden = !message;
       el.previewRetry.hidden = state !== 'error';
     };
     setPreviewState('loading', '正在加载预览…');
     const fail = () => setPreviewState('error', '预览失败：素材不可读取、编码不支持或转码服务不可用。可重试预览。');
     const playCurrent = () => {
       if (!isCurrent()) return;
-      setPreviewState('ready', fallbackUsed ? '转码预览已就绪' : '原生预览已就绪');
+      setPreviewState('ready', fallbackUsed ? '转码预览已就绪' : '');
       video.play().catch((error) => {
         if (!isCurrent() || error.name === 'AbortError') return;
         if (error.name === 'NotAllowedError') setPreviewState('ready', '预览已就绪，请点击播放');
@@ -839,8 +895,10 @@ const Search = (() => {
       : '';
     el.previewInfo.innerHTML =
       `<b>${esc(match.video_name)}</b><br>`
-      + `片段：${fmtTime(match.start)} – ${fmtTime(match.end)}（${match.duration_display || ''}）<br>`
-      + `相似度：${Number(match.similarity).toFixed(2)}${hybridInfo}${mqList}`
+      + `片段：${esc(fmtTime(match.start))} – ${esc(fmtTime(match.end))}（${esc(match.duration_display)}）<br>`
+      + `${match.manualScore ? '人工评分' : '相似度'}：${Number(match.similarity).toFixed(2)}${hybridInfo}${mqList}`
+      + (match.temporal_verification?.verdict === 'match'
+        ? `<br>动作依据：源视频第 ${esc((match.temporal_verification.evidence_frames || []).join(' → '))} 帧（从 0 计数）` : '')
       + (item ? '' : '<br><span style="color:var(--danger)">素材已不在 Eagle 库中</span>')
       + '<br><span class="hint-inline">←/→ 切换结果，Esc 收起</span>';
     el.btnLocate.disabled = !item;
@@ -862,14 +920,17 @@ const Search = (() => {
       el.previewVideo.load();
       el.previewPanel.classList.add('hidden');
     }
+    document.dispatchEvent(new CustomEvent('preview-change'));
   }
 
-  async function captureCover() {
+  async function captureFrame() {
     const token = previewLoadToken;
     const cover = await CoverFrame.capture(el.previewVideo, activeMatch, previewOffsetFrame);
-    if (token !== previewLoadToken) throw new Error('预览素材已切换，请重新选择封面画面');
+    if (token !== previewLoadToken) throw new Error('预览素材已切换，请重新选择画面');
     return cover;
   }
+
+  function captureCover() { return captureFrame(); }
 
   function stepPreviewFrame(direction) {
     const video = el.previewVideo;
@@ -882,19 +943,99 @@ const Search = (() => {
   }
 
   /* ---------- 结果存档载入 ---------- */
-  async function loadResults(matches, query, recipe = null, savedView = null, addedKeys = [], time = { mode: 'all' }) {
+  function captureBrowsePosition() {
+    if (!el.results?.getBoundingClientRect) return null;
+    const rect = el.results.getBoundingClientRect();
+    const cards = [...el.results.querySelectorAll('.card')];
+    const anchor = cards.find((card) => {
+      const bounds = card.getBoundingClientRect();
+      return bounds.height > 0 && bounds.bottom > rect.top && bounds.top < rect.bottom;
+    });
+    return {
+      scrollTop: el.results.scrollTop, rendered: flatPtr, groupCount: groupPtr,
+      anchorKey: anchor?.dataset.sceneKey || null,
+      anchorOffset: anchor ? anchor.getBoundingClientRect().top - rect.top : 0,
+      groups: [...el.results.querySelectorAll('.vgroup')].map((group) => ({
+        path: group.dataset.videoPath, loaded: Number(group.dataset.loaded), open: group.open,
+      })),
+    };
+  }
+
+  async function restoreBrowsePosition(position) {
+    if (!position || !el.results?.getBoundingClientRect) return false;
+    const library = eagle.library.path;
+    const generation = renderGeneration;
+    if (view.grouped) {
+      while (groupPtr < Math.min(position.groupCount || 0, groups.length)) renderNextChunk();
+      const savedGroups = new Map((position.groups || []).map((group) => [group.path, group]));
+      el.results.querySelectorAll('.vgroup').forEach((group) => {
+        const saved = savedGroups.get(group.dataset.videoPath);
+        if (!saved) return;
+        const more = group.querySelector('.group-load-more');
+        while (!more.hidden && Number(group.dataset.loaded) < saved.loaded) more.click();
+        group.open = saved.open;
+      });
+    } else {
+      while (flatPtr < Math.min(position.rendered || 0, displayList.length)) renderNextChunk();
+    }
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    if (generation !== renderGeneration || library !== eagle.library.path || document.body.dataset.page === 'warehouse') return false;
+    const anchor = [...el.results.querySelectorAll('.card')].find((card) => card.dataset.sceneKey === position.anchorKey);
+    const anchorRect = anchor?.getBoundingClientRect();
+    const desired = anchorRect?.height > 0
+      ? el.results.scrollTop + anchorRect.top - el.results.getBoundingClientRect().top - position.anchorOffset
+      : position.scrollTop;
+    el.results.scrollTop = Math.max(0, Number(desired) || 0);
+    return el.results.scrollTop > 0;
+  }
+
+  function captureState() {
+    return {
+      library: SearchRecipe.normalize(lastRecipe?.library || eagle.library.path),
+      matches: lastMatches.slice(), query: lastQuery,
+      recipe: lastRecipe && SearchRecipe.clone(lastRecipe), view: { ...view },
+      addedKeys: [...newKeys], time: SearchRecipe.clone(archiveTime),
+      selected: [...selectedIdx],
+      temporalReport: temporalReport && { ...temporalReport },
+      filter: { ...archiveFilter }, position: captureBrowsePosition(),
+    };
+  }
+
+  function restoreState(state) {
+    if (busy) throw new Error('已有搜索正在进行，请稍候再返回搜索');
+    if (state?.library !== SearchRecipe.normalize(eagle.library.path)) state = null;
+    lastMatches = state?.matches.slice() || [];
+    lastQuery = state?.query || '';
+    temporalReport = state?.temporalReport || null;
+    lastRecipe = state?.recipe ? SearchRecipe.clone(state.recipe) : null;
+    Object.assign(view, state?.view || { sortBy: 'sim', minDur: 0, grouped: false });
+    newKeys = new Set(state?.addedKeys || []);
+    archiveTime = SearchRecipe.clone(state?.time || { mode: 'all' });
+    archiveFilter = { query: '', source: 'all', ...state?.filter };
+    selectedIdx = new Set(state?.selected || []);
+    setPhase('');
+    render();
+  }
+
+  async function loadResults(matches, query, recipe = null, savedView = null, addedKeys = [], time = { mode: 'all' }, filter = { query: '', source: 'all' }, options = {}) {
+    if (options.shouldApply && !options.shouldApply()) return null;
     if (busy) throw new Error('已有搜索正在进行，请稍候再打开主题');
+    const library = eagle.library.path;
     setBusy(true);
     try {
       const pathMap = await Bridge.refreshPathMap();
+      if (options.shouldApply && !options.shouldApply()) return null;
+      if (library !== eagle.library.path) throw new Error('素材库已切换，请重新打开主题');
       const byId = new Map([...pathMap.values()].map((item) => [item.id, item]));
       lastMatches = (Array.isArray(matches) ? matches : []).map((match) => {
         const item = byId.get(match.eagleItemId);
         return item ? { ...match, video_path: item.filePath, video_name: item.name } : match;
       });
       lastQuery = query || '';
+      temporalReport = null;
       lastRecipe = recipe;
       archiveTime = SearchRecipe.clone(time);
+      archiveFilter = { ...filter };
       newKeys = new Set(addedKeys);
       if (savedView) Object.assign(view, savedView);
       selectedIdx.clear();
@@ -904,6 +1045,16 @@ const Search = (() => {
   }
 
   /* ---------- 供 plugin.js 取数据 ---------- */
+  function replaceResults(matches, addedKeys = []) {
+    if (busy) throw new Error('已有搜索正在进行，请稍候再整理主题');
+    const selectedKeys = new Set((getSelectedMatches() || []).map(ArchiveStore.sceneKey));
+    lastMatches = matches.slice();
+    newKeys = new Set(addedKeys);
+    selectedIdx = new Set(lastMatches.map((match, index) => selectedKeys.has(ArchiveStore.sceneKey(match)) ? index : -1)
+      .filter((index) => index >= 0));
+    render();
+  }
+
   function getSelectedMatches() {
     if (selectedIdx.size === 0) return null;
     return [...selectedIdx].sort((a, b) => a - b).map((i) => lastMatches[i]).filter(Boolean);
@@ -931,15 +1082,24 @@ const Search = (() => {
   }
 
   return {
-    bindDom, run, runVisual, runHybrid, setView, findLibraryIndexes, loadResults,
-    setVisualHandler, setSelectionHandler,
-    getSelectedMatches, clearSelection, getAllMatches, getLastQuery, getActiveMatch,
+    bindDom, run, runVisual, runFrameText, runHybrid, setView, findLibraryIndexes, loadResults, captureState, restoreState,
+    setSelectionHandler, replaceResults, captureBrowsePosition, restoreBrowsePosition,
+    setContextMenuHandler: (fn) => { contextMenuHandler = fn; },
+    getSelectedMatches, clearSelection, getAllMatches, getLastQuery, getActiveMatch, openPreviewByKey,
     getRawMatches: () => lastMatches.slice(),
     getRecipe: () => lastRecipe && SearchRecipe.clone(lastRecipe),
     getView: () => ({ ...view }),
+    temporalSummary,
+    getArchiveFilter: () => ({ ...archiveFilter }),
+    setArchiveFilter(filter) {
+      if (!['all', 'manual', 'auto'].includes(filter.source) || typeof filter.query !== 'string') throw new Error('片段查找条件无效');
+      if (archiveFilter.query === filter.query && archiveFilter.source === filter.source) return;
+      archiveFilter = { ...filter };
+      render();
+    },
     replay, cancel, getPhase: () => phase, isBusy: () => busy,
     pausePreview() { closePreview(); stopHoverPreview(); },
-    captureCover, stepPreviewFrame,
+    captureCover, captureFrame, stepPreviewFrame,
     loadThumbnail: (img, url, onError) => ThumbLoader.load(img, url, onError),
     setArchiveTime(time) {
       SearchRecipe.bounds(time);
