@@ -1,9 +1,17 @@
 # 本地配置：含 DeepSeek API key，绝不入库
 config.json
+config.json.*.tmp
+config.json.invalid-*.bak
+config.json*.bak
+.env
+.env.*
+!.env.example
 
 # 运行时产物
 service.log
+*.log
 saves/
+warehouse/
 
 # 打包产物：Pack Plugin 会把 config.json（含 key）一起打进去
 *.eagleplugin

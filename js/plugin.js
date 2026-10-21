@@ -35,9 +35,14 @@
 
   let settingsAutoOpened = false;
 
+  function clearSearchCache() {
+    if (typeof SearchCache !== 'undefined') SearchCache.clear();
+  }
+
   function setServiceStatus(state, message) {
     const wasOnline = serviceOnline;
     serviceOnline = state === 'online';
+    if (!serviceOnline || !wasOnline) clearSearchCache();
     $('service-dot').className = `dot ${state}`;
     $('service-text').textContent = message;
     updateButtons();
@@ -60,12 +65,15 @@
   }
 
   function updateButtons() {
-    const indexing = Indexer.isRunning() || Search.isBusy();
+    const indexing = Indexer.isRunning() || Search.isBusy() || (typeof FrameSearch !== 'undefined' && FrameSearch.isBusy());
     $('btn-search').disabled = !serviceOnline || indexing;
     ['btn-index-primary', 'btn-index-menu-toggle'].forEach((id) => {
       $(id).disabled = !serviceOnline || indexing;
     });
     if (indexing) closeIndexModeMenu();
+    ['btn-frame-visual', 'btn-frame-text'].forEach((id) => {
+      $(id).disabled = !serviceOnline || indexing;
+    });
   }
 
   function closeIndexModeMenu() {
@@ -108,15 +116,13 @@
         $('index-progress-text').textContent =
           status.state === 'queued' ? `任务已排队${queued}` : `${status.current}/${status.total}  ${status.current_video || '准备中…'}${queued}`;
       },
+      onTerminal() {
+        // 失败或任务记录丢失也可能发生在部分写入后，不能继续使用旧结果。
+        clearSearchCache();
+      },
       async onDone(status) {
         $('index-progress').classList.add('hidden');
         updateButtons();
-
-        // 清除搜索缓存，因为索引已更新
-        if (typeof SearchCache !== 'undefined') {
-          SearchCache.clear();
-          console.log('[搜索缓存] 索引更新后已清除所有缓存');
-        }
 
         let outcome = { newSkipped: 0, newFailed: 0 };
         try {
@@ -268,13 +274,13 @@
         // 可见行为空说明返回结构完全对不上，把原始结构的关键信息亮出来便于排查
         const sample = roots.length ? Object.keys(roots[0]).join(', ') : '(空列表)';
         tree.innerHTML = `<p class="hint">没有读取到文件夹。原始返回 ${roots.length} 项，`
-          + `首项字段: ${sample}</p>`;
+          + `首项字段: ${esc(sample)}</p>`;
         return;
       }
       renderFolderTree(tree);
     } catch (e) {
       console.error('[Scope] 读取文件夹树失败', e);
-      tree.innerHTML = `<p class="hint" style="color:var(--danger)">读取文件夹失败：${e.message}</p>`;
+      tree.innerHTML = `<p class="hint" style="color:var(--danger)">读取文件夹失败：${esc(e.message)}</p>`;
     }
   }
 
@@ -454,7 +460,7 @@
           : '<p class="hint">还没有任何标签（提纯或打标签后这里会出现分布）</p>'}
       `;
     } catch (e) {
-      body.innerHTML = `<p class="hint" style="color:var(--danger)">统计失败：${e.message}</p>`;
+      body.innerHTML = `<p class="hint" style="color:var(--danger)">统计失败：${esc(e.message)}</p>`;
     }
   }
 
@@ -557,7 +563,7 @@
         summary.textContent = `${labels[job.state] || job.state} · ${job.source || '未知来源'} · ${job.current || 0}/${job.total || 0} · ${new Date((job.created_at || 0) * 1000).toLocaleString()}`;
         row.appendChild(summary);
         const detail = document.createElement('pre'); detail.className = 'job-details';
-        detail.textContent = `${job.job_id}\n${job.error || ''}\n` + (job.file_results || []).map((item) => `${item.status}: ${item.path}${item.error ? ` — ${item.error}` : ''}`).join('\n');
+        detail.textContent = `${job.job_id}\n${job.error || ''}\n` + (job.file_results || []).map((item) => `${item.state || item.status || 'unknown'}: ${item.path}${item.reason || item.error ? ` — ${item.reason || item.error}` : ''}`).join('\n');
         row.appendChild(detail);
         const active = ['queued', 'running', 'cancelling'].includes(job.state);
         if (active || (job.file_results || []).some((item) => item.retryable)) {
@@ -568,9 +574,18 @@
             try {
               if ((await Bridge.resolveLibraryIdentity()).id !== library.id) throw new Error('素材库已切换');
               if (active) { const result = await Api.cancelIndex(job.job_id); if (!result.ok) throw new Error(result.data?.error || '取消失败'); }
-              else await Api.retryIndex(job.job_id, key);
+              else {
+                clearSearchCache();
+                const retry = Indexer.retry(job.job_id, key, indexHandlers());
+                updateButtons();
+                await retry;
+                $('index-bar-fill').style.width = '0%';
+                $('index-progress-text').textContent = '已提交失败项重试，等待任务开始…';
+                $('index-progress').classList.remove('hidden');
+              }
               await openIndexJobs();
             } catch (error) { detail.textContent += `\n${error.message}`; action.disabled = false; }
+            finally { updateButtons(); }
           };
           row.appendChild(action);
         }
@@ -812,6 +827,10 @@
       const r = await Search.run(query, threshold, scope);
       if (r.cancelled || r.stale) return;
       if (!r.ok) toast(r.message, true, 5000);
+      else if (r.extra?.temporal_info) {
+        toast(Search.temporalSummary(r.extra.temporal_info), false, 10000);
+        if (r.count) pushHistory(query);
+      }
       else if (r.count === 0) toast('没有匹配结果，可尝试降低阈值');
       else {
         toast(`找到 ${r.count} 个匹配场景`);
@@ -1044,9 +1063,8 @@
     // Escape: 关闭对话框
     Shortcuts.register('escape', (e) => {
       const openDialog = document.querySelector('dialog[open]');
-      if (openDialog && !openDialog.hasAttribute('data-no-escape')) {
-        openDialog.close();
-      }
+      // 原生 Escape 会派发可取消的 cancel 事件，保留各业务的忙碌保护。
+      if (openDialog?.hasAttribute('data-no-escape')) e.preventDefault();
     }, { description: '关闭对话框', preventDefault: false });
 
     // Ctrl+/: 显示快捷键帮助
@@ -1162,8 +1180,8 @@
         closeIndexModeMenu();
       }
     });
-    Search.setVisualHandler(doVisualSearch);
     document.addEventListener('search-busy', updateButtons);
+    document.addEventListener('frame-search-busy', updateButtons);
   }
 
   eagle.onPluginCreate((plugin) => {
@@ -1174,6 +1192,11 @@
     Search.bindDom();
     Warehouse.init({ toast, canSearch: () => serviceOnline && !Indexer.isRunning() });
     wireEvents();
+    FrameSearch.init({ toast,
+      canSearch: () => serviceOnline && !Indexer.isRunning(),
+      resolveScope: resolveSearchScope,
+      onTextSuccess(query) { $('query').value = query; pushHistory(query); },
+    });
     initShortcuts();
 
     const cfg = Config.get();

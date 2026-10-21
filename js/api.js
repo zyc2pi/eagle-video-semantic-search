@@ -7,25 +7,44 @@ const Api = (() => {
 
   async function fetchJson(url, options = {}, timeoutMs = DEFAULT_TIMEOUT_MS) {
     const controller = new AbortController();
-    const timer = timeoutMs > 0 ? setTimeout(() => controller.abort(), timeoutMs) : null;
+    const callerSignal = options.signal;
+    let timedOut = false;
+    const abort = () => controller.abort();
+    if (callerSignal?.aborted) abort();
+    else callerSignal?.addEventListener('abort', abort, { once: true });
+    const timer = timeoutMs > 0 ? setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs) : null;
     try {
       const resp = await fetch(url, { ...options, signal: controller.signal });
-      const data = await resp.json().catch(() => null);
+      let data;
+      try { data = await resp.json(); }
+      catch (error) {
+        // JSON parsing may reject while the response body is still streaming.
+        // Cancellation, timeout and transport failures must reach the caller.
+        if (controller.signal.aborted || error.name !== 'SyntaxError') throw error;
+        data = null;
+      }
+      if (controller.signal.aborted) throw new Error('Response body interrupted');
       return { ok: resp.ok, status: resp.status, data };
     } catch (e) {
-      if (e && e.name === 'AbortError') throw new Error('请求超时（服务可能繁忙或已卡死，可在设置里重启服务）');
+      if (controller.signal.aborted) {
+        const error = new Error(timedOut ? '请求超时（服务可能繁忙，可稍后重试）' : '已取消等待；服务端计算可能仍在继续');
+        error.name = timedOut ? 'TimeoutError' : 'AbortError';
+        throw error;
+      }
       throw e;
     } finally {
       if (timer) clearTimeout(timer);
+      callerSignal?.removeEventListener('abort', abort);
     }
   }
 
-  function post(path, body, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  function post(path, body, timeoutMs = DEFAULT_TIMEOUT_MS, requestOptions = {}) {
     return fetchJson(`${Config.baseUrl()}${path}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json; charset=utf-8' },
+      headers: { 'Content-Type': 'application/json; charset=utf-8', ...requestOptions.headers },
       body: JSON.stringify(body),
-    }, timeoutMs);
+      signal: requestOptions.signal,
+    }, requestOptions.timeoutMs ?? timeoutMs);
   }
 
   async function health(timeoutMs = 1500) {
@@ -37,8 +56,33 @@ const Api = (() => {
     }
   }
 
-  async function listIndexes() {
-    const r = await fetchJson(`${Config.baseUrl()}/api/v1/indexes`);
+  async function healthInfo() {
+    const r = await fetchJson(`${Config.baseUrl()}/api/v1/health`, {}, 5000);
+    if (!r.ok) throw new Error('服务能力查询失败');
+    return r.data;
+  }
+
+  async function resolveLibrary(path, name) {
+    const r = await post('/api/v1/libraries/resolve', { path, name }, 10000);
+    if (!r.ok || !r.data?.library) throw new Error(r.data?.error || '素材库身份解析失败');
+    return r.data.library;
+  }
+
+  async function associateLibrary(id, path) {
+    const r = await post('/api/v1/libraries/associate', { library_id: id, path, confirm: true }, 10000);
+    if (!r.ok) throw new Error(r.data?.error || '素材库关联失败');
+    return r.data;
+  }
+
+  async function listIndexJobs(libraryId) {
+    const r = await fetchJson(`${Config.baseUrl()}/api/v1/index/jobs${libraryId ? `?library_id=${encodeURIComponent(libraryId)}` : ''}`, {}, 5000);
+    if (!r.ok) throw new Error(r.data?.error || '任务列表读取失败');
+    return r.data?.jobs || [];
+  }
+
+  async function listIndexes(libraryId) {
+    const r = await fetchJson(`${Config.baseUrl()}/api/v1/indexes${libraryId ? `?library_id=${encodeURIComponent(libraryId)}` : ''}`);
+    if (!r.ok) throw new Error(r.data?.error || '索引列表读取失败');
     return (r.data && r.data.indexes) || [];
   }
 
@@ -47,13 +91,18 @@ const Api = (() => {
     return (r.data && r.data.models) || [];
   }
 
-  function startIndex(videoPaths, indexName, modelName, rebuild = false) {
+  function startIndex(videoPaths, indexName, modelName, rebuild = false, pruneMissing = false, metadata = {}) {
     const cfg = Config.get();
     return post('/api/v1/index', {
+      library_id: metadata.library_id,
+      library_path: metadata.library_path,
+      source: metadata.source,
+      idempotency_key: metadata.idempotency_key,
       video_paths: videoPaths,
       index_name: indexName,
       model_name: modelName,
       resume: !rebuild,
+      prune_missing: !!pruneMissing,
       options: {
         sample_interval: cfg.indexSampleInterval,
         output_resolution: String(cfg.indexResolution),
@@ -63,16 +112,24 @@ const Api = (() => {
         localmax_order: cfg.indexLocalmaxOrder,
         use_fp16: !!cfg.indexFp16,
       },
-    });
+    }, 10000);
   }
 
-  async function indexStatus() {
-    const r = await fetchJson(`${Config.baseUrl()}/api/v1/index/status`);
+  async function indexStatus(jobId) {
+    const path = jobId ? `/api/v1/index/jobs/${encodeURIComponent(jobId)}` : '/api/v1/index/status';
+    const r = await fetchJson(`${Config.baseUrl()}${path}`, {}, 5000);
+    if (!r.ok) { const error = new Error(r.data?.error || '任务状态读取失败'); error.status = r.status; throw error; }
     return r.data;
   }
 
-  function cancelIndex() {
-    return post('/api/v1/index/cancel', {});
+  function cancelIndex(jobId) {
+    return post(jobId ? `/api/v1/index/jobs/${encodeURIComponent(jobId)}/cancel` : '/api/v1/index/cancel', {}, 5000);
+  }
+
+  async function retryIndex(jobId, idempotencyKey) {
+    const r = await post(`/api/v1/index/jobs/${encodeURIComponent(jobId)}/retry`, { idempotency_key: idempotencyKey }, 10000);
+    if (!r.ok || !r.data?.job_id) throw new Error(r.data?.error || '重试任务提交失败');
+    return r.data;
   }
 
   /**
@@ -84,8 +141,7 @@ const Api = (() => {
     return { ...body, allowed_video_paths: Array.from(allowedVideoPaths) };
   }
 
-  function searchVisual(payload, indices, threshold, allowedVideoPaths = null) {
-    const cfg = Config.get();
+  function searchVisual(payload, indices, threshold, allowedVideoPaths = null, cfg = Config.get(), requestOptions = {}) {
     const isScene = payload.start_frame != null || payload.end_frame != null;
     return post('/api/v1/search_visual', withSearchScope({
       ...payload,
@@ -97,11 +153,16 @@ const Api = (() => {
       scene_aggregation: cfg.visualAgg || 'mean',
       centered: !!cfg.visualCentered,
       query_frames: isScene ? cfg.visualSceneFrames : cfg.visualVideoFrames,
-    }, allowedVideoPaths));
+    }, allowedVideoPaths), DEFAULT_TIMEOUT_MS, requestOptions);
   }
 
-  function search(query, indices, threshold, allowedVideoPaths = null) {
-    const cfg = Config.get();
+  function isTemporalQuery(query) {
+    const text = String(query || '');
+    if (/不眨眼|没有眨眼|without blinking|not blinking/i.test(text)) return false;
+    return /眨眼|眨动|blink(?:ing)?\b|运镜|推拉摇移|(?:相机|摄影机|摄像机|镜头).{0,6}(?:穿梭|穿行|推进|推拉|平移|移动|环绕|旋转)|(?:推|拉|摇|移|跟)镜头|camera\s+(?:movement|motion|pan|dolly|tracking|fly)/i.test(text);
+  }
+
+  function search(query, indices, threshold, allowedVideoPaths = null, cfg = Config.get(), requestOptions = {}) {
     return post('/api/v1/search', withSearchScope({
       query,
       indices,
@@ -116,39 +177,20 @@ const Api = (() => {
       use_dedup: !!cfg.dedup,
       dedup_threshold: cfg.dedupThreshold != null ? cfg.dedupThreshold : 0.95,
       use_mini_rerank: !!cfg.miniRerank,
-    }, allowedVideoPaths), cfg.miniRerank ? LONG_TIMEOUT_MS : DEFAULT_TIMEOUT_MS);
-  }
-
-  /* 批量导出片段为真实 MP4，clips: [{video_path, start_frame, end_frame}]，prompt 用作导出目录名 */
-  function exportClips(clips, prompt) {
-    return post('/api/v1/export', {
-      clips: clips.map((m) => ({
-        video_path: m.video_path,
-        start_frame: m.start_frame,
-        end_frame: m.end_frame,
-        start: m.start,
-        end: m.end,
-      })),
-      mode: Config.get().exportMode === 'precision' ? 'precision' : 'copy',
-      prompt,
-    }, LONG_TIMEOUT_MS);
+      temporal_search: isTemporalQuery(query) ? 'auto' : 'off',
+    }, allowedVideoPaths), cfg.miniRerank || isTemporalQuery(query) ? LONG_TIMEOUT_MS : DEFAULT_TIMEOUT_MS, requestOptions);
   }
 
   function shutdown() {
-    return post('/api/v1/shutdown', {});
+    return post('/api/v1/shutdown', {}, 5000, { headers: Service.controlHeaders() });
   }
 
-  /* 视频内容 → 搜索提示词（MiniCPM 视觉模型，首次调用加载模型较慢） */
-  function describe(payload) {
-    return post('/api/v1/describe', {
-      ...payload,
-      keep_model: !!Config.get().miniKeepLoaded,
-    });
+  function describeFrame(payload, requestOptions = {}) {
+    return post('/api/v1/describe', { ...payload, keep_model: false }, LONG_TIMEOUT_MS, requestOptions);
   }
 
   /* 混合检索：文本提示词 × 视觉片段 两路融合。textThreshold 不传时退回配置值 */
-  function searchHybrid(query, payload, indices, textThreshold, allowedVideoPaths = null) {
-    const cfg = Config.get();
+  function searchHybrid(query, payload, indices, textThreshold, allowedVideoPaths = null, cfg = Config.get(), requestOptions = {}) {
     return post('/api/v1/search_hybrid', withSearchScope({
       query,
       ...payload,
@@ -163,7 +205,7 @@ const Api = (() => {
       exclude_self: true,
       start_frame_offset: -2,
       end_frame_offset: 2,
-    }, allowedVideoPaths));
+    }, allowedVideoPaths), DEFAULT_TIMEOUT_MS, requestOptions);
   }
 
   /* 语义查重：场景向量 → 视频级相似分组（纯 CPU，不加载模型） */
@@ -171,20 +213,16 @@ const Api = (() => {
     return post('/api/v1/dedup_scan', { indices, threshold });
   }
 
-  /* 镜头分析：运镜（光流，CPU）+ 景别（DinoV2）。返回 tags 可直接写 Eagle */
-  function analyzeShot(videoPath, startFrame, endFrame) {
-    return post('/api/v1/analyze_shot', {
-      video_path: videoPath,
-      start_frame: startFrame,
-      end_frame: endFrame,
-    });
-  }
-
   /* 查询索引覆盖状态：可搜索路径 + 已检查但无有效场景的跳过路径。 */
   async function indexCoverage(lancePath) {
     const r = await fetchJson(
       `${Config.baseUrl()}/api/v1/index/contents?path=${encodeURIComponent(lancePath)}`);
-    const data = r.data || {};
+    if (!r.ok || r.data?.success !== true) throw new Error(r.data?.error || '索引覆盖状态读取失败');
+    const data = r.data;
+    if (!Array.isArray(data.video_paths) || ['skipped_paths', 'failed_paths', 'processed_paths']
+      .some((key) => data[key] !== undefined && !Array.isArray(data[key]))) {
+      throw new Error('索引覆盖状态格式无效');
+    }
     const indexedPaths = data.video_paths || [];
     const skippedPaths = data.skipped_paths || [];
     const failedPaths = data.failed_paths || [];
@@ -211,8 +249,8 @@ const Api = (() => {
   }
 
   return {
-    health, listIndexes, listModels, startIndex, indexStatus, cancelIndex,
-    search, searchVisual, searchHybrid, exportClips, shutdown, describe,
-    analyzeShot, dedupScan, indexCoverage, indexContents, previewUrl, clipUrl,
+    health, healthInfo, resolveLibrary, associateLibrary, listIndexJobs, listIndexes, listModels, startIndex, indexStatus, cancelIndex, retryIndex,
+    search, searchVisual, searchHybrid, describeFrame, shutdown, isTemporalQuery,
+    dedupScan, indexCoverage, indexContents, previewUrl, clipUrl,
   };
 })();

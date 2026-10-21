@@ -8,6 +8,32 @@ const Bridge = (() => {
   const IMAGE_EXTS = new Set(['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif', 'tif', 'tiff']);
 
   let pathMap = new Map(); // normalize(filePath) -> item
+  let identity = null;
+  let identityKey = '';
+  let identityRequest = null;
+  let videoCache = null;
+  let videoRequest = null;
+
+  async function resolveLibraryIdentity() {
+    const libraryPath = eagle.library.path;
+    if (!libraryPath) throw new Error('未打开素材库');
+    const key = `${Config.baseUrl()}|${normalizePath(libraryPath)}`;
+    if (identity && identityKey === key) return identity;
+    if (identityRequest?.key === key) return identityRequest.promise;
+    const promise = (async () => {
+      const capabilities = await Api.healthInfo();
+      if (!capabilities?.capabilities?.library_identity) throw new Error('搜索服务需要升级并重启，以支持安全素材库隔离');
+      const result = await Api.resolveLibrary(libraryPath, libraryPath.split(/[\\/]/).filter(Boolean).pop());
+      if (!result?.id || !result.index_name || normalizePath(libraryPath) !== normalizePath(eagle.library.path)
+          || key !== `${Config.baseUrl()}|${normalizePath(eagle.library.path)}`) throw new Error('素材库或服务已切换，请重新操作');
+      identity = { ...result, path: libraryPath }; identityKey = key;
+      return identity;
+    })();
+    identityRequest = { key, promise };
+    try { return await promise; } finally { if (identityRequest?.promise === promise) identityRequest = null; }
+  }
+
+  function invalidateCache() { videoCache = null; videoRequest = null; pathMap = new Map(); }
 
   function isVideoItem(item) {
     const ext = String(item.ext || '').toLowerCase().replace(/^\./, '');
@@ -48,6 +74,14 @@ const Bridge = (() => {
     skipped.forEach((p) => processed.add(p));
     failed.forEach((p) => processed.add(p));
 
+    const currentPaths = new Set(
+      (videos || []).map((video) => normalizePath(video.filePath)),
+    );
+    let staleCount = 0;
+    processed.forEach((path) => {
+      if (!currentPaths.has(path)) staleCount += 1;
+    });
+
     let indexedCount = 0;
     let skippedCount = 0;
     let failedCount = 0;
@@ -64,6 +98,7 @@ const Bridge = (() => {
       skipped: skippedCount,
       failed: failedCount,
       missing: missingCount,
+      stale: staleCount,
     };
   }
 
@@ -95,14 +130,22 @@ const Bridge = (() => {
   }
 
   function indexNameForLibrary() {
-    const libPath = eagle.library.path || '';
-    const libName = libPath.split(/[\\/]/).pop().replace(/\.library$/i, '');
-    return `eagle_${sanitizeName(libName)}`;
+    if (!identity || identityKey !== `${Config.baseUrl()}|${normalizePath(eagle.library.path)}`) throw new Error('请先解析素材库身份');
+    return identity.index_name;
   }
 
-  async function collectLibraryVideos() {
-    const items = await eagle.item.getAll();
-    return items.filter(isVideoItem);
+  async function collectLibraryVideos(force = false) {
+    const library = normalizePath(eagle.library.path);
+    if (!force && videoCache?.library === library && Date.now() - videoCache.time < 10000) return videoCache.items;
+    if (videoRequest?.library === library) return videoRequest.promise;
+    const promise = (async () => {
+      const items = (await eagle.item.getAll()).filter(isVideoItem);
+      if (normalizePath(eagle.library.path) !== library) throw new Error('素材库已切换，请重新操作');
+      videoCache = { library, time: Date.now(), items };
+      return items;
+    })();
+    videoRequest = { library, promise };
+    try { return await promise; } finally { if (videoRequest?.promise === promise) videoRequest = null; }
   }
 
   /* 递归收集文件夹及其所有子文件夹的 id */
@@ -216,14 +259,77 @@ const Bridge = (() => {
   }
 
   /* 搜索前刷新一次映射，供结果 video_path 反查 Eagle item */
-  async function refreshPathMap() {
-    const videos = await collectLibraryVideos();
+  async function refreshPathMap(force = false) {
+    const videos = await collectLibraryVideos(force);
     pathMap = new Map(videos.map((it) => [normalizePath(it.filePath), it]));
     return pathMap;
   }
 
   function itemForPath(videoPath) {
     return pathMap.get(normalizePath(videoPath)) || null;
+  }
+
+  // 只处理勾选片段对应的原素材；重复片段合并，失效素材单独计数。
+  function selectionTargets(matches) {
+    const ids = new Set();
+    const missing = new Set();
+    (matches || []).forEach((match) => {
+      const item = itemForPath(match.video_path);
+      if (item?.id) ids.add(item.id);
+      else missing.add(normalizePath(match.video_path));
+    });
+    return { ids: [...ids], missing: missing.size };
+  }
+
+  async function organizeItems(ids, kind, name, libraryPath, existingFolderId = null) {
+    name = String(name || '').trim();
+    if (!name) throw new Error('请输入名称');
+    if (!['tag', 'folder'].includes(kind)) throw new Error('未知操作');
+    const checkLibrary = () => {
+      if (!libraryPath || normalizePath(eagle.library.path) !== normalizePath(libraryPath)) {
+        throw new Error('素材库已切换，请重新搜索并选择素材');
+      }
+    };
+    checkLibrary();
+    const result = { success: 0, failed: 0, missing: 0, folderId: existingFolderId, items: [] };
+    if (existingFolderId) {
+      const folders = await eagle.folder.getByIds([existingFolderId]);
+      if (!folders?.some((folder) => folder.id === existingFolderId)) throw new Error('原文件夹已删除，未创建重复文件夹；请关闭后重新操作');
+    }
+    const field = kind === 'tag' ? 'tags' : 'folders';
+    for (const id of new Set(ids)) {
+      let item;
+      let previous;
+      try {
+        checkLibrary();
+        item = await eagle.item.getById(id);
+        checkLibrary();
+        if (!item || item.isDeleted) {
+          result.missing += 1; result.items.push({ id, name: item?.name || id, status: 'missing', reason: '素材不存在或已删除' }); continue;
+        }
+        if (kind === 'folder' && !result.folderId) {
+          const folder = await eagle.folder.create({ name });
+          if (!folder?.id) throw new Error('创建文件夹失败');
+          result.folderId = folder.id;
+        }
+        checkLibrary();
+        const value = kind === 'tag' ? name : result.folderId;
+        previous = [...(item[field] || [])];
+        if (!previous.includes(value)) {
+          item[field] = [...previous, value];
+          await item.save();
+        }
+        const cached = itemForPath(item.filePath);
+        if (cached) cached[field] = [...item[field]];
+        result.success += 1;
+        result.items.push({ id, name: item.name || id, status: 'success' });
+      } catch (error) {
+        if (item && previous) item[field] = previous;
+        result.failed += 1;
+        result.items.push({ id, name: item?.name || id, status: 'failed', reason: error.message || '读取或保存失败' });
+      }
+    }
+    return result;
   }
 
   async function locateInEagle(itemIds) {
@@ -284,6 +390,8 @@ const Bridge = (() => {
     indexOutcomeDelta,
     sanitizeName,
     indexNameForLibrary,
+    resolveLibraryIdentity,
+    invalidateCache,
     collectLibraryVideos,
     collectFolderVideos,
     collectSelectedVideos,
@@ -293,6 +401,8 @@ const Bridge = (() => {
     pathSetFromFolderIds,
     refreshPathMap,
     itemForPath,
+    selectionTargets,
+    organizeItems,
     locateInEagle,
     isWebPlayable,
   };

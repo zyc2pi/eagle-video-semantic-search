@@ -76,7 +76,8 @@ const Indexer = (() => {
       } catch (error) {
         if (token !== generation) return;
         if (error.status === 404) {
-          stopPolling(); listeners.onError?.('任务记录已不存在，请检查任务历史后重新提交增量索引'); return;
+          stopPolling(); listeners.onTerminal?.({ state: 'unknown', job_id: id });
+          listeners.onError?.('任务记录已不存在，请检查任务历史后重新提交增量索引'); return;
         }
         failures += 1;
         listeners.onConnection?.(false, failures >= 3 ? '连接中断，索引状态未知；正在重连，请勿重复提交' : '正在重新连接索引任务…');
@@ -91,6 +92,7 @@ const Indexer = (() => {
         timer = setTimeout(poll, 2000);
       } else {
         stopPolling();
+        listeners.onTerminal?.(status);
         if (['done', 'cancelled'].includes(status.state)) listeners.onDone?.(status);
         else listeners.onError?.(status.error || '任务已中断或状态丢失；已写入结果保留，可重新增量索引');
       }
@@ -114,6 +116,17 @@ const Indexer = (() => {
     const job = jobs.find((value) => value.source === 'semantic-search' && ['queued', 'running', 'cancelling'].includes(value.state));
     if (job) watch(job.job_id, handlers);
     return job;
+  }
+
+  async function retry(id, idempotencyKey, handlers = {}) {
+    if (isRunning()) throw new Error('已有索引任务正在提交或监视，请等待后重试');
+    submitting = true;
+    try {
+      const response = await Api.retryIndex(id, idempotencyKey);
+      if (!response?.job_id) throw new Error('服务未返回重试任务身份，请按原请求重试确认');
+      watch(response.job_id, handlers);
+      return response;
+    } finally { submitting = false; }
   }
 
   async function start(mode, handlers = {}) {
@@ -166,5 +179,5 @@ const Indexer = (() => {
     legacyIndexDetected = null;
   }
 
-  return { start, cancel, recover, isRunning, detectLegacyIndex, getLegacyIndexInfo, clearLegacyIndexCache };
+  return { start, retry, cancel, recover, isRunning, detectLegacyIndex, getLegacyIndexInfo, clearLegacyIndexCache };
 })();

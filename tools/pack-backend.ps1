@@ -28,6 +28,31 @@ if (-not (Test-Path (Join-Path $Source 'text_search.py'))) {
 }
 
 $backend = Join-Path $Dest 'backend'
+$sourceAbsolute = [IO.Path]::GetFullPath($Source).TrimEnd('\')
+$destAbsolute = [IO.Path]::GetFullPath($Dest).TrimEnd('\')
+if ($destAbsolute -eq $sourceAbsolute -or
+    $destAbsolute.StartsWith($sourceAbsolute + '\', [StringComparison]::OrdinalIgnoreCase) -or
+    $sourceAbsolute.StartsWith($destAbsolute + '\', [StringComparison]::OrdinalIgnoreCase)) {
+    throw '源后端与分发目录不能相同或相互包含，避免打包个人数据或覆盖本机配置'
+}
+$defaultConfig = Join-Path $PSScriptRoot 'backend-config.template.json'
+if (-not (Test-Path -LiteralPath $defaultConfig)) {
+    throw '缺少无凭据的后端默认配置模板'
+}
+if (Test-Path -LiteralPath $backend) {
+    $sensitiveFiles = @(Get-ChildItem -LiteralPath $backend -File | Where-Object {
+        $_.Name -like 'config.json.*' -or $_.Name -like 'service.log*'
+    })
+    if ((Test-Path -LiteralPath (Join-Path $backend 'state')) -or $sensitiveFiles.Count) {
+        throw '分发目录含旧服务凭据、配置备份或日志，请改用空的 Dest；为保护原数据，未删除残留文件'
+    }
+    $existingConfig = Join-Path $backend 'config.json'
+    if ((Test-Path -LiteralPath $existingConfig) -and
+        (Get-FileHash -LiteralPath $existingConfig -Algorithm SHA256).Hash -ne
+        (Get-FileHash -LiteralPath $defaultConfig -Algorithm SHA256).Hash) {
+        throw '分发目录已有非默认配置，请改用空的 Dest；未输出或覆盖其配置内容'
+    }
+}
 $listOnly = if ($DryRun) { '/L' } else { $null }
 
 function Invoke-Robocopy {
@@ -39,11 +64,17 @@ function Invoke-Robocopy {
 }
 
 Write-Host "== 1/4 复制服务主体（排除 索引/临时/导出/全部模型）=="
-# indexes/temp/output 是运行时产物；models 单独选择性复制；排除缓存与仓库元数据
+# state 包含本机服务控制凭据；config/备份可能含 API key，不能随分发包复制
 Invoke-Robocopy $Source $backend @(
-    '/XD', 'indexes', 'temp', 'output', 'models', '__pycache__', '.git',
-    '/XF', '*.pyc'
+    '/XD', 'indexes', 'temp', 'output', 'models', '__pycache__', '.git', (Join-Path $Source 'state'),
+    '/XF', '*.pyc', (Join-Path $Source 'config.json'), (Join-Path $Source 'config.json.*'),
+    (Join-Path $Source 'service.log'), (Join-Path $Source 'service.log.*')
 )
+if ($DryRun) {
+    Write-Host '分发配置：使用固定默认模板，不复制本机 API key 或配置备份'
+} else {
+    Copy-Item -LiteralPath $defaultConfig -Destination (Join-Path $backend 'config.json') -Force
+}
 
 Write-Host "== 2/4 复制必需模型：ffmpeg + FG-CLIP2 =="
 Invoke-Robocopy (Join-Path $Source 'models\ffmpeg') (Join-Path $backend 'models\ffmpeg')

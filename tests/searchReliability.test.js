@@ -1,0 +1,211 @@
+const assert = require('assert');
+const fs = require('fs');
+const vm = require('vm');
+const path = require('path');
+
+class Element {
+  constructor() { this.children = []; this.events = {}; this.dataset = {}; this.classList = { add() {}, remove() {}, toggle() {} }; }
+  appendChild(child) { this.children.push(child); return child; }
+  addEventListener(name, fn) { this.events[name] = fn; }
+  setAttribute() {}
+  removeAttribute() {}
+  pause() {}
+  load() {}
+  play() { return Promise.resolve(); }
+}
+const source = fs.readFileSync(path.join(__dirname, '..', 'js', 'search.js'), 'utf8');
+const deferred = [];
+const context = {
+  console, AbortController, setTimeout, clearTimeout,
+  CustomEvent: class {},
+  document: { body: { dataset: { page: 'search' } }, dispatchEvent() {}, createElement: () => new Element() },
+  Config: { get: () => ({ modelName: 'model' }) },
+  eagle: { library: { path: 'library' } },
+  Bridge: {
+    resolveLibraryIdentity: async () => ({ id: 'stable-id', index_name: 'library' }),
+    refreshPathMap: async () => new Map(),
+    normalizePath: (p) => p,
+    itemForPath: () => ({ fileURL: 'file:///test', id: 'test' }),
+    isWebPlayable: () => true,
+  },
+  SearchRecipe: {
+    clone: (value) => JSON.parse(JSON.stringify(value)),
+    capture: (kind, query) => ({ kind, query, library: 'library', config: {} }),
+    normalize: (p) => p,
+    resolve: async () => ({ paths: null }),
+  },
+  ArchiveStore: { sceneKey: (m) => m.start_frame },
+  Api: {
+    listIndexes: async (id) => {
+      assert.strictEqual(id, 'stable-id');
+      return [{ name: 'library_model.lance', model: 'model', path: 'index' },
+        { name: 'library_other_model.lance', model: 'model', path: 'wrong-index' }];
+    },
+    search: (_query, indices) => {
+      assert.deepStrictEqual(Array.from(indices), ['index'], '仅使用当前稳定库身份的精确模型索引');
+      return new Promise((resolve) => deferred.push(resolve));
+    },
+    previewUrl: () => 'poster', clipUrl: () => 'clip',
+  },
+};
+const injection = `
+  this.inspect = {
+    setup(matches) { lastMatches = matches; displayList = matches.map((_, i) => i);
+      el.previewVideo = new Element(); el.previewInfo = new Element();
+      el.previewStatus = new Element(); el.previewRetry = new Element();
+      el.previewPanel = new Element(); el.btnLocate = new Element(); },
+    buildCard, buildGroup, computeDisplayList, openPreview, closePreview, el,
+    setResults(root) { el.results = root; },
+    disableRender() { render = () => {}; },
+  };
+`;
+context.Element = Element;
+vm.runInNewContext(source.replace('  return {\n    bindDom,', injection + '  return {\n    bindDom,') + '\nthis.Search = Search;', context);
+const { Search, inspect } = context;
+
+async function main() {
+  inspect.setup([
+    { similarity: 20 }, { similarity: 20, manualScore: { mode: 'custom' } },
+    { similarity: 20, manualScore: { mode: 'top' } }, { similarity: 21 },
+  ]);
+  assert.deepStrictEqual(Array.from(inspect.computeDisplayList()), [3, 2, 0, 1],
+    '固定置顶分只在同分时优先，更高分结果仍在前面');
+  const matches = Array.from({ length: 1000 }, (_, i) => ({ video_path: 'video', video_name: 'video', start_frame: i,
+    end_frame: i + 20, fps: 25, similarity: i === 999 ? 95 : 60, duration_seconds: 10 }));
+  inspect.setup(matches);
+  const group = inspect.buildGroup({ name: 'video', idxs: matches.map((_, i) => i) }, 0);
+  assert(group.children[0].innerHTML.includes('最高 95.0'), '最高分不受时长排序影响');
+  assert.strictEqual(group.children[1].children.length, 60, '1000条仅创建首批60');
+  group.children[2].events.click();
+  assert.strictEqual(group.children[1].children.length, 120);
+
+  inspect.openPreview(matches[0]);
+  const firstError = inspect.el.previewVideo.onerror;
+  firstError();
+  assert.strictEqual(inspect.el.previewPanel.dataset.state, 'transcoding');
+  inspect.el.previewVideo.onerror();
+  assert.strictEqual(inspect.el.previewPanel.dataset.state, 'error');
+  assert.strictEqual(inspect.el.previewRetry.hidden, false);
+  inspect.openPreview(matches[1]);
+  firstError();
+  assert.strictEqual(inspect.el.previewPanel.dataset.state, 'native', '过期媒体事件不能覆盖新预览');
+  inspect.closePreview();
+  assert.strictEqual(Search.getActiveMatch(), null);
+
+  const payload = '<img src="missing" onerror="window.__marker=1">';
+  const malicious = { ...matches[0], start: payload, end: payload, duration_display: payload,
+    video_name: payload, matched_queries: [{ text: payload }, { text: payload }] };
+  const card = inspect.buildCard(malicious, 0, 0);
+  assert(card.children[3].children[1].innerHTML.includes('&lt;img'), '时间字段作为文本转义');
+  assert(!card.children[3].children[1].innerHTML.includes('<img'), '卡片不解析外部时间字段HTML');
+  inspect.openPreview(malicious);
+  assert(!inspect.el.previewInfo.innerHTML.includes('<img'), '预览时间、时长、查询和名称均不可注入HTML');
+  inspect.closePreview();
+
+  inspect.disableRender();
+  const localMatches = [
+    { video_name: 'City NIGHT', similarity: 10, duration_seconds: 4, start_frame: 1 },
+    { video_name: 'City Day', similarity: 11, duration_seconds: 4, start_frame: 2, manualScore: { value: 11 } },
+    { video_name: 'Forest', similarity: 12, duration_seconds: 4, start_frame: 3, manualScore: { value: 12 } },
+  ];
+  inspect.setup(localMatches);
+  Search.setArchiveFilter({ query: ' CITY ', source: 'manual' });
+  assert.deepStrictEqual(Array.from(inspect.computeDisplayList()), [1], '名称忽略大小写和两端空白，与人工筛选取交集');
+  Search.setArchiveFilter({ query: 'city', source: 'auto' });
+  assert.deepStrictEqual(Array.from(inspect.computeDisplayList()), [0], '未人工评分筛选不包含已有人工片段');
+  Search.setArchiveFilter({ query: '不存在', source: 'all' });
+  assert.strictEqual(inspect.computeDisplayList().length, 0);
+  assert.strictEqual(Search.getRawMatches().length, 3, '本地查找不修改完整快照');
+  assert.throws(() => Search.setArchiveFilter({ query: '', source: 'invalid' }), /条件无效/);
+  Search.setArchiveFilter({ query: '', source: 'all' });
+  inspect.setup(matches);
+  const old = Search.run('old', 10, { paths: null });
+  await new Promise(setImmediate);
+  Search.cancel();
+  assert.strictEqual(Search.isBusy(), false);
+  assert.strictEqual(Search.getRawMatches().length, 1000, '取消保留旧结果');
+  const fresh = Search.run('fresh', 10, { paths: null });
+  await new Promise(setImmediate);
+  deferred[0]({ ok: true, data: { success: true, matches: [] } });
+  assert.strictEqual((await old).cancelled, true);
+  assert.strictEqual(Search.isBusy(), true, '旧finally不得清除新查询busy');
+  deferred[1]({ ok: true, data: { success: true, matches: [matches[0]] } });
+  assert.strictEqual((await fresh).ok, true);
+  assert.strictEqual(Search.getLastQuery(), 'fresh');
+
+  const oldMapRefresh = context.Bridge.refreshPathMap;
+  let releaseMap;
+  let apply = true;
+  context.Bridge.refreshPathMap = () => new Promise((resolve) => { releaseMap = resolve; });
+  const abandonedLoad = Search.loadResults([], 'abandoned', null, null, [], { mode: 'all' },
+    { query: '', source: 'all' }, { shouldApply: () => apply });
+  apply = false;
+  releaseMap(new Map());
+  assert.strictEqual(await abandonedLoad, null, '读取素材映射期间返回/切换应丢弃旧主题');
+  assert.strictEqual(Search.getLastQuery(), 'fresh', '迟到主题不覆盖当前搜索词');
+  assert.strictEqual(Search.getRawMatches().length, 1, '迟到主题不覆盖当前结果');
+  assert.strictEqual(Search.isBusy(), false, '丢弃主题释放busy');
+  context.Bridge.refreshPathMap = oldMapRefresh;
+  assert.strictEqual(Search.getRawMatches().length, 1);
+  assert.strictEqual(Search.getArchiveFilter().source, 'all', '成功新搜索清除主题内查找条件');
+
+  const searchState = Search.captureState();
+  searchState.selected = [0];
+  Search.restoreState(searchState);
+  assert.strictEqual(Search.getSelectedMatches().length, 1, '恢复搜索同时恢复勾选');
+  const originalMatch = Search.getRawMatches()[0];
+  Search.replaceResults([{ ...originalMatch, start_frame: -1 }, originalMatch], ['added']);
+  assert.strictEqual(Search.getSelectedMatches().length, 1, '主题编辑按片段身份保留剩余勾选');
+  assert.strictEqual(Search.getSelectedMatches()[0].start_frame, originalMatch.start_frame);
+  assert.strictEqual(Search.getLastQuery(), 'fresh', '本地主题编辑不覆盖查询');
+  assert.deepStrictEqual(Search.getView(), searchState.view, '本地主题编辑保留视图条件');
+  Search.replaceResults([], []);
+  assert.strictEqual(Search.getSelectedMatches(), null, '移除所有片段后清空勾选');
+  Search.restoreState({ ...searchState, library: 'other-library' });
+  assert.strictEqual(Search.getRawMatches().length, 0, '不能恢复其他库的搜索片段');
+  assert.strictEqual(Search.getLastQuery(), '');
+  assert.strictEqual(Search.getRecipe(), null);
+  Search.restoreState(searchState);
+  assert.strictEqual(Search.getLastQuery(), 'fresh');
+
+  const frames = [];
+  context.requestAnimationFrame = (callback) => frames.push(callback);
+  const scrollRoot = new Element();
+  scrollRoot.scrollTop = 12;
+  scrollRoot.getBoundingClientRect = () => ({ top: 0, bottom: 500 });
+  scrollRoot.querySelectorAll = () => [];
+  inspect.setResults(scrollRoot);
+  const delayedPosition = Search.restoreBrowsePosition({ scrollTop: 400 });
+  context.eagle.library.path = 'other-library';
+  frames.shift()();
+  assert.strictEqual(await delayedPosition, false, '切库后丢弃迟到的位置恢复');
+  assert.strictEqual(scrollRoot.scrollTop, 12, '迟到恢复不能移动其他库的视图');
+  context.eagle.library.path = 'library';
+  const validPosition = Search.restoreBrowsePosition({ scrollTop: 400 });
+  frames.shift()();
+  assert.strictEqual(await validPosition, true);
+  assert.strictEqual(scrollRoot.scrollTop, 400);
+
+  const replay = Search.replay({ kind: 'text', query: 'replay', library: 'library', config: {} });
+  const replayRejected = assert.rejects(replay, { name: 'AbortError' });
+  await new Promise(setImmediate);
+  assert.throws(() => Search.restoreState(searchState), /已有搜索正在进行/,
+    '进行中的更新不能被状态恢复覆盖');
+  Search.cancel();
+  deferred[2]({ ok: true, data: { success: true, matches: [] } });
+  await replayRejected;
+  assert.strictEqual(Search.getRawMatches().length, 1, '取消更新不能影响已有结果');
+
+  const moved = Search.replay({ kind: 'text', query: 'replay', library: 'library', config: {} });
+  const movedRejected = assert.rejects(moved, /素材库已切换/);
+  await new Promise(setImmediate);
+  context.eagle.library.path = 'other-library';
+  deferred[3]({ ok: true, data: { success: true, matches: [] } });
+  await movedRejected;
+  assert.strictEqual(Search.getPhase(), '');
+  context.eagle.library.path = 'library';
+  context.Bridge.resolveLibraryIdentity = async () => ({});
+  await assert.rejects(Search.run('unsafe', 10, { paths: null }), /身份不完整/);
+  console.log('search cancellation, stale responses, batching and preview recovery passed');
+}
+main().catch((error) => { console.error(error); process.exitCode = 1; });

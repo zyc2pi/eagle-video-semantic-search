@@ -63,6 +63,7 @@
       <button id="btn-stop-index">停止</button>
     </div>
     <div class="spacer"></div>
+    <button id="btn-organize-undo" type="button" title="撤销最近一次收录或改分（Ctrl+Z）" disabled>撤销整理</button>
     <button id="btn-archives" title="打开主题仓库，查看保存结果与更新时间">搜索仓库</button>
     <div class="time-filter" role="group" aria-label="素材加入时间">
       <select id="search-time" aria-label="搜索时间范围">
@@ -88,6 +89,7 @@
     <div class="warehouse-filters">
       <input id="warehouse-query" type="search" placeholder="查找主题名称…" aria-label="查找主题名称">
       <select id="warehouse-category" aria-label="按分类筛选"></select>
+      <button id="warehouse-favorites" type="button" aria-pressed="false" title="只显示已星标的常用主题">★ 常用</button>
       <button id="warehouse-categories" type="button">管理分类</button>
       <div class="warehouse-view-toggle" role="group" aria-label="视图方式">
         <button id="warehouse-view-card" type="button" class="active" title="卡片视图">⊞</button>
@@ -105,11 +107,24 @@
   <section id="warehouse-topic" class="warehouse-topic hidden">
     <button id="topic-back" type="button">← 仓库</button>
     <div class="topic-heading"><h2 id="topic-name"></h2><p id="topic-meta" class="hint"></p></div>
+    <button id="topic-favorite" type="button" aria-pressed="false" title="设为常用主题">☆</button>
     <div id="topic-time-filter"></div>
     <button id="topic-edit" type="button">编辑条件</button>
     <button id="topic-update" type="button" class="primary" title="按已保存的搜索条件重新搜索并替换结果">更新结果</button>
+    <button id="topic-review" type="button" title="逐个审阅当前筛选下的片段，进度自动保存">快速审片</button>
+    <button id="topic-history" type="button" title="查看备份中的此主题版本，仅恢复当前主题">主题历史</button>
+    <button id="topic-removed" type="button">已移除 (0)</button>
     <button id="topic-search" type="button">新搜索</button>
     <button id="topic-reset-cover" type="button" class="hidden">恢复默认封面</button>
+  </section>
+
+  <section id="topic-scene-filter" class="topic-scene-filter hidden" aria-label="在主题中查找片段">
+    <input id="topic-scene-query" type="search" placeholder="查找视频名…" aria-label="查找主题中的视频名">
+    <select id="topic-scene-source" aria-label="按人工评分筛选片段">
+      <option value="all">全部片段</option>
+      <option value="manual">人工评分</option>
+      <option value="auto">未人工评分</option>
+    </select>
   </section>
 
   <section id="view-bar" class="view-bar hidden">
@@ -126,23 +141,53 @@
     <label class="scope-toggle"><input id="view-grouped" type="checkbox"> 按视频分组</label>
     <button id="btn-save-results" class="mini-btn" title="保存当前筛选后的全部结果及搜索条件">保存到仓库</button>
     <span id="selection-count" class="hint" aria-live="polite"></span>
+    <button id="btn-topic-add" type="button" class="mini-btn" disabled>添加到主题</button>
+    <button id="btn-topic-remove" type="button" class="mini-btn hidden" disabled>从主题移除</button>
+    <button id="btn-topic-score" type="button" class="mini-btn hidden" disabled>调整评分</button>
     <button id="btn-clear-selection" class="mini-btn" disabled>取消全部选择</button>
     <button id="btn-selection-tag" class="mini-btn" disabled>添加标签</button>
     <button id="btn-selection-folder" class="mini-btn" disabled>添加到新文件夹</button>
     <span id="result-count" class="result-count"></span>
   </section>
 
+  <p id="temporal-status" class="hint hidden" role="status"></p>
   <section id="preview-panel" class="preview-panel hidden">
     <video id="preview-video" controls preload="metadata"></video>
+    <section id="topic-review-panel" class="topic-review-panel hidden" aria-label="快速审片">
+      <p id="topic-review-scene" class="hint"></p>
+      <div class="topic-review-heading">
+        <strong id="topic-review-progress" aria-live="polite"></strong>
+        <span id="topic-review-state" class="hint"></span>
+        <button id="topic-review-exit" type="button">退出审片 · Esc</button>
+      </div>
+      <div class="topic-review-actions">
+        <button id="topic-review-prev" type="button" title="上一个片段（←）">← 上一个</button>
+        <button id="topic-review-keep" type="button" class="primary" title="标记已审阅，不改分数（K）">保留 · K</button>
+        <button id="topic-review-remove" type="button" title="从当前主题移除，更新时继续排除（X）">移除 · X</button>
+        <button id="topic-review-next" type="button" title="跳到下一个未审阅片段，不标记当前片段（N / →）">跳过 · N</button>
+        <button id="topic-review-reset" type="button">设为未审阅</button>
+      </div>
+      <form id="topic-review-score-form" class="topic-review-actions" novalidate>
+        <label for="topic-review-score">人工评分</label>
+        <input id="topic-review-score" type="number" min="0" step="0.1" placeholder="输入分数" aria-label="审片评分">
+        <button id="topic-review-score-save" type="submit">评分并继续 · Enter</button>
+        <span class="hint">S 填分 · ↑↓ 调整 0.1 · Ctrl + ↑↓ 调整 1</span>
+      </form>
+      <p id="topic-review-status" class="hint" role="status"></p>
+    </section>
     <div class="preview-side">
       <div id="preview-info"></div>
       <div id="preview-timeline" class="preview-timeline" title="此视频的全部命中场景，点击跳转"></div>
       <div id="preview-tags" class="preview-tags"></div>
+      <div class="preview-frame-actions">
+        <button id="btn-cover-prev-frame" type="button" title="暂停并回退一帧">上一帧</button>
+        <button id="btn-cover-next-frame" type="button" title="暂停并前进一帧">下一帧</button>
+      </div>
       <div class="preview-actions">
         <button id="btn-locate">在 Eagle 中定位</button>
+        <button id="btn-frame-visual" type="button">以当前帧找相似</button>
+        <button id="btn-frame-text" type="button">当前帧转文字搜索</button>
         <div id="preview-cover-actions" class="preview-cover-actions hidden">
-          <button id="btn-cover-prev-frame" type="button" title="暂停并回退一帧">上一帧</button>
-          <button id="btn-cover-next-frame" type="button" title="暂停并前进一帧">下一帧</button>
           <button id="btn-set-topic-cover" type="button" class="primary">当前帧设为封面</button>
         </div>
         <button id="btn-close-preview">收起预览</button>
@@ -150,12 +195,116 @@
     </div>
   </section>
 
+  <div id="frame-query-reference" class="frame-query-reference hidden">
+    <img id="frame-query-image" alt="本次搜索使用的画面">
+    <span id="frame-query-label"></span>
+  </div>
+  <div id="topic-removal-notice" class="topic-removal-notice hidden">
+    <span id="topic-removal-message" role="status"></span>
+    <button id="topic-removal-undo" type="button" class="mini-btn">撤销</button>
+  </div>
   <main id="results" class="results"></main>
+  <aside id="browse-position-notice" class="browse-position-notice hidden" role="status" aria-live="polite">
+    <span>已回到上次浏览位置</span>
+    <button id="browse-position-top" type="button">回到顶部</button>
+  </aside>
+
+  <dialog id="manual-add-dialog" aria-labelledby="manual-add-title">
+    <form id="manual-add-form" novalidate>
+      <div class="manual-add-heading"><h2 id="manual-add-title">添加片段到主题</h2><span id="manual-add-progress" class="hint"></span></div>
+      <div class="manual-add-target-row">
+        <input id="manual-add-target-query" type="search" placeholder="查找目标主题" aria-label="查找目标主题">
+        <select id="manual-add-target" aria-label="目标主题"></select>
+        <button id="manual-add-refresh" type="button">刷新参考</button>
+      </div>
+      <div id="manual-add-duplicates" class="manual-add-duplicates">
+        <label>已收录片段
+          <select id="manual-add-existing-mode" aria-label="重复片段评分方式">
+            <option value="keep">保留目标原分</option>
+            <option value="rescore">重新评分</option>
+          </select>
+        </label>
+        <span id="manual-add-impact" class="hint" aria-live="polite"></span>
+      </div>
+      <div class="manual-add-workspace">
+        <section class="manual-add-current">
+          <div class="manual-add-nav">
+            <button id="manual-add-prev" type="button" aria-label="上一个待添加片段">←</button>
+            <span id="manual-add-position" aria-live="polite"></span>
+            <button id="manual-add-next" type="button" aria-label="下一个待添加片段">→</button>
+          </div>
+          <div id="manual-add-scene-image"></div>
+          <b id="manual-add-scene-name"></b><small id="manual-add-scene-time"></small>
+          <small id="manual-add-existing-info" class="hint"></small>
+          <div class="manual-add-score-row">
+            <label for="manual-add-score">当前分数</label>
+            <input id="manual-add-score" type="number" min="0" step="0.1" inputmode="decimal" placeholder="手动评分">
+            <button id="manual-add-top" type="button">置顶分</button>
+          </div>
+          <small id="manual-add-score-mode" class="hint"></small>
+        </section>
+        <section class="manual-add-reference-panel">
+          <h3>目标主题的参考分数</h3>
+          <p id="manual-add-reference-summary" class="hint"></p>
+          <div id="manual-add-references"></div>
+        </section>
+      </div>
+      <div class="manual-add-bulk-row">
+        <label for="manual-add-bulk-score">统一打分</label>
+        <input id="manual-add-bulk-score" type="number" min="0" step="0.1" inputmode="decimal" placeholder="统一分数">
+        <button id="manual-add-bulk-apply" type="button">填写未评分</button>
+        <button id="manual-add-bulk-top" type="button">未评分设为置顶</button>
+        <label class="manual-add-only-empty"><input id="manual-add-only-empty" type="checkbox" checked>只填未评分</label>
+      </div>
+      <div class="manual-add-overview-heading">
+        <h3>评分总览</h3>
+        <button id="manual-add-next-empty" type="button">下一个未评分</button>
+        <span id="manual-add-overview-range" class="hint"></span>
+        <button id="manual-add-overview-prev" type="button">上一批</button>
+        <button id="manual-add-overview-next" type="button">下一批</button>
+      </div>
+      <div id="manual-add-overview" aria-label="选中片段评分总览"></div>
+      <p class="hint manual-add-keys">↑ / ↓ 调整 0.1 分 · Ctrl + ↑ / ↓ 调整 1 分 · ← / → 切换片段</p>
+      <p id="manual-add-status" role="status"></p>
+      <div class="dialog-actions">
+        <button id="manual-add-cancel" type="button">取消</button>
+        <button id="manual-add-submit" type="submit" class="primary" disabled>添加到主题</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="topic-removed-dialog" aria-labelledby="topic-removed-title">
+    <h2 id="topic-removed-title">已移除片段</h2>
+    <p id="topic-removed-summary" class="hint"></p>
+    <div class="removed-scene-toolbar">
+      <input id="topic-removed-query" type="search" placeholder="搜索视频名" aria-label="搜索已移除片段">
+      <label><input id="topic-removed-all" type="checkbox"> 全选</label>
+      <button id="topic-removed-restore" type="button" class="primary" disabled>恢复选中</button>
+    </div>
+    <div id="topic-removed-list" class="removed-scene-list"></div>
+    <p id="topic-removed-status" role="status" class="hint"></p>
+    <div class="dialog-actions"><button id="topic-removed-close" type="button">关闭</button></div>
+  </dialog>
   <div id="empty-state" class="empty-state">
     <p>先对素材库建索引，然后输入描述开始搜索。</p>
     <p class="hint">也可以：直接 Ctrl+V 粘贴一张图片以图搜视频。</p>
     <p class="hint">首次建索引需要加载模型并逐个视频抽帧，耗时与视频数量成正比；之后为增量更新，可随时停止。</p>
   </div>
+
+  <dialog id="frame-text-dialog" aria-labelledby="frame-text-title">
+    <form id="frame-text-form" class="settings-form">
+      <h3 id="frame-text-title">当前帧转文字搜索</h3>
+      <img id="frame-text-image" class="frame-text-image" alt="生成文字使用的固定画面">
+      <span id="frame-text-source" class="hint"></span>
+      <p id="frame-text-status" role="status"></p>
+      <div id="frame-text-prompts" class="frame-text-prompts"></div>
+      <label>搜索文字（可修改）<input id="frame-text-query" type="text" maxlength="500" autocomplete="off"></label>
+      <div class="dialog-actions">
+        <button id="frame-text-retry" type="button">重新生成</button>
+        <button id="frame-text-cancel" type="button">关闭</button>
+        <button id="frame-text-submit" type="submit" class="primary" disabled>文字搜索</button>
+      </div>
+    </form>
+  </dialog>
 
   <dialog id="organize-dialog" aria-labelledby="organize-title">
     <form id="organize-form" class="settings-form">
@@ -265,6 +414,7 @@
       <p id="warehouse-editor-error" class="form-error" role="alert"></p>
       <div class="dialog-actions">
         <button id="entry-delete" type="button" class="hidden">删除主题</button>
+        <button id="entry-copy" type="button" class="hidden">复制主题</button>
         <button id="entry-cancel" type="button">取消</button>
         <button id="entry-submit" class="primary" type="submit">保存</button>
       </div>
@@ -302,7 +452,7 @@
       <label>以图/以片搜保留落差（只保留与最高分差距在此之内的结果，越小越严）
         <input id="cfg-visual-margin" type="number" min="1" max="60" step="1">
       </label>
-      <label>场景聚合方式（找相似时对候选场景 3 个向量的聚合）
+      <label>其他视觉查询的聚合方式（当前帧搜索固定取最相似帧）
         <select id="cfg-visual-agg">
           <option value="mean">mean — 整个场景都要像（严格，推荐）</option>
           <option value="max">max — 一帧像即命中（宽松）</option>
@@ -399,10 +549,14 @@
   <script src="js/eagleBridge.js"></script>
   <script src="js/searchRecipe.js"></script>
   <script src="js/archiveStore.js"></script>
+  <script src="js/topicUndo.js"></script>
   <script src="js/coverFrame.js"></script>
   <script src="js/indexer.js"></script>
   <script src="js/search.js"></script>
+  <script src="js/frameSearch.js"></script>
   <script src="js/folderTree.js"></script>
+  <script src="js/manualAdd.js"></script>
+  <script src="js/topicReview.js"></script>
   <script src="js/warehouse.js"></script>
   <script src="js/plugin.js"></script>
 </body>

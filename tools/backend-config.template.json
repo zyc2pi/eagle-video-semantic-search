@@ -1,0 +1,32 @@
+{
+  "temp_dir": "temp",
+  "video_output": {
+    "copy_mode": false,
+    "video_codec": "libx264",
+    "hwaccel": "none",
+    "crf": 18,
+    "preset": "medium",
+    "audio_codec": "aac",
+    "audio_bitrate": "192k",
+    "force_clean": true,
+    "pixel_format": "yuv420p",
+    "movflags": "+faststart"
+  },
+  "similarity_thresholds": {
+    "clip_large": 21,
+    "fgclip2": 14,
+    "reranker": 51,
+    "reranker_weight": 0.6
+  },
+  "ai_search": {
+    "profiles": [
+      {
+        "name": "DeepSeek",
+        "base_url": "https://api.deepseek.com",
+        "model": "deepseek-flash",
+        "api_key_env": "DEEPSEEK_API_KEY",
+        "timeout_seconds": 8
+      }
+    ]
+  }
+}
