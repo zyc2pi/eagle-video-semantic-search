@@ -601,7 +601,7 @@
       const models = await Api.listModels();
       // 过滤掉非嵌入模型（重排/多模态大模型/工具目录）
       const embeddable = models.filter((m) =>
-        !/reranker|minicpm|ffmpeg|shot_scale/i.test(m.name));
+        !/reranker|minicpm|ffmpeg|shot_scale|dinov3/i.test(m.name));
       if (embeddable.length === 0) return; // 保留静态选项
       const current = Config.get().modelName;
       sel.innerHTML = '';
@@ -827,10 +827,6 @@
       const r = await Search.run(query, threshold, scope);
       if (r.cancelled || r.stale) return;
       if (!r.ok) toast(r.message, true, 5000);
-      else if (r.extra?.temporal_info) {
-        toast(Search.temporalSummary(r.extra.temporal_info), false, 10000);
-        if (r.count) pushHistory(query);
-      }
       else if (r.count === 0) toast('没有匹配结果，可尝试降低阈值');
       else {
         toast(`找到 ${r.count} 个匹配场景`);
@@ -864,6 +860,8 @@
     $('cfg-idx-batch').value = cfg.indexBatchSize;
     $('cfg-idx-scene-threshold').value = cfg.indexSceneThreshold;
     $('cfg-idx-localmax').value = cfg.indexLocalmaxOrder;
+    $('cfg-idx-frame-selection').value = cfg.indexFrameSelection || 'content_adaptive';
+    $('cfg-idx-content-max').value = cfg.indexContentMaxFrames ?? 12;
     $('cfg-idx-fp16').checked = !!cfg.indexFp16;
     $('cfg-deepseek-key').value = cfg.deepseekKey || '';
     $('cfg-ai-enhance').checked = !!cfg.aiEnhance;
@@ -939,6 +937,8 @@
       indexBatchSize: Number($('cfg-idx-batch').value),
       indexSceneThreshold: Number($('cfg-idx-scene-threshold').value),
       indexLocalmaxOrder: Number($('cfg-idx-localmax').value),
+      indexFrameSelection: $('cfg-idx-frame-selection').value,
+      indexContentMaxFrames: Number($('cfg-idx-content-max').value),
       indexFp16: $('cfg-idx-fp16').checked,
       aiEnhance: $('cfg-ai-enhance').checked,
       aiExpand: $('cfg-ai-expand').checked,
@@ -1159,7 +1159,11 @@
     // 视图栏：排序 / 时长过滤 / 分组
     $('view-sort').addEventListener('change', () => Search.setView({ sortBy: $('view-sort').value }));
     $('view-min-dur').addEventListener('change', () => {
-      Search.setView({ minDur: parseFloat($('view-min-dur').value) || 0 });
+      try {
+        const input = $('view-min-dur');
+        if (!input.validity.valid) throw new Error('请输入有效的非负时长下限');
+        Search.setView({ minDur: input.value === '' ? 0 : Number(input.value) });
+      } catch (error) { $('view-min-dur').value = Search.getView().minDur; toast(error.message, true); }
     });
     $('view-grouped').addEventListener('change', () => {
       Search.setView({ grouped: $('view-grouped').checked });
@@ -1190,6 +1194,7 @@
     if (Config.getLoadError?.()) toast(Config.getLoadError(), true, 10000);
     applyTheme();
     Search.bindDom();
+    MediaDrag.init({ toast });
     Warehouse.init({ toast, canSearch: () => serviceOnline && !Indexer.isRunning() });
     wireEvents();
     FrameSearch.init({ toast,

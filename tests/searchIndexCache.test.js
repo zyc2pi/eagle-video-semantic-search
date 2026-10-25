@@ -46,6 +46,11 @@ async function main() {
   await execute();
   await execute();
   assert.strictEqual(requests, 5, '旧服务无revision可搜索且不持久复用未知索引缓存');
+  revision = 'version-3';
+  recipe.query = '眨眼';
+  await execute();
+  await execute();
+  assert.strictEqual(requests, 6, '移除专项核验后，动作词复用普通搜索缓存');
   console.log('search index revision and service cache regression passed');
 }
 main().catch((error) => { console.error(error); process.exitCode = 1; });

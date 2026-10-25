@@ -39,8 +39,6 @@ body {
 }
 
 .hidden { display: none !important; }
-#temporal-status { flex-shrink: 0; padding: 6px 16px; line-height: 1.5; border-bottom: 1px solid var(--border); }
-[data-page="warehouse"] #temporal-status { display: none; }
 
 /* 搜索仓库：用现有 Eagle 配色承载封面与信息，不依赖外部字体。 */
 .topbar, .search-row, .toolbar, .time-filter, .warehouse-topic, .view-bar { flex-shrink: 0; }
@@ -438,9 +436,31 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .view-bar input[type="number"] { width: 56px; }
 .result-count { margin-left: auto; font-variant-numeric: tabular-nums; }
 
-.topic-scene-filter { display: flex; align-items: center; gap: 8px; padding: 6px 14px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.topic-scene-filter { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; padding: 7px 14px; border-bottom: 1px solid var(--border); flex-shrink: 0; background: var(--bg-panel); font-size: 12px; }
 .topic-scene-filter input, .topic-scene-filter select { padding: 5px 8px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg-input); color: var(--text); min-width: 0; }
-.topic-scene-filter input { width: 240px; max-width: 100%; flex: 0 1 240px; }
+.topic-scene-filter input { width: 180px; max-width: 100%; flex: 0 1 180px; }
+.topic-scene-filter #result-tags { width: 225px; flex-basis: 225px; }
+.topic-scene-filter input[type="number"] { width: 70px; }
+.topic-scene-filter label { white-space: nowrap; color: var(--text-dim); }
+.local-filter-label { color: var(--text-dim); font-weight: 600; white-space: nowrap; }
+.topic-scene-filter .form-error:empty { display: none; }
+.scene-membership { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border: 0; padding: 3px 0 0; background: transparent; color: var(--accent); font-size: 11px; text-align: left; cursor: pointer; }
+#topic-relations-dialog { width: min(880px, calc(100vw - 32px)); min-width: 0; max-height: calc(100vh - 32px); margin: auto; padding: 18px; overflow-y: auto; }
+#topic-relations-dialog h2 { font-size: 18px; margin-bottom: 12px; }
+#relations-controls, #relations-tabs { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 10px 0; }
+#relations-controls select { flex: 1 1 160px; width: 0; min-width: 100px; max-width: 100%; background: var(--bg-input); color: var(--text); border: 1px solid var(--border); border-radius: 5px; padding: 6px; }
+#relations-tabs { border-bottom: 1px solid var(--border); padding-bottom: 10px; }
+#relations-tabs button[aria-pressed="true"] { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+#relations-list { max-height: 40vh; overflow-y: auto; min-height: 50px; }
+.relations-row { display: flex; align-items: center; gap: 12px; padding: 10px 2px; border-bottom: 1px solid var(--border); }
+.relations-row button { flex-shrink: 0; }
+.relations-scene { flex: 1; min-width: 0; }
+.relations-scene strong, .relations-scene small { display: block; overflow-wrap: anywhere; }
+.relations-scene small { margin-top: 4px; }
+.relations-topic { display: block; width: 100%; text-align: left; margin-bottom: 6px; overflow-wrap: anywhere; }
+.relations-more { display: block; margin: 10px auto; }
+#relations-video { width: 100%; max-height: 30vh; background: #111; margin-top: 8px; }
+#relations-status, #relations-preview-status { overflow-wrap: anywhere; }
 .topic-scene-filter select { flex-shrink: 0; }
 [data-page="warehouse"] > .topic-scene-filter { display: none; }
 .browse-position-notice { position: fixed; right: 18px; bottom: 18px; z-index: 120; display: flex; align-items: center; gap: 14px; max-width: calc(100vw - 36px); padding: 10px 12px; color: var(--text); background: var(--bg-panel); border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 8px; box-shadow: var(--card-shadow), 0 8px 24px rgba(0, 0, 0, .14); opacity: 0; transform: translateY(6px); pointer-events: none; transition: opacity 240ms ease, transform 240ms ease; }
@@ -624,6 +644,9 @@ body.quick-review #results, body.quick-review #empty-state,
 body.quick-review .preview-side, body.quick-review #view-bar { display: none; }
 body.quick-review .topic-review-panel { flex-shrink: 0; }
 .preview-side { display: flex; flex: 1; flex-direction: column; gap: 10px; min-width: 0; }
+.preview-feedback { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.preview-feedback [role="status"] { font-size: 12px; overflow-wrap: anywhere; }
+.preview-feedback button { flex-shrink: 0; white-space: nowrap; }
 #preview-info { color: var(--text-dim); line-height: 1.7; word-break: break-all; }
 #preview-info b { color: var(--text); }
 .preview-frame-actions, .preview-actions { display: flex; flex-wrap: nowrap; align-items: center; gap: 8px; overflow-x: auto; flex-shrink: 0; }
@@ -737,6 +760,8 @@ body.quick-review .topic-review-panel { flex-shrink: 0; }
   transition: opacity 0.12s ease-out;
 }
 .card .hover-video.ready { opacity: 1; }
+.card .thumb-box[draggable="true"], #btn-drag-clip[draggable="true"] { cursor: grab; }
+.card .thumb-box[draggable="true"] .hover-video { pointer-events: none; }
 .card .pick {
   position: absolute;
   top: 8px;

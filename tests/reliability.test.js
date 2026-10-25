@@ -16,6 +16,14 @@ async function main() {
     const proxyFs = { ...fs, renameSync: (...args) => { if (fail) throw Object.assign(new Error('denied'), { code: 'EACCES' }); return fs.renameSync(...args); } };
     const config = load('Config', { require: (name) => name === 'fs' ? proxyFs : require(name), console });
     config.init(root);
+    assert.strictEqual(config.get().indexFrameSelection, 'content_adaptive');
+    assert.strictEqual(config.get().indexContentMaxFrames, 12);
+    assert.throws(() => config.save({ indexContentMaxFrames: 0 }));
+    assert.throws(() => config.save({ indexContentMaxFrames: 33 }));
+    config.save({ indexFrameSelection: 'dinov3_cses' });
+    config.init(root);
+    assert.strictEqual(config.get().indexFrameSelection, 'dinov3_cses');
+    assert.throws(() => config.save({ indexFrameSelection: 'unknown' }), /配置选项无效/);
     config.save({ visualThreshold: 0 });
     assert.strictEqual(config.get().visualThreshold, 0);
     const previous = fs.readFileSync(path.join(root, 'config.json'), 'utf8');
@@ -56,6 +64,7 @@ async function main() {
   let scheduled = null;
   let failing = true;
   let submitted = 0;
+  let rejectPreflight = false;
   const notices = [];
   const indexer = load('Indexer', {
     require, console,
@@ -64,7 +73,11 @@ async function main() {
     Bridge: { resolveLibraryIdentity: async () => ({ id: 'library', path: 'D:/library', index_name: 'eagle_v2_library' }), collectLibraryVideos: async () => [{ filePath: 'D:/library/a.mp4' }] },
     Api: {
       listIndexJobs: async () => [],
-      startIndex: async () => { submitted += 1; return { ok: true, data: { job_id: 'job1' } }; },
+      startIndex: async () => {
+        if (rejectPreflight) throw Object.assign(new Error('请更新并重启配套后端'), { indexNotSubmitted: true });
+        submitted += 1;
+        return { ok: true, data: { job_id: 'job1' } };
+      },
       indexStatus: async (id) => { assert.strictEqual(id, 'job1'); if (failing) throw new Error('offline'); return { state: 'done' }; },
       cancelIndex: async (id) => { assert.strictEqual(id, 'job1'); throw new Error('offline'); },
     },
@@ -81,6 +94,11 @@ async function main() {
   await scheduled.callback();
   assert.strictEqual(indexer.isRunning(), false);
   assert.strictEqual(scheduled, null);
+  rejectPreflight = true;
+  const rejected = await indexer.start('all');
+  assert.strictEqual(rejected.started, false);
+  assert(!rejected.message.includes('提交结果未知'), '能力检查失败尚未提交，不能保留未知任务');
+  assert.strictEqual(submitted, 1);
   console.log('atomic config, shared startup, serial reconnect and targeted cancel tests passed');
 }
 main().catch((error) => { console.error(error); process.exitCode = 1; });

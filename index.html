@@ -98,6 +98,7 @@
     </div>
     <div class="warehouse-actions">
       <button id="warehouse-batch-category" type="button" disabled>批量修改分类</button>
+      <button id="warehouse-compare" type="button" title="比较两个主题的完整已存片段">比较主题</button>
       <span id="warehouse-selection-count" class="hint"></span>
     </div>
     <p id="warehouse-warning" class="hint" role="status"></p>
@@ -118,13 +119,23 @@
     <button id="topic-reset-cover" type="button" class="hidden">恢复默认封面</button>
   </section>
 
-  <section id="topic-scene-filter" class="topic-scene-filter hidden" aria-label="在主题中查找片段">
-    <input id="topic-scene-query" type="search" placeholder="查找视频名…" aria-label="查找主题中的视频名">
+  <section id="topic-scene-filter" class="topic-scene-filter hidden" aria-label="结果内组合筛选">
+    <span class="local-filter-label">结果内筛选</span>
+    <input id="topic-scene-query" type="search" placeholder="视频名包含…" aria-label="查找主题中的视频名">
+    <input id="result-tags" type="search" placeholder="标签，逗号分隔（全部满足）" aria-label="筛选素材标签" title="完整标签名，多个标签用中英文逗号分隔，全部满足">
+    <select id="result-orientation" aria-label="按画幅筛选">
+      <option value="all">全部画幅</option><option value="landscape">横屏</option>
+      <option value="portrait">竖屏</option><option value="square">方形</option><option value="unknown">画幅未知</option>
+    </select>
+    <label>片段 ≤ <input id="result-max-dur" type="number" min="0" step="0.5" placeholder="不限" aria-label="片段时长上限"> 秒</label>
     <select id="topic-scene-source" aria-label="按人工评分筛选片段">
       <option value="all">全部片段</option>
       <option value="manual">人工评分</option>
       <option value="auto">未人工评分</option>
     </select>
+    <button id="result-filter-clear" type="button" class="mini-btn">清除筛选</button>
+    <button id="topic-compare" type="button" class="mini-btn">比较主题</button>
+    <span id="result-filter-error" class="form-error" role="status"></span>
   </section>
 
   <section id="view-bar" class="view-bar hidden">
@@ -150,7 +161,6 @@
     <span id="result-count" class="result-count"></span>
   </section>
 
-  <p id="temporal-status" class="hint hidden" role="status"></p>
   <section id="preview-panel" class="preview-panel hidden">
     <video id="preview-video" controls preload="metadata"></video>
     <section id="topic-review-panel" class="topic-review-panel hidden" aria-label="快速审片">
@@ -177,6 +187,7 @@
     </section>
     <div class="preview-side">
       <div id="preview-info"></div>
+      <div id="preview-feedback" class="preview-feedback"></div>
       <div id="preview-timeline" class="preview-timeline" title="此视频的全部命中场景，点击跳转"></div>
       <div id="preview-tags" class="preview-tags"></div>
       <div class="preview-frame-actions">
@@ -185,6 +196,9 @@
       </div>
       <div class="preview-actions">
         <button id="btn-locate">在 Eagle 中定位</button>
+        <button id="btn-prepare-clip" type="button">准备片段</button>
+        <button id="btn-drag-clip" type="button" disabled title="准备完成后，按住此按钮拖到 PR / AE">拖出片段</button>
+        <button id="btn-clip-directory" type="button" title="选择长期保存目录；生成文件不会自动清理">片段目录</button>
         <button id="btn-frame-visual" type="button">以当前帧找相似</button>
         <button id="btn-frame-text" type="button">当前帧转文字搜索</button>
         <div id="preview-cover-actions" class="preview-cover-actions hidden">
@@ -205,7 +219,8 @@
   </div>
   <main id="results" class="results"></main>
   <aside id="browse-position-notice" class="browse-position-notice hidden" role="status" aria-live="polite">
-    <span>已回到上次浏览位置</span>
+    <span id="browse-position-message">已回到上次浏览位置</span>
+    <button id="browse-position-resume" type="button" class="hidden">回到上次浏览位置</button>
     <button id="browse-position-top" type="button">回到顶部</button>
   </aside>
 
@@ -472,6 +487,17 @@
       </label>
       <details class="settings-group">
         <summary>建索引参数（改动只影响之后索引的新视频）</summary>
+        <label>镜头代表帧
+          <select id="cfg-idx-frame-selection">
+            <option value="content_adaptive">按内容自适应选帧（推荐）</option>
+            <option value="triplet">首、中、尾三帧</option>
+            <option value="dinov3_cses">智能选帧（DINOv3 + CSES）</option>
+          </select>
+        </label>
+        <label>内容选帧上限（每镜头，重复画面会提前停止）
+          <input id="cfg-idx-content-max" type="number" min="1" max="32" step="1">
+        </label>
+        <p class="hint">内容选帧复用已算好的特征，按画面差异决定数量，默认上限 12 帧；DINOv3 模式最多 32 帧、耗时更高。原视频保持完整，已有索引不会自动更新。</p>
         <div class="field-pair">
           <label>采样间隔（每 N 帧取 1，越小越精细越慢）
             <input id="cfg-idx-sample-interval" type="number" min="1" max="30" step="1">
@@ -553,10 +579,12 @@
   <script src="js/coverFrame.js"></script>
   <script src="js/indexer.js"></script>
   <script src="js/search.js"></script>
+  <script src="js/mediaDrag.js"></script>
   <script src="js/frameSearch.js"></script>
   <script src="js/folderTree.js"></script>
   <script src="js/manualAdd.js"></script>
   <script src="js/topicReview.js"></script>
+  <script src="js/topicRelations.js"></script>
   <script src="js/warehouse.js"></script>
   <script src="js/plugin.js"></script>
 </body>

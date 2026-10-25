@@ -143,6 +143,7 @@ const Warehouse = (() => {
   }
 
   function applyManualEntry(entry) {
+    if (typeof TopicRelations !== 'undefined') TopicRelations.refresh();
     if (current?.id === entry.id && currentLibrary === eagle.library.path) applySceneEdit(entry);
     else if (data?.entries && SearchRecipe.normalize(data.library) === SearchRecipe.normalize(eagle.library.path)) {
       const index = data.entries.findIndex((value) => value.id === entry.id);
@@ -194,22 +195,25 @@ const Warehouse = (() => {
     $('browse-position-notice').classList.remove('visible');
     $('browse-position-notice').classList.add('hidden');
   }
-  function showPositionNotice(root) {
+  function showPositionNotice(root, resume = null) {
     hidePositionNotice();
-    positionTarget = { root, library: eagle.library.path, page: document.body.dataset.page };
+    positionTarget = { root, library: eagle.library.path, page: document.body.dataset.page, resume };
     const notice = $('browse-position-notice');
+    $('browse-position-message').textContent = resume ? '继续上次的浏览' : '已回到上次浏览位置';
+    $('browse-position-resume').classList.toggle('hidden', !resume);
+    $('browse-position-top').classList.toggle('hidden', !!resume);
     notice.classList.remove('hidden');
     void notice.offsetWidth;
     notice.classList.add('visible');
     positionNoticeTimer = setTimeout(() => {
       notice.classList.remove('visible');
       positionHideTimer = setTimeout(hidePositionNotice, 240);
-    }, 2000);
+    }, resume ? 4000 : 2000);
   }
   function rememberTopicPosition() {
     clearTimeout(sceneQueryTimer);
     if (!current || currentLibrary !== eagle.library.path || document.body.dataset.page === 'warehouse') return;
-    const filter = { query: $('topic-scene-query').value, source: $('topic-scene-source').value };
+    const filter = Search.getArchiveFilter();
     localFilters.set(timeKey(current), filter);
     const reviewPosition = typeof TopicReview !== 'undefined' ? TopicReview.getBrowsePosition() : null;
     topicPositions.set(timeKey(current), { view: Search.getView(), position: reviewPosition || Search.captureBrowsePosition() });
@@ -245,6 +249,7 @@ const Warehouse = (() => {
     clearTimeout(queryTimer);
     document.body.dataset.page = 'search';
     $('warehouse-page').classList.add('hidden');
+    if (typeof TopicRelations !== 'undefined') TopicRelations.refresh();
   }
   function detachTopic(resetTime = true) {
     if (typeof TopicReview !== 'undefined') TopicReview.stop(false);
@@ -257,7 +262,7 @@ const Warehouse = (() => {
     searchBrowsePosition = null;
     document.body.dataset.topic = 'false';
     $('warehouse-topic').classList.add('hidden');
-    $('topic-scene-filter').classList.add('hidden');
+    $('topic-scene-filter').classList.toggle('hidden', !Search.getRawMatches().length);
     $('btn-save-results').textContent = '保存到仓库';
     $('preview-cover-actions').classList.add('hidden');
     syncSceneActions();
@@ -845,6 +850,7 @@ const Warehouse = (() => {
 
   async function load(entry, { resetView = false } = {}) {
     checkIdle();
+    const openingTopic = document.body.dataset.page === 'warehouse' || current?.id !== entry.id;
     const navigation = beginNavigation();
     rememberTopicPosition();
     const library = eagle.library.path;
@@ -871,7 +877,12 @@ const Warehouse = (() => {
     $('view-grouped').checked = view.grouped;
     showSearch({ preserveNavigation: true });
     syncTopic();
-    await restoreTopicPosition(browse?.position);
+    if (openingTopic) {
+      await Search.restoreBrowsePosition(browse?.position, { scroll: false });
+      if (currentNavigation(navigation) && browse?.position?.scrollTop > 0) {
+        showPositionNotice($('results'), { position: browse.position, navigation, id: entry.id });
+      }
+    } else await restoreTopicPosition(browse?.position);
     if (!currentNavigation(navigation)) return false;
     if (removedSession?.id === entry.id) {
       removedSession.records = entry.removedMatches || [];
@@ -1041,8 +1052,7 @@ const Warehouse = (() => {
       updated.query = recipe.query;
       updated.legacy = false;
       updated = await previewChanges(previous, updated, { rawMatches: matches,
-        note: (result.missingDates ? `${result.missingDates} 个素材缺少导入时间，已排除。` : '')
-          + (result.temporal ? Search.temporalSummary(result.temporal) : ''),
+        note: result.missingDates ? `${result.missingDates} 个素材缺少导入时间，已排除。` : '',
         commit: () => {
           if (!currentNavigation(navigation)) throw new Error('素材库或当前页面已切换，未写入更新结果');
           return archive.replace(updated, entry.updatedAt);
@@ -1465,6 +1475,19 @@ const Warehouse = (() => {
 
   function init(callbacks) {
     hooks = callbacks;
+    if (typeof TopicRelations !== 'undefined') TopicRelations.init({
+      checkIdle, toast: hooks.toast,
+      openEntry: async (id) => {
+        checkIdle();
+        const library = eagle.library.path;
+        const snapshot = store().list();
+        const entry = snapshot.entries.find((value) => value.id === id);
+        if (!entry) throw new Error('主题已不存在，请刷新后重试');
+        if (library !== eagle.library.path) throw new Error('素材库已切换');
+        data = snapshot;
+        return load(entry);
+      },
+    });
     if (typeof TopicUndo !== 'undefined') undoManager = TopicUndo.create({
       getLibrary: () => eagle.library.path,
       openStore: (library) => ArchiveStore.open(Config.pluginPath(), library),
@@ -1562,25 +1585,60 @@ const Warehouse = (() => {
     $('topic-favorite').addEventListener('click', () => attempt(() => { requireTopic(); toggleFavorite(current); }));
     $('topic-update').addEventListener('click', () => attempt(() => refreshEntry(current)));
     $('topic-history')?.addEventListener('click', () => attempt(topicHistory));
+    $('topic-compare').addEventListener('click', () => attempt(() => TopicRelations.showCompare([current?.id])));
+    $('warehouse-compare').addEventListener('click', () => attempt(() => TopicRelations.showCompare([...selectedEntries])));
     $('entry-copy')?.addEventListener('click', () => attempt(copyTopic));
     $('topic-removed').addEventListener('click', () => attempt(showRemovedMatches));
     $('btn-topic-remove').addEventListener('click', () => attempt(() => removeTopicMatches(Search.getSelectedMatches())));
     $('btn-topic-score').addEventListener('click', () => attempt(() => { requireTopic(); ManualAdd.editScores(current); }));
     const applySceneFilter = () => attempt(() => {
-      requireTopic();
-      const filter = { query: $('topic-scene-query').value, source: $('topic-scene-source').value };
-      localFilters.set(timeKey(current), filter);
-      Search.setArchiveFilter(filter);
+      checkIdle();
+      if (current) requireTopic();
+      const maximum = $('result-max-dur');
+      try {
+        if (!maximum.validity.valid) throw new Error('请输入有效的非负时长上限');
+        const filter = { query: $('topic-scene-query').value, source: $('topic-scene-source').value,
+          tags: $('result-tags').value, orientation: $('result-orientation').value,
+          maxDur: maximum.value === '' ? null : Number(maximum.value) };
+        Search.setArchiveFilter(filter);
+        if (current) localFilters.set(timeKey(current), Search.getArchiveFilter());
+        $('result-filter-error').textContent = '';
+      } catch (error) { $('result-filter-error').textContent = error.message; }
     });
     $('topic-scene-query').addEventListener('input', () => {
       clearTimeout(sceneQueryTimer);
       sceneQueryTimer = setTimeout(applySceneFilter, 120);
     });
     $('topic-scene-source').addEventListener('change', () => { clearTimeout(sceneQueryTimer); applySceneFilter(); });
+    $('result-tags').addEventListener('input', () => {
+      clearTimeout(sceneQueryTimer); sceneQueryTimer = setTimeout(applySceneFilter, 120);
+    });
+    ['result-orientation', 'result-max-dur'].forEach((id) => $(id).addEventListener('change', () => {
+      clearTimeout(sceneQueryTimer); applySceneFilter();
+    }));
+    $('result-filter-clear').addEventListener('click', () => attempt(() => {
+      checkIdle();
+      if (current) requireTopic();
+      clearTimeout(sceneQueryTimer);
+      Search.setView({ minDur: 0 });
+      $('view-min-dur').value = 0;
+      Search.setArchiveFilter({ query: '', source: 'all' });
+      $('result-filter-error').textContent = '';
+      if (current) localFilters.set(timeKey(current), Search.getArchiveFilter());
+    }));
     $('browse-position-top').addEventListener('click', () => {
       if (positionTarget?.library === eagle.library.path && positionTarget.page === document.body.dataset.page) positionTarget.root.scrollTop = 0;
       hidePositionNotice();
     });
+    $('browse-position-resume').addEventListener('click', () => attempt(async () => {
+      const target = positionTarget;
+      if (!target?.resume || target.library !== eagle.library.path || target.page !== document.body.dataset.page
+          || !currentNavigation(target.resume.navigation)) return;
+      checkIdle();
+      requireTopic(target.resume.id, target.library);
+      hidePositionNotice();
+      await restoreTopicPosition(target.resume.position);
+    }));
     document.addEventListener('search-context', hidePositionNotice);
     $('topic-removal-undo').addEventListener('click', () => attempt(() => {
       if (lastRemoval) restoreTopicMatches(lastRemoval.keys, lastRemoval.id, lastRemoval.library);

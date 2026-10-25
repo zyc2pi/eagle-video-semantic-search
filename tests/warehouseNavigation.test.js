@@ -7,7 +7,7 @@ const pending = new Map();
 const elements = new Map();
 const events = [];
 const element = (id) => {
-  if (!elements.has(id)) elements.set(id, { value: '', textContent: '', classList: { add() {}, remove() {} }, focus() {} });
+  if (!elements.has(id)) elements.set(id, { value: '', textContent: '', classList: { add() {}, remove() {}, toggle() {} }, focus() {} });
   return elements.get(id);
 };
 const document = { body: { dataset: { page: 'warehouse' } }, getElementById: element };
@@ -25,8 +25,10 @@ const context = {
       displayed = query; events.push(query); return 0;
     },
     getView: () => ({ sortBy: 'sim', minDur: 0 }),
+    getRawMatches: () => [],
     restoreState: () => { displayed = 'original'; },
     setArchiveTime() {}, pausePreview() {}, captureBrowsePosition: () => null,
+    restoreBrowsePosition: async () => false,
   },
 };
 const source = fs.readFileSync(path.join(__dirname, '../js/warehouse.js'), 'utf8');

@@ -167,6 +167,7 @@ const Indexer = (() => {
       watch(response.data.job_id, handlers);
       return { started: true, count: submission.paths.length };
     } catch (error) {
+      if (error.indexNotSubmitted) uncertainSubmission = null;
       return { started: false, message: error.message + (uncertainSubmission ? '；提交结果未知，再次点击将按原请求确认，不会重复建任务' : '') };
     } finally { submitting = false; }
   }

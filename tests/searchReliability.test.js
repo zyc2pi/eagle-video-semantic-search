@@ -56,6 +56,12 @@ const injection = `
       el.previewPanel = new Element(); el.btnLocate = new Element(); },
     buildCard, buildGroup, computeDisplayList, openPreview, closePreview, el,
     setResults(root) { el.results = root; },
+    simulateRestore(total) {
+      const previous = renderNextChunk;
+      view.grouped = false; flatPtr = 60; displayList = Array.from({ length: total }, (_, i) => i);
+      renderNextChunk = () => { flatPtr = Math.min(total, flatPtr + 60); };
+      return { shown: () => flatPtr, finish: () => { renderNextChunk = previous; } };
+    },
     disableRender() { render = () => {}; },
   };
 `;
@@ -118,6 +124,39 @@ async function main() {
   assert.strictEqual(Search.getRawMatches().length, 3, '本地查找不修改完整快照');
   assert.throws(() => Search.setArchiveFilter({ query: '', source: 'invalid' }), /条件无效/);
   Search.setArchiveFilter({ query: '', source: 'all' });
+  const savedItemForPath = context.Bridge.itemForPath;
+  const metadata = {
+    horizontal: { tags: ['夜景', 'CITY'], width: 1920, height: 1080 },
+    vertical: { tags: ['夜景'], width: 1080, height: 1920 },
+    square: { tags: [], width: 600, height: 600 },
+  };
+  context.Bridge.itemForPath = (path) => metadata[path];
+  inspect.setup([
+    { video_path: 'horizontal', video_name: 'City night', duration_seconds: 4, similarity: 20 },
+    { video_path: 'vertical', video_name: 'City night', duration_seconds: 8, similarity: 19 },
+    { video_path: 'square', video_name: 'City square', duration_seconds: 3, similarity: 18 },
+    { video_path: 'missing', video_name: 'City unknown', duration_seconds: 5, similarity: 17 },
+  ]);
+  Search.setView({ minDur: 4 });
+  Search.setArchiveFilter({ query: 'city', source: 'all', tags: '夜景， city ', orientation: 'landscape', maxDur: 4 });
+  assert.deepStrictEqual(Array.from(inspect.computeDisplayList()), [0], '组合筛选取交集，时长边界包含，完整标签忽略大小写');
+  assert.strictEqual(Search.getRawMatches().length, 4, '筛选不删除原结果');
+  const combined = Search.captureState();
+  Search.setArchiveFilter({ query: '', source: 'all' });
+  Search.restoreState(combined);
+  assert.deepStrictEqual(Array.from(inspect.computeDisplayList()), [0], '返回搜索恢复组合条件');
+  assert.throws(() => Search.setArchiveFilter({ query: '', source: 'all', maxDur: 3 }), /上限/);
+  assert.throws(() => Search.setView({ minDur: 5 }), /下限/);
+  assert.throws(() => Search.setArchiveFilter({ query: '', source: 'all', maxDur: NaN }), /条件无效/);
+  Search.setView({ minDur: 0 });
+  for (const [orientation, expected] of [['portrait', [1]], ['square', [2]], ['unknown', [3]]]) {
+    Search.setArchiveFilter({ query: '', source: 'all', orientation });
+    assert.deepStrictEqual(Array.from(inspect.computeDisplayList()), expected, '画幅使用素材尺寸，缺失数据单列未知');
+  }
+  Search.setArchiveFilter({ query: '', source: 'all', tags: '夜' });
+  assert.strictEqual(inspect.computeDisplayList().length, 0, '标签按完整名称匹配');
+  Search.setArchiveFilter({ query: '', source: 'all' });
+  context.Bridge.itemForPath = savedItemForPath;
   inspect.setup(matches);
   const old = Search.run('old', 10, { paths: null });
   await new Promise(setImmediate);
@@ -185,6 +224,28 @@ async function main() {
   frames.shift()();
   assert.strictEqual(await validPosition, true);
   assert.strictEqual(scrollRoot.scrollTop, 400);
+  const preparePosition = Search.restoreBrowsePosition({ scrollTop: 400 }, { scroll: false });
+  frames.shift()();
+  assert.strictEqual(await preparePosition, false);
+  assert.strictEqual(scrollRoot.scrollTop, 0, '只恢复列表与分组加载状态时不自动跳转到历史位置');
+
+  const restoreFixture = inspect.simulateRestore(6000);
+  const deepRestore = Search.restoreBrowsePosition({ rendered: 6000 }, { scroll: false });
+  assert.strictEqual(restoreFixture.shown(), 60, '历史加载数量不能阻塞首屏绘制');
+  frames.shift()();
+  await Promise.resolve();
+  assert.strictEqual(restoreFixture.shown(), 120, '每帧至多恢复一批，保持界面可响应');
+  scrollRoot.scrollTop = 50;
+  let restored = false;
+  deepRestore.then(() => { restored = true; });
+  while (!restored) {
+    assert(frames.length, '恢复过程须持续让出绘制机会');
+    frames.shift()();
+    await new Promise(setImmediate);
+  }
+  assert.strictEqual(restoreFixture.shown(), 6000, '最终保留原有历史加载数量');
+  assert.strictEqual(scrollRoot.scrollTop, 50, '后台恢复期间不能把用户新滚动的位置跳回顶部');
+  restoreFixture.finish();
 
   const replay = Search.replay({ kind: 'text', query: 'replay', library: 'library', config: {} });
   const replayRejected = assert.rejects(replay, { name: 'AbortError' });
