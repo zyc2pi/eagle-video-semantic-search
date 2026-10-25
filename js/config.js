@@ -6,6 +6,7 @@ const Config = (() => {
   const DEFAULTS = {
     projectRoot: 'D:\\Auto-scenes-extraction-1.3.0\\Auto-scenes-extraction-1.3.0',
     port: 5006,
+    editClipDirectory: '', // 用户选择的长期片段目录，不自动清理
     modelName: 'qihoo360-fg-clip2-base',
     threshold: 11,
     // 视觉检索（以图/以片搜）阈值：图像-图像相似度天然偏高，与文本阈值语义不同
@@ -26,6 +27,8 @@ const Config = (() => {
     indexBatchSize: 8,           // GPU 流水线批大小（FG-CLIP2 微批上限为 8）
     indexSceneThreshold: 0.85,   // 场景切分余弦阈值，越高切得越碎
     indexLocalmaxOrder: 2,       // 边界检测局部极小值阶数
+    indexFrameSelection: 'content_adaptive', // 复用现有向量，自适应数量；仅影响新索引
+    indexContentMaxFrames: 12,
     indexFp16: true,             // FP16 推理（仅 NVIDIA GPU 生效）
     // 搜索范围：all=整个库；selected=跟随 Eagle 当前选中文件夹；custom=指定文件夹列表
     scopeMode: 'all',
@@ -58,6 +61,7 @@ const Config = (() => {
     indexSampleInterval: [1, 30, true], indexResolution: [128, 512, true],
     indexMinSceneLen: [1, 120, true], indexBatchSize: [8, 128, true],
     indexSceneThreshold: [0.5, 0.99], indexLocalmaxOrder: [1, 5, true], dedupThreshold: [0.8, 0.99],
+    indexContentMaxFrames: [1, 32, true],
   };
 
   function validate(value) {
@@ -72,13 +76,15 @@ const Config = (() => {
     if (typeof value.projectRoot !== 'string' || !value.projectRoot.trim()
         || typeof value.modelName !== 'string' || !value.modelName.trim()) throw new Error('项目路径和模型不能为空');
     if (!['mean', 'max'].includes(value.visualAgg) || !['fast', 'balanced', 'quality'].includes(value.aiMode)
-        || !['all', 'selected', 'custom'].includes(value.scopeMode)) throw new Error('配置选项无效');
+        || !['all', 'selected', 'custom'].includes(value.scopeMode)
+        || !['triplet', 'dinov3_cses', 'content_adaptive'].includes(value.indexFrameSelection)) throw new Error('配置选项无效');
     if (!Array.isArray(value.history) || !value.history.every((v) => typeof v === 'string')
         || !Array.isArray(value.scopeFolderIds) || !value.scopeFolderIds.every((v) => typeof v === 'string')) throw new Error('配置列表格式无效');
     for (const [key, fallback] of Object.entries(DEFAULTS)) {
       if (typeof fallback === 'boolean' && typeof value[key] !== 'boolean') throw new Error(`设置 ${key} 必须为开关`);
     }
     if (typeof value.deepseekKey !== 'string') throw new Error('密钥字段格式无效');
+    if (typeof value.editClipDirectory !== 'string') throw new Error('片段目录格式无效');
     return value;
   }
 

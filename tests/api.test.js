@@ -4,6 +4,7 @@ const path = require('path');
 const vm = require('vm');
 
 const requests = [];
+let supportsSmartFrames = true;
 const context = {
   AbortController,
   clearTimeout,
@@ -27,8 +28,9 @@ const context = {
     }),
   },
   fetch: async (url, options) => {
-    requests.push({ url, options, body: JSON.parse(options.body) });
-    return { ok: true, status: 200, json: async () => ({ success: true, matches: [] }) };
+    requests.push({ url, options, body: options.body ? JSON.parse(options.body) : null });
+    return { ok: true, status: 200, json: async () => ({ success: true, matches: [],
+      capabilities: { smart_frame_selection: supportsSmartFrames, content_adaptive_frames: supportsSmartFrames } }) };
   },
   setTimeout,
 };
@@ -41,6 +43,7 @@ async function main() {
   const scope = new Set(['D:/library/a.mp4', 'D:/library/b.mp4']);
 
   await api.startIndex(['D:/library/a.mp4'], 'library', 'model', false, true);
+  assert.strictEqual(requests.at(-1).body.options.frame_selection, 'triplet');
   assert.strictEqual(requests.at(-1).body.resume, true, '普通整库索引应继续采用增量模式');
   assert.strictEqual(
     requests.at(-1).body.prune_missing,
@@ -54,6 +57,23 @@ async function main() {
     false,
     '局部索引不能清理范围之外的素材路径',
   );
+
+  const originalConfig = context.Config.get;
+  context.Config.get = () => ({ ...originalConfig(), indexFrameSelection: 'dinov3_cses' });
+  await api.startIndex(['D:/library/a.mp4'], 'library', 'model', false, false);
+  assert.strictEqual(requests.at(-1).body.options.frame_selection, 'dinov3_cses');
+  supportsSmartFrames = false;
+  await assert.rejects(api.startIndex(['D:/library/a.mp4'], 'library', 'model'), /更新并重启/);
+  assert(requests.at(-1).url.endsWith('/health'), '旧服务不支持时不能提交索引');
+  supportsSmartFrames = true;
+  context.Config.get = () => ({ ...originalConfig(), indexFrameSelection: 'content_adaptive', indexContentMaxFrames: 16 });
+  await api.startIndex(['D:/library/a.mp4'], 'library', 'model');
+  assert.strictEqual(requests.at(-1).body.options.frame_selection, 'content_adaptive');
+  assert.strictEqual(requests.at(-1).body.options.content_max_frames, 16);
+  supportsSmartFrames = false;
+  await assert.rejects(api.startIndex(['D:/library/a.mp4'], 'library', 'model'), /更新并重启/);
+  supportsSmartFrames = true;
+  context.Config.get = originalConfig;
 
   await api.search('猫', ['demo.lance'], 11, scope);
   assert.deepStrictEqual(
@@ -103,16 +123,25 @@ async function main() {
   await api.searchHybrid('主题', { video_path: 'D:/query.mp4' }, ['demo.lance'], 18, null, saved);
   assert.strictEqual(requests.at(-1).body.relative_margin, 7);
 
-  assert(api.isTemporalQuery('凌波丽眨眼'));
-  assert(api.isTemporalQuery('相机穿梭'));
-  assert(api.isTemporalQuery('推拉摇移'));
-  assert(!api.isTemporalQuery('照相机镜头特写'));
-  assert(!api.isTemporalQuery('没有眨眼'));
-  await api.search('眨眼', ['demo.lance'], 11);
-  assert.strictEqual(requests.at(-1).body.temporal_search, 'auto');
-  await api.search('眼睛特写', ['demo.lance'], 11);
-  assert.strictEqual(requests.at(-1).body.temporal_search, 'off');
-  console.log('API indexing and search propagation tests passed');
+  for (const query of ['眨眼', '转身', '抬头', '相机穿梭', '推拉摇移']) {
+    await api.search(query, ['demo.lance'], 11);
+    assert.strictEqual(requests.at(-1).body.query, query);
+    assert.strictEqual(requests.at(-1).body.threshold, 11);
+    assert(!('temporal_search' in requests.at(-1).body), '动作词走普通搜索，不发送专项核验参数');
+  }
+  const originalFetch = context.fetch;
+  context.fetch = async (url) => ({ ok: true, status: 200, json: async () => ({ success: true, capabilities: {} }) });
+  await assert.rejects(api.prepareEditClip({}), /重启配套新版/);
+  const clipBody = { video_path: 'D:/a.mp4', start_frame: 13, end_frame: 37, output_dir: 'D:/clips' };
+  context.fetch = async (url, options) => {
+    if (url.endsWith('/health')) return { ok: true, status: 200, json: async () => ({ capabilities: { edit_clip: true } }) };
+    assert(url.endsWith('/api/v1/prepare_edit_clip'));
+    assert.deepStrictEqual(JSON.parse(options.body), clipBody);
+    return { ok: true, status: 200, json: async () => ({ success: true, output_path: 'D:/clips/a.mp4' }) };
+  };
+  assert.strictEqual((await api.prepareEditClip(clipBody)).output_path, 'D:/clips/a.mp4');
+  context.fetch = originalFetch;
+  console.log('API indexing, search propagation and editing clip capability tests passed');
 }
 
 main().catch((error) => {

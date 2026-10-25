@@ -40,7 +40,10 @@ async function main() {
           if (options?.flag === 'wx' && files.has(file)) throw Object.assign(new Error('EEXIST'), { code: 'EEXIST' });
           files.set(file, value);
         },
-        statSync: (file) => { if (!files.has(file)) throw new Error('ENOENT'); return { size: String(files.get(file)).length, mtimeMs: 1 }; },
+        statSync: (file) => {
+          if (!files.has(file) && !file.startsWith('D:/fixture/')) throw new Error('ENOENT');
+          return { size: String(files.get(file) || 'fixture').length, mtimeMs: 1, isFile: () => true };
+        },
         promises: { readFile: async (file) => { if (!files.has(file)) throw new Error('ENOENT'); return files.get(file); } },
         renameSync: (from, to) => {
           if (window.__writeFail) throw new Error('模拟写盘失败');
@@ -53,7 +56,9 @@ async function main() {
       window.require = (module) => {
         if (module === 'fs') return fsMock;
         if (module === 'process') return { pid: 12345, kill: (pid) => { if (pid !== 12345) throw Object.assign(new Error('ESRCH'), { code: 'ESRCH' }); } };
-        if (module === 'path') return { join: (...parts) => parts.join('/'), resolve: (value) => value };
+        if (module === 'path') return { join: (...parts) => parts.join('/'), resolve: (value) => value, sep: '/',
+          isAbsolute: (value) => /^(?:[A-Z]:|\/)/i.test(value),
+          relative: (from, to) => to === from ? '' : to.startsWith(from + '/') ? to.slice(from.length + 1) : '../../' + to };
         if (module === 'crypto') return { randomUUID: () => `test-id-${++nextId}`, createHash: () => ({ update: (value) => ({ digest: () => {
           let hash = 2166136261;
           for (const ch of String(value)) hash = Math.imul(hash ^ ch.charCodeAt(0), 16777619) >>> 0;
@@ -75,6 +80,8 @@ async function main() {
         item.save = async () => { if (window.__organizeFail) throw new Error('模拟素材保存失败'); window.__saves.push(item.id); };
       });
       window.eagle = {
+        drag: { startDrag: async (paths) => { (window.__drags ||= []).push(paths); } },
+        dialog: { showOpenDialog: async () => window.__directoryResult || { canceled: false, filePaths: ['D:/edit-clips'] } },
         library: { path: 'D:/fixture.library', info: async () => ({ folders }) },
         app: { isDarkColors: () => true, show: async () => {} },
         folder: { getAll: async () => folders, getSelected: async () => folders,
@@ -100,7 +107,14 @@ async function main() {
       window.fetch = async (url, init) => {
         let result;
         if (url.includes('/indexes')) result = { indexes: [{ model: 'qihoo360-fg-clip2-base', name: 'eagle_v2_fixture_qihoo360-fg-clip2-base.lance', path: 'fixture.lance' }] };
-        else if (url.endsWith('/health')) result = { success: true, protocol_version: 2, capabilities: { library_identity: true, index_jobs_v2: true } };
+        else if (url.endsWith('/health')) result = { success: true, protocol_version: 2, capabilities: { library_identity: true, index_jobs_v2: true, edit_clip: true } };
+        else if (url.endsWith('/prepare_edit_clip')) {
+          (window.__clipRequests ||= []).push(JSON.parse(init.body));
+          if (window.__clipDelay) await new Promise((resolve) => { window.__releaseClip = resolve; });
+          if (window.__clipFail) return { ok: false, status: 500, json: async () => ({ success: false, error: '模拟片段生成失败' }) };
+          files.set('D:/edit-clips/clip.mp4', 'prepared video');
+          result = { success: true, output_path: 'D:/edit-clips/clip.mp4' };
+        }
         else if (url.endsWith('/libraries/resolve')) result = { success: true, library: { id: 'fixture', path: 'D:/fixture.library', index_name: 'eagle_v2_fixture' } };
         else if (url.includes('/index/jobs')) result = { jobs: [] };
         else if (url.includes('/index/contents')) result = { video_paths: window.__items.map((i) => i.filePath) };
@@ -136,20 +150,26 @@ async function main() {
           });
           if (body.allowed_video_paths) matches = matches.filter((m) => body.allowed_video_paths.includes(m.video_path.replace(/\//g, '\\').toLowerCase()));
           result = { success: true, matches };
-          if (body.temporal_search === 'auto' && !window.__oldTemporalBackend) {
-            matches = window.__temporalEmpty ? [] : [{ ...match('a', 5),
-              temporal_verification: { verdict: 'match', intent: 'blink', evidence_frames: [5, 7, 8] } }];
-            result = { success: true, matches, temporal_info: { intent: 'blink', candidates: 73,
-              checked: 10, matched: matches.length, uncertain: 2, errors: 0, unchecked: 63 } };
-          }
         } else result = { success: true };
         return { ok: true, status: 200, json: async () => result };
       };
     });
-    for (const name of ['config', 'api', 'eagleBridge', 'searchRecipe', 'archiveStore', 'topicUndo', 'coverFrame', 'indexer', 'searchCache', 'search', 'frameSearch', 'folderTree', 'manualAdd', 'topicReview', 'warehouse', 'shortcuts', 'plugin']) {
+    for (const name of ['config', 'api', 'eagleBridge', 'searchRecipe', 'archiveStore', 'topicUndo', 'coverFrame', 'indexer', 'searchCache', 'search', 'mediaDrag', 'frameSearch', 'folderTree', 'manualAdd', 'topicReview', 'topicRelations', 'warehouse', 'shortcuts', 'plugin']) {
       await page.addScriptTag({ path: path.join(root, 'js', `${name}.js`) });
     }
     await page.evaluate(async () => { window.__create({ path: '/fixture-plugin' }); await window.__show(); });
+    if (process.env.WAREHOUSE_DRAG_ONLY) {
+      await runMediaDragSmoke(page);
+      assert.deepStrictEqual(errors, []);
+      console.log('original drag, deduplication, preparation, directory and stale preview smoke passed');
+      return;
+    }
+    if (process.env.WAREHOUSE_RELATIONS_ONLY) {
+      await runResultRelationsSmoke(page);
+      assert.deepStrictEqual(errors, []);
+      console.log('result combination filters, membership and topic comparison browser smoke passed');
+      return;
+    }
     const inlineTime = await page.evaluate(() => {
       const time = document.querySelector('.time-filter');
       const visual = document.getElementById('btn-archives');
@@ -873,6 +893,7 @@ async function main() {
     await runReviewWorkflowSmoke(page);
     await runTopicHistorySmoke(page);
     await runTopicCopySmoke(page);
+    await runResultRelationsSmoke(page);
     await page.evaluate(() => {
       Search.restoreState(null);
       document.getElementById('query').value = '';
@@ -922,31 +943,20 @@ async function main() {
     await recovery.getByRole('button', { name: '关闭', exact: true }).click();
     await page.evaluate(() => { ArchiveStore.open = window.__bundleOpen; });
     await page.locator('#warehouse-back').click();
-    const temporal = await page.evaluate(async () => {
+    const actionSearch = await page.evaluate(async () => {
       const context = await SearchRecipe.currentContext();
       const before = window.__requests.length;
       const first = await Search.run('眨眼', 11, context);
       const snapshot = Search.captureState();
-      await Search.run('眨眼', 11, context);
-      const requests = window.__requests.length - before;
-      window.__oldTemporalBackend = true;
-      let old;
-      try { old = await Search.run('相机穿梭', 11, context); }
-      catch (error) { old = { ok: false, message: error.message }; }
-      window.__oldTemporalBackend = false;
-      window.__temporalEmpty = true;
-      const empty = await Search.run('眨眼', 11, context);
-      window.__temporalEmpty = false;
+      const camera = await Search.run('相机穿梭', 11, context);
       Search.restoreState(snapshot);
-      return { first: first.ok, requests, old, empty: empty.count };
+      return { first: first.ok, camera: camera.ok,
+        requests: window.__requests.slice(before).filter((request) => request.url.includes('/api/v1/search')) };
     });
-    assert(temporal.first);
-    assert.strictEqual(temporal.requests, 2, '动作查询不复用静态缓存');
-    assert(!temporal.old.ok && temporal.old.message.includes('重启'), '旧后端不能假装完成动作核验');
-    assert.strictEqual(temporal.empty, 0);
-    assert((await page.locator('#temporal-status').textContent()).includes('10/73'));
-    assert(await page.locator('#temporal-status').isVisible());
-    await page.screenshot({ path: path.join(os.tmpdir(), 'eagle-temporal-search.png') });
+    assert(actionSearch.first && actionSearch.camera, '眨眼和运镜均可通过普通搜索返回');
+    assert.strictEqual(actionSearch.requests.length, 2);
+    assert(actionSearch.requests.every((request) => !('temporal_search' in request.body)));
+    assert.strictEqual(await page.locator('#temporal-status').count(), 0);
     await page.evaluate(() => { document.documentElement.dataset.theme = 'light'; });
     if (process.env.WAREHOUSE_SCREENSHOT) await page.screenshot({ path: process.env.WAREHOUSE_SCREENSHOT });
     assert.deepStrictEqual(errors, []);
@@ -1387,7 +1397,7 @@ async function runWarehouseUsabilitySmoke(page) {
   assert.strictEqual(await page.evaluate(() => Search.getSelectedMatches()), null, '查找清除隐藏片段的勾选');
   await page.locator('#topic-scene-query').fill('没有这段视频');
   await page.waitForFunction(() => Search.getAllMatches().length === 0);
-  assert((await page.locator('#empty-state').textContent()).includes('查找条件'));
+  assert((await page.locator('#empty-state').textContent()).includes('组合筛选'));
   await page.locator('#topic-back').click();
   await openTopic('交互测试另一主题');
   assert.strictEqual(await page.locator('#topic-scene-query').inputValue(), '', '不同主题的查找条件隔离');
@@ -1512,6 +1522,10 @@ async function runWarehouseUsabilitySmoke(page) {
   await openTopic('交互测试另一主题');
   await page.locator('#topic-back').click();
   await openTopic('交互测试主主题');
+  assert.strictEqual(await page.locator('#results').evaluate((results) => results.scrollTop), 0, '打开主题先从顶部显示');
+  assert(await page.locator('#browse-position-resume').isVisible(), '提供点击回到上次浏览位置的短暂提示');
+  assert(!(await page.locator('#browse-position-top').isVisible()));
+  await page.locator('#browse-position-resume').click();
   await page.waitForFunction((top) => Math.abs(document.getElementById('results').scrollTop - top) < 2, resultTop);
   assert.strictEqual(await page.locator('#results .card').count(), 179, '恢复分批加载后的结果位置');
   assert(await page.locator('#browse-position-notice').isVisible());
@@ -1523,6 +1537,17 @@ async function runWarehouseUsabilitySmoke(page) {
     });
   }
   await page.setViewportSize({ width: 1100, height: 740 });
+  await page.locator('#topic-back').click();
+  await openTopic('交互测试主主题');
+  assert(await page.locator('#browse-position-resume').isVisible());
+  await page.waitForFunction(() => document.getElementById('browse-position-notice').classList.contains('hidden'), null, { timeout: 6000 });
+  assert.strictEqual(await page.locator('#results').evaluate((results) => results.scrollTop), 0, '提示超时不自动跳回历史位置');
+  await page.locator('#results').evaluate((results) => { results.scrollTop = 400; });
+  await page.locator('#topic-back').click();
+  await openTopic('交互测试主主题');
+  assert(await page.locator('#browse-position-resume').isVisible());
+  await page.locator('#view-sort').selectOption('name');
+  assert(!(await page.locator('#browse-position-notice').isVisible()), '筛选排序变化清除旧位置入口');
   await page.locator('#view-grouped').check();
   const group = page.locator('#results .vgroup').first();
   await group.locator('.group-load-more').click();
@@ -1542,7 +1567,8 @@ async function runWarehouseUsabilitySmoke(page) {
   }))), groupState, '恢复分组折叠及每组已加载片段数');
   assert.strictEqual(await page.evaluate(() => window.__requests.length), localBefore.requests, '全部整理与浏览操作不搜索');
   await page.locator('#topic-search').click();
-  assert(!(await page.locator('#topic-scene-filter').isVisible()));
+  assert.strictEqual(await page.locator('#topic-scene-filter').isVisible(),
+    await page.evaluate(() => Search.getRawMatches().length > 0), '普通搜索同样提供结果内筛选');
   assert.strictEqual(await page.evaluate(() => Search.getArchiveFilter().source), 'all');
   await page.locator('#btn-archives').click();
   await page.locator('#warehouse-query').fill(warehouseQuery);
@@ -1840,6 +1866,7 @@ async function runReviewWorkflowSmoke(page) {
   await page.locator('#topic-back').click();
   await page.waitForFunction(() => document.body.dataset.page === 'warehouse');
   await open('审片位置验证');
+  await page.locator('#browse-position-resume').click();
   await page.waitForFunction((top) => Math.abs(document.getElementById('results').scrollTop - top) < 2, scrollTop);
   await page.locator('#topic-search').click();
   await page.locator('#btn-archives').click();
@@ -2003,6 +2030,161 @@ async function runTopicCopySmoke(page) {
   await page.locator('#btn-archives').click();
   await page.locator('#warehouse-query').fill(query);
   await page.locator('#warehouse-back').click();
+}
+
+async function runResultRelationsSmoke(page) {
+  const fixture = await page.evaluate(async () => {
+    const archive = ArchiveStore.open(Config.pluginPath(), eagle.library.path);
+    const source = Search.captureState();
+    const items = window.__items;
+    items[0].width = 1920; items[0].height = 1080;
+    items[1].width = 1080; items[1].height = 1920;
+    items[2].width = 600; items[2].height = 600;
+    const matches = items.map((item, i) => ({ eagleItemId: item.id, video_path: item.filePath, video_name: item.name,
+      start_frame: 70000 + i * 100, end_frame: 70100 + i * 100, fps: 25, similarity: 30 - i,
+      start: '00:01', end: '00:05', duration_seconds: 4 + i }));
+    const view = { sortBy: 'sim', grouped: false, minDur: 0 };
+    const a = archive.add({ name: '组合比较 A', matches: matches.slice(0, 2), view, recipe: Search.getRecipe() });
+    const b = archive.add({ name: '组合比较 B', matches: [matches[0], matches[2]], view, recipe: Search.getRecipe() });
+    await Search.loadResults(matches, '组合比较来源', Search.getRecipe(), view);
+    return { source, a: a.id, b: b.id, matches, files: JSON.stringify([...window.__files]), requests: window.__requests.length };
+  });
+  await page.locator('#topic-scene-query').fill('城市');
+  await page.locator('#result-tags').fill('原标签');
+  await page.locator('#result-orientation').selectOption('landscape');
+  await page.locator('#result-max-dur').fill('4');
+  await page.locator('#result-max-dur').blur();
+  await page.waitForFunction(() => Search.getAllMatches().length === 1);
+  assert.strictEqual(await page.locator('#result-count').textContent(), '1/3 条');
+  assert.strictEqual(await page.locator('#topic-scene-filter').evaluate((el) => el.scrollWidth <= el.clientWidth), true);
+  await page.locator('#results .pick').first().check();
+  await page.locator('#result-orientation').selectOption('portrait');
+  assert.strictEqual(await page.evaluate(() => Search.getSelectedMatches()), null, '隐藏片段不会残留勾选');
+  await page.locator('#result-filter-clear').click();
+  assert.strictEqual(await page.evaluate(() => Search.getAllMatches().length), 3);
+  await page.locator('#result-max-dur').fill('2'); await page.locator('#result-max-dur').blur();
+  await page.locator('#view-min-dur').fill('3'); await page.locator('#view-min-dur').blur();
+  assert.strictEqual(await page.locator('#view-min-dur').inputValue(), '0', '上下限冲突不应用无效条件');
+  await page.locator('#result-filter-clear').click();
+  await page.waitForFunction(() => document.querySelector('#results .scene-membership')?.textContent.includes('组合比较 A'));
+  for (const width of [1100, 480]) {
+    await page.setViewportSize({ width, height: 720 });
+    assert(await page.locator('#topic-scene-filter').evaluate((el) => el.scrollWidth <= el.clientWidth));
+    await page.screenshot({ path: path.join(os.tmpdir(), `eagle-result-filters-${width}.png`) });
+  }
+  await page.setViewportSize({ width: 1100, height: 720 });
+  await page.locator('#results .scene-membership').first().click();
+  await page.waitForFunction(() => document.getElementById('relations-status').textContent.includes('2 个主题'));
+  assert.strictEqual(await page.locator('#relations-list .relations-topic').count(), 2);
+  await page.locator('#relations-list').getByRole('button', { name: '组合比较 A', exact: true }).click();
+  await page.waitForFunction(() => document.getElementById('topic-name').textContent === '组合比较 A');
+  assert.strictEqual(await page.evaluate(() => Search.getRawMatches().length), 2, '归属面板可打开对应主题');
+  await page.locator('#topic-search').click();
+  assert.strictEqual(await page.evaluate(() => Search.getRawMatches().length), 3, '从归属主题返回保留来源会话');
+  await page.evaluate(({ a, b }) => TopicRelations.showCompare([a, b]), fixture);
+  assert.strictEqual(await page.locator('#relations-tabs button').allTextContents().then((v) => v.join(',')), '共有 1,A 独有 1,B 独有 1');
+  for (const tab of ['common', 'left', 'right']) {
+    await page.locator(`#relations-tabs [data-mode=${tab}]`).click();
+    assert.strictEqual(await page.locator('#relations-list .relations-row').count(), 1);
+  }
+  await page.locator('#relations-list').getByRole('button', { name: '预览' }).click();
+  assert(await page.locator('#relations-video').isVisible());
+  for (const width of [1100, 480]) {
+    await page.setViewportSize({ width, height: 720 });
+    const box = await page.locator('#topic-relations-dialog').boundingBox();
+    assert(box.x >= 15 && box.x + box.width <= width - 15, '比较面板不超出视口');
+    assert(await page.locator('#topic-relations-dialog').evaluate((el) => el.scrollWidth <= el.clientWidth));
+    await page.screenshot({ path: path.join(os.tmpdir(), `eagle-result-relations-${width}.png`) });
+  }
+  await page.locator('#relations-right').selectOption(fixture.a);
+  assert((await page.locator('#relations-status').textContent()).includes('不同的主题'));
+  assert.strictEqual(await page.locator('#relations-list .relations-row').count(), 0);
+  await page.locator('#relations-right').selectOption(fixture.b);
+  await page.locator('#relations-close').click();
+  assert.strictEqual(await page.evaluate(() => JSON.stringify([...window.__files])), fixture.files, '筛选、归属、比较及预览不写仓库');
+  assert.strictEqual(await page.evaluate(() => window.__requests.length), fixture.requests, '组合筛选和比较不重新推理');
+  await page.evaluate(({ a, b }) => TopicRelations.showCompare([a, b]), fixture);
+  await page.evaluate(async ({ a, b, matches }) => {
+    const archive = ArchiveStore.open(Config.pluginPath(), eagle.library.path);
+    const left = archive.list().entries.find((entry) => entry.id === a);
+    archive.removeMatches(a, [ArchiveStore.sceneKey(matches[0])], left.updatedAt, left.revision || 0);
+    const right = archive.list().entries.find((entry) => entry.id === b);
+    await archive.hydrateEntry(right);
+    archive.replace({ ...right, name: '组合比较 B 改名' }, right.updatedAt);
+  }, fixture);
+  await page.locator('#relations-reload').click();
+  await page.waitForFunction(() => document.querySelector('#relations-tabs button')?.textContent === '共有 0');
+  assert.strictEqual(await page.locator('#relations-tabs button').allTextContents().then((v) => v.join(',')), '共有 0,A 独有 1,B 独有 2');
+  await page.locator('#relations-close').click();
+  await page.waitForFunction(() => document.querySelector('#results .scene-membership')?.textContent === '已收录：组合比较 B 改名');
+  await page.evaluate(({ a, b }) => TopicRelations.showCompare([a, b]), fixture);
+  await page.evaluate(() => { eagle.library.path = 'D:/other-relations.library'; });
+  await page.locator('#relations-reload').click();
+  assert((await page.locator('#relations-status').textContent()).includes('已切换'));
+  await page.locator('#relations-close').click();
+  await page.evaluate((source) => { eagle.library.path = 'D:/fixture.library'; Search.restoreState(source); }, fixture.source);
+  await page.setViewportSize({ width: 1100, height: 720 });
+}
+
+async function runMediaDragSmoke(page) {
+  await page.locator('#query').fill('拖拽验证');
+  await page.locator('#btn-search').click();
+  await page.waitForFunction(() => Search.getRawMatches().length > 0);
+  const thumbs = page.locator('#results .thumb-box');
+  assert(await thumbs.first().getAttribute('draggable') === 'true');
+  await thumbs.first().dispatchEvent('dragstart');
+  assert.strictEqual(await page.evaluate(() => __drags[0].length), 1);
+  await page.locator('#results .pick').nth(0).check();
+  await page.locator('#results .pick').nth(1).check();
+  await thumbs.first().dispatchEvent('dragstart');
+  assert.strictEqual(await page.evaluate(() => __drags[1].length), 1, '同素材多个片段只拖一份');
+  assert.strictEqual(await page.evaluate(() => window.__clipRequests?.length || 0), 0, '原视频拖拽不调用生成接口');
+  // 点击文字打开预览，避开刚拖拽后的缩略图点击抑制。
+  await page.locator('#results .card .name').first().click();
+  assert(await page.locator('#btn-drag-clip').isDisabled());
+  await page.evaluate(() => { window.__directoryResult = { canceled: true, filePaths: [] }; });
+  await page.locator('#btn-prepare-clip').click();
+  await page.waitForFunction(() => !document.getElementById('btn-prepare-clip').disabled);
+  assert.strictEqual(await page.evaluate(() => window.__clipRequests?.length || 0), 0);
+  await page.evaluate(() => { window.__directoryResult = { canceled: false, filePaths: ['D:/fixture.library/export'] }; });
+  await page.locator('#btn-prepare-clip').click();
+  await page.waitForFunction(() => document.querySelector('.toast')?.textContent.includes('素材库之外'));
+  assert.strictEqual(await page.evaluate(() => window.__clipRequests?.length || 0), 0);
+  await page.evaluate(() => { window.__directoryResult = null; });
+  await page.locator('#btn-prepare-clip').click();
+  await page.waitForFunction(() => !document.getElementById('btn-drag-clip').disabled);
+  const request = await page.evaluate(() => ({ request: __clipRequests[0], match: Search.getActiveMatch() }));
+  assert.strictEqual(request.request.start_frame, request.match.original_start_frame);
+  assert.strictEqual(request.request.end_frame, request.match.original_end_frame);
+  await page.locator('#btn-drag-clip').dispatchEvent('dragstart');
+  assert.deepStrictEqual(await page.evaluate(() => __drags.at(-1)), ['D:/edit-clips/clip.mp4']);
+  await page.evaluate(() => __files.delete('D:/edit-clips/clip.mp4'));
+  await page.locator('#btn-drag-clip').dispatchEvent('dragstart');
+  assert(await page.locator('#btn-drag-clip').isDisabled(), '输出文件丢失即失效');
+  await page.evaluate(() => { window.__clipFail = true; });
+  await page.locator('#btn-prepare-clip').click();
+  await page.waitForFunction(() => !document.getElementById('btn-prepare-clip').disabled);
+  assert(await page.locator('#btn-drag-clip').isDisabled(), '失败不能显示准备完成');
+  await page.evaluate(() => { window.__clipFail = false; window.__clipDelay = true; });
+  await page.locator('#btn-prepare-clip').click();
+  await page.waitForFunction(() => !!window.__releaseClip);
+  await page.locator('#results .card .name').nth(1).click();
+  await page.evaluate(() => { window.__clipDelay = false; __releaseClip(); });
+  await page.waitForFunction(() => !document.getElementById('btn-prepare-clip').disabled);
+  assert(await page.locator('#btn-drag-clip').isDisabled(), '迟到的完成结果不能绑定到新预览');
+  await page.locator('#btn-prepare-clip').click();
+  await page.waitForFunction(() => !document.getElementById('btn-drag-clip').disabled);
+  for (const width of [1100, 800]) {
+    await page.setViewportSize({ width, height: 720 });
+    assert(await page.locator('.preview-actions').evaluate((el) => [...el.children].filter((e) => e.offsetWidth)
+      .every((e) => e.getBoundingClientRect().height < 45)), '预览按钮保持单行');
+    await page.screenshot({ path: path.join(os.tmpdir(), `eagle-media-drag-${width}.png`) });
+  }
+  const count = await page.evaluate(() => __drags.length);
+  await page.evaluate(() => { eagle.library.path = 'D:/other.library'; });
+  await page.locator('#btn-drag-clip').dispatchEvent('dragstart');
+  await thumbs.first().dispatchEvent('dragstart');
+  assert.strictEqual(await page.evaluate(() => __drags.length), count, '跨库拒绝两种拖出');
 }
 
 main().catch((error) => { console.error(error); process.exitCode = 1; });

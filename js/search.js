@@ -8,10 +8,13 @@ const Search = (() => {
   let lastMatches = [];
   let lastQuery = '';           // 最近一次查询，供保存主题使用
   let lastRecipe = null;
-  let temporalReport = null;
   let newKeys = new Set();
   let archiveTime = { mode: 'all' };
   let archiveFilter = { query: '', source: 'all' };
+  const filterDefaults = { query: '', source: 'all', tags: '', orientation: 'all', maxDur: null };
+  let topicMembership = null;
+  let topicMembershipStatus = '主题归属…';
+  const cardMatches = new WeakMap();
   let renderGeneration = 0;
   let busy = false;
   let requestGeneration = 0;
@@ -202,6 +205,7 @@ const Search = (() => {
     el.resultCount = document.getElementById('result-count');
     el.timeline = document.getElementById('preview-timeline');
     el.previewTags = document.getElementById('preview-tags');
+    el.localFilters = document.getElementById('topic-scene-filter');
     const searchButton = document.getElementById('btn-search');
     el.cancelSearch = document.createElement('button');
     el.cancelSearch.id = 'btn-cancel-search';
@@ -221,8 +225,8 @@ const Search = (() => {
     el.previewRetry.textContent = '重试预览';
     el.previewRetry.hidden = true;
     el.previewRetry.addEventListener('click', () => { if (activeMatch) openPreview(activeMatch); });
-    el.previewPanel.appendChild(el.previewStatus);
-    el.previewPanel.appendChild(el.previewRetry);
+    document.getElementById('preview-feedback').appendChild(el.previewStatus);
+    document.getElementById('preview-feedback').appendChild(el.previewRetry);
 
     el.btnClosePreview.addEventListener('click', closePreview);
     el.btnLocate.addEventListener('click', async () => {
@@ -252,6 +256,10 @@ const Search = (() => {
 
   /* ---------- 视图（排序/过滤/分组）---------- */
   function setView(partial) {
+    if (partial.minDur !== undefined && (!Number.isFinite(partial.minDur) || partial.minDur < 0
+        || (archiveFilter.maxDur != null && partial.minDur > archiveFilter.maxDur))) {
+      throw new Error('片段时长下限须为非负数，且不能大于上限');
+    }
     Object.assign(view, partial);
     if (lastMatches.length) render();
   }
@@ -270,6 +278,21 @@ const Search = (() => {
     if (nameQuery) idxs = idxs.filter((i) => String(lastMatches[i].video_name || '').toLocaleLowerCase().includes(nameQuery));
     if (archiveFilter.source !== 'all') {
       idxs = idxs.filter((i) => !!lastMatches[i].manualScore === (archiveFilter.source === 'manual'));
+    }
+    const tags = String(archiveFilter.tags || '').split(/[,，]/).map((tag) => tag.trim().toLocaleLowerCase()).filter(Boolean);
+    const orientation = archiveFilter.orientation || 'all';
+    if (tags.length || orientation !== 'all' || archiveFilter.maxDur != null) {
+      idxs = idxs.filter((i) => {
+        const match = lastMatches[i];
+        const item = Bridge.itemForPath(match.video_path);
+        const itemTags = new Set((item?.tags || []).map((tag) => String(tag).toLocaleLowerCase()));
+        if (tags.some((tag) => !itemTags.has(tag))) return false;
+        const width = Number(item?.width); const height = Number(item?.height);
+        const shape = width > 0 && height > 0 && Number.isFinite(width) && Number.isFinite(height)
+          ? width > height ? 'landscape' : width < height ? 'portrait' : 'square' : 'unknown';
+        return (orientation === 'all' || shape === orientation)
+          && (archiveFilter.maxDur == null || (Number.isFinite(match.duration_seconds) && match.duration_seconds <= archiveFilter.maxDur));
+      });
     }
     const cmp = {
       sim: (a, b) => (lastMatches[b].similarity || 0) - (lastMatches[a].similarity || 0)
@@ -315,29 +338,12 @@ const Search = (() => {
     return matches.filter((m) => scopeSet.has(Bridge.normalizePath(m.video_path)));
   }
 
-  function temporalSummary(report) {
-    return `动作核验：已检查 ${report.checked}/${report.candidates} 个候选，通过 ${report.matched} 个；`
-      + `无法判断 ${report.uncertain}，失败 ${report.errors}，尚未检查 ${report.unchecked}。`
-      + '长镜头仅检查局部连续窗口，未命中不代表素材库中没有该动作。'
-      + (report.intent === 'camera' ? '运镜按画面整体运动判断，含动画平移和缩放；穿梭按综合运镜召回。' : '');
-  }
-
-  function renderTemporalStatus() {
-    const status = document.getElementById('temporal-status');
-    if (!status) return;
-    const saved = lastMatches.filter((match) => match.temporal_verification?.verdict === 'match').length;
-    status.textContent = temporalReport ? temporalSummary(temporalReport)
-      : saved ? `已存结果中 ${saved} 个片段带动作核验依据；原始候选检查范围未保存在主题中。` : '';
-    status.classList.toggle('hidden', !status.textContent);
-  }
-
   function finishSearch(resp, scopeSet, query, recipe) {
     if (!resp.ok || !resp.data || !resp.data.success) {
       const msg = (resp.data && resp.data.error) || `搜索失败（HTTP ${resp.status}）`;
       return { ok: false, message: msg };
     }
     lastQuery = query;
-    temporalReport = resp.data.temporal_info || null;
     lastMatches = identifyMatches(applyScope(resp.data.matches || [], scopeSet));
     archiveTime = { mode: 'all' };
     archiveFilter = { query: '', source: 'all' };
@@ -386,8 +392,7 @@ const Search = (() => {
       allowedVideoPaths: context.paths == null ? null : Array.from(context.paths),
     };
     // 旧服务没有索引版本时仍可搜索，但不可把同路径误当作未更新。
-    const temporal = recipe.kind === 'text' && typeof Api.isTemporalQuery === 'function' && Api.isTemporalQuery(recipe.query);
-    const canCache = !temporal && snapshot.revisions.every((revision) => typeof revision === 'string' && revision.length > 0);
+    const canCache = snapshot.revisions.every((revision) => typeof revision === 'string' && revision.length > 0);
     if (canCache && typeof SearchCache !== 'undefined') {
       const cached = SearchCache.get(cacheParams);
       if (cached) {
@@ -397,7 +402,7 @@ const Search = (() => {
       }
     }
 
-    setPhase(temporal ? '召回候选并核验连续画面中的动作，可能需要数分钟…' : '等待服务返回结果…');
+    setPhase('等待服务返回结果…');
 
     let resp;
     if (recipe.kind === 'visual') {
@@ -408,9 +413,6 @@ const Search = (() => {
       resp = await Api.search(recipe.query, indices, cfg.threshold, context.paths, cfg, { signal });
     }
 
-    if (temporal && resp.ok && resp.data?.success && !resp.data.temporal_info) {
-      throw new Error('当前服务尚未加载动作核验能力，请在设置中重启服务后重试');
-    }
     // 存储到缓存
     if (canCache && !signal?.aborted && typeof SearchCache !== 'undefined' && resp.ok && resp.data?.success && resp.data?.matches) {
       SearchCache.set(cacheParams, resp.data.matches);
@@ -480,7 +482,7 @@ const Search = (() => {
       }
       if (!resp.ok || !resp.data?.success) throw new Error(resp.data?.error || '更新搜索失败');
       return { matches: identifyMatches(applyScope(resp.data.matches || [], context.paths)),
-        missingDates: context.missingDates, temporal: resp.data.temporal_info || null };
+        missingDates: context.missingDates };
     } finally {
       if (generation === requestGeneration) { activeRequest = null; setPhase(''); setBusy(false); }
     }
@@ -501,15 +503,10 @@ const Search = (() => {
 
   /* 视频头几帧可能是黑场/解码异常，缩略图从第 3 帧开始取（不超过场景尾帧） */
   function thumbFrame(m) {
-    const frames = m.temporal_verification?.evidence_frames;
-    const evidence = Array.isArray(frames) && frames[m.temporal_verification.intent === 'blink' ? 1 : 0];
-    if (Number.isInteger(evidence) && evidence >= m.start_frame && evidence < m.end_frame) return evidence;
     return Math.min(Math.max(m.start_frame, 3), m.end_frame);
   }
 
   function previewStartFrame(m) {
-    const evidence = m.temporal_verification?.evidence_frames?.[0];
-    if (Number.isInteger(evidence) && evidence >= m.start_frame && evidence < m.end_frame) return evidence;
     return Math.min(m.start_frame + PREVIEW_LEAD_IN_FRAMES, m.end_frame);
   }
 
@@ -529,6 +526,7 @@ const Search = (() => {
   function buildCard(m, idx, pos) {
     const item = Bridge.itemForPath(m.video_path);
     const card = document.createElement('div');
+    cardMatches.set(card, m);
     const initiallySelected = selectedIdx.has(idx);
     card.className = 'card' + (item ? '' : ' missing') + (initiallySelected ? ' selected' : '');
     card.dataset.sceneKey = String(ArchiveStore.sceneKey(m));
@@ -540,9 +538,13 @@ const Search = (() => {
     const img = document.createElement('img');
     img.className = 'thumb';
     img.alt = m.video_name;
+    img.draggable = false;
     thumbBox.appendChild(img);
     ThumbLoader.load(img, Api.previewUrl(m.video_path, thumbFrame(m)));
     bindHover(thumbBox, m);
+    if (typeof MediaDrag !== 'undefined') {
+      MediaDrag.bindOriginal(thumbBox, () => selectedIdx.has(idx) ? getSelectedMatches() : [m], stopHoverPreview);
+    }
 
     const pick = document.createElement('input');
     pick.type = 'checkbox';
@@ -573,6 +575,14 @@ const Search = (() => {
       + `<span>${multi}${badge}${manual}<span class="sim">${Number(m.similarity).toFixed(1)}</span></span>`;
     meta.appendChild(name);
     meta.appendChild(sub);
+    if (typeof TopicRelations !== 'undefined') {
+      const membership = document.createElement('button');
+      membership.className = 'scene-membership';
+      membership.type = 'button';
+      membership.addEventListener('click', (event) => { event.stopPropagation(); TopicRelations.showMembership(m); });
+      updateMembershipButton(membership, m);
+      meta.appendChild(membership);
+    }
     if (newKeys.has(ArchiveStore.sceneKey(m))) {
       const badgeNew = document.createElement('span');
       badgeNew.className = 'badge-new';
@@ -685,7 +695,6 @@ const Search = (() => {
   }
 
   function render() {
-    renderTemporalStatus();
     renderGeneration += 1;
     document.dispatchEvent(new CustomEvent('search-context'));
     closePreview();
@@ -715,13 +724,22 @@ const Search = (() => {
     const has = displayList.length > 0;
     el.emptyState.classList.toggle('hidden', has);
     el.viewBar.classList.toggle('hidden', lastMatches.length === 0);
-    const hasLocalFilter = archiveFilter.query.trim() || archiveFilter.source !== 'all';
+    if (el.localFilters) {
+      el.localFilters.classList.toggle('hidden', lastMatches.length === 0);
+      const values = { 'topic-scene-query': archiveFilter.query, 'topic-scene-source': archiveFilter.source,
+        'result-tags': archiveFilter.tags || '', 'result-orientation': archiveFilter.orientation || 'all',
+        'result-max-dur': archiveFilter.maxDur ?? '' };
+      Object.entries(values).forEach(([id, value]) => { document.getElementById(id).value = value; });
+      document.getElementById('result-filter-error').textContent = '';
+    }
+    const hasLocalFilter = archiveFilter.query.trim() || archiveFilter.source !== 'all'
+      || archiveFilter.tags?.trim() || (archiveFilter.orientation || 'all') !== 'all' || archiveFilter.maxDur != null;
     el.resultCount.textContent = view.minDur > 0 || archiveTime.mode !== 'all' || hasLocalFilter
       ? `${displayList.length}/${lastMatches.length} 条`
       : `${lastMatches.length} 条`;
     if (!has) {
       el.emptyState.innerHTML = lastMatches.length > 0 && hasLocalFilter
-        ? '<p>当前查找条件下没有片段，可清空视频名或切回“全部片段”，也可调整时间与时长。</p>'
+        ? '<p>当前组合筛选下没有片段，可清除筛选或调整时间与片段时长。标签及画幅使用 Eagle 素材信息。</p>'
         : lastMatches.length > 0 && archiveTime.mode !== 'all'
         ? '<p>当前筛选下没有已保存的结果，可切回「不限时间」或调整时长。缺少加入 Eagle 时间的素材不参与时间筛选。</p>'
         : lastMatches.length > 0
@@ -897,8 +915,6 @@ const Search = (() => {
       `<b>${esc(match.video_name)}</b><br>`
       + `片段：${esc(fmtTime(match.start))} – ${esc(fmtTime(match.end))}（${esc(match.duration_display)}）<br>`
       + `${match.manualScore ? '人工评分' : '相似度'}：${Number(match.similarity).toFixed(2)}${hybridInfo}${mqList}`
-      + (match.temporal_verification?.verdict === 'match'
-        ? `<br>动作依据：源视频第 ${esc((match.temporal_verification.evidence_frames || []).join(' → '))} 帧（从 0 计数）` : '')
       + (item ? '' : '<br><span style="color:var(--danger)">素材已不在 Eagle 库中</span>')
       + '<br><span class="hint-inline">←/→ 切换结果，Esc 收起</span>';
     el.btnLocate.disabled = !item;
@@ -961,25 +977,43 @@ const Search = (() => {
     };
   }
 
-  async function restoreBrowsePosition(position) {
+  async function restoreBrowsePosition(position, { scroll = true } = {}) {
     if (!position || !el.results?.getBoundingClientRect) return false;
     const library = eagle.library.path;
     const generation = renderGeneration;
+    const isCurrent = () => generation === renderGeneration && library === eagle.library.path
+      && document.body.dataset.page !== 'warehouse';
+    const nextFrame = () => new Promise((resolve) => requestAnimationFrame(resolve));
+    if (!scroll) el.results.scrollTop = 0;
+    // Show the initial batch before rebuilding a potentially deep browse history.
+    await nextFrame();
+    if (!isCurrent()) return false;
     if (view.grouped) {
-      while (groupPtr < Math.min(position.groupCount || 0, groups.length)) renderNextChunk();
+      while (groupPtr < Math.min(position.groupCount || 0, groups.length)) {
+        renderNextChunk();
+        await nextFrame();
+        if (!isCurrent()) return false;
+      }
       const savedGroups = new Map((position.groups || []).map((group) => [group.path, group]));
-      el.results.querySelectorAll('.vgroup').forEach((group) => {
+      for (const group of el.results.querySelectorAll('.vgroup')) {
         const saved = savedGroups.get(group.dataset.videoPath);
-        if (!saved) return;
-        const more = group.querySelector('.group-load-more');
-        while (!more.hidden && Number(group.dataset.loaded) < saved.loaded) more.click();
+        if (!saved) continue;
         group.open = saved.open;
-      });
+        const more = group.querySelector('.group-load-more');
+        while (!more.hidden && Number(group.dataset.loaded) < saved.loaded) {
+          more.click();
+          await nextFrame();
+          if (!isCurrent()) return false;
+        }
+      }
     } else {
-      while (flatPtr < Math.min(position.rendered || 0, displayList.length)) renderNextChunk();
+      while (flatPtr < Math.min(position.rendered || 0, displayList.length)) {
+        renderNextChunk();
+        await nextFrame();
+        if (!isCurrent()) return false;
+      }
     }
-    await new Promise((resolve) => requestAnimationFrame(resolve));
-    if (generation !== renderGeneration || library !== eagle.library.path || document.body.dataset.page === 'warehouse') return false;
+    if (!scroll) return false;
     const anchor = [...el.results.querySelectorAll('.card')].find((card) => card.dataset.sceneKey === position.anchorKey);
     const anchorRect = anchor?.getBoundingClientRect();
     const desired = anchorRect?.height > 0
@@ -996,9 +1030,24 @@ const Search = (() => {
       recipe: lastRecipe && SearchRecipe.clone(lastRecipe), view: { ...view },
       addedKeys: [...newKeys], time: SearchRecipe.clone(archiveTime),
       selected: [...selectedIdx],
-      temporalReport: temporalReport && { ...temporalReport },
       filter: { ...archiveFilter }, position: captureBrowsePosition(),
     };
+  }
+
+  function updateMembershipButton(button, match) {
+    const topics = topicMembership?.(match);
+    button.textContent = topics ? topics.length ? `已收录：${topics.map((topic) => topic.name).join('、')}` : '未收录到主题' : topicMembershipStatus;
+    button.title = button.textContent;
+  }
+
+  function refreshTopicMembership(find, status = '主题归属…') {
+    topicMembership = find;
+    topicMembershipStatus = status;
+    el.results?.querySelectorAll('.card').forEach((card) => {
+      const button = card.querySelector('.scene-membership');
+      const match = cardMatches.get(card);
+      if (button && match) updateMembershipButton(button, match);
+    });
   }
 
   function restoreState(state) {
@@ -1006,7 +1055,6 @@ const Search = (() => {
     if (state?.library !== SearchRecipe.normalize(eagle.library.path)) state = null;
     lastMatches = state?.matches.slice() || [];
     lastQuery = state?.query || '';
-    temporalReport = state?.temporalReport || null;
     lastRecipe = state?.recipe ? SearchRecipe.clone(state.recipe) : null;
     Object.assign(view, state?.view || { sortBy: 'sim', minDur: 0, grouped: false });
     newKeys = new Set(state?.addedKeys || []);
@@ -1032,7 +1080,6 @@ const Search = (() => {
         return item ? { ...match, video_path: item.filePath, video_name: item.name } : match;
       });
       lastQuery = query || '';
-      temporalReport = null;
       lastRecipe = recipe;
       archiveTime = SearchRecipe.clone(time);
       archiveFilter = { ...filter };
@@ -1083,18 +1130,21 @@ const Search = (() => {
 
   return {
     bindDom, run, runVisual, runFrameText, runHybrid, setView, findLibraryIndexes, loadResults, captureState, restoreState,
-    setSelectionHandler, replaceResults, captureBrowsePosition, restoreBrowsePosition,
+    setSelectionHandler, replaceResults, captureBrowsePosition, restoreBrowsePosition, refreshTopicMembership,
     setContextMenuHandler: (fn) => { contextMenuHandler = fn; },
     getSelectedMatches, clearSelection, getAllMatches, getLastQuery, getActiveMatch, openPreviewByKey,
     getRawMatches: () => lastMatches.slice(),
     getRecipe: () => lastRecipe && SearchRecipe.clone(lastRecipe),
     getView: () => ({ ...view }),
-    temporalSummary,
     getArchiveFilter: () => ({ ...archiveFilter }),
     setArchiveFilter(filter) {
-      if (!['all', 'manual', 'auto'].includes(filter.source) || typeof filter.query !== 'string') throw new Error('片段查找条件无效');
-      if (archiveFilter.query === filter.query && archiveFilter.source === filter.source) return;
-      archiveFilter = { ...filter };
+      filter = { ...filterDefaults, ...filter };
+      if (!['all', 'manual', 'auto'].includes(filter.source) || typeof filter.query !== 'string'
+          || typeof filter.tags !== 'string' || !['all', 'landscape', 'portrait', 'square', 'unknown'].includes(filter.orientation)
+          || (filter.maxDur !== null && (!Number.isFinite(filter.maxDur) || filter.maxDur < 0))) throw new Error('片段查找条件无效');
+      if (filter.maxDur !== null && filter.maxDur < view.minDur) throw new Error('片段时长上限不能小于下限');
+      if (JSON.stringify(archiveFilter) === JSON.stringify(filter)) return;
+      archiveFilter = filter;
       render();
     },
     replay, cancel, getPhase: () => phase, isBusy: () => busy,

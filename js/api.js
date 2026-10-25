@@ -91,8 +91,18 @@ const Api = (() => {
     return (r.data && r.data.models) || [];
   }
 
-  function startIndex(videoPaths, indexName, modelName, rebuild = false, pruneMissing = false, metadata = {}) {
+  async function startIndex(videoPaths, indexName, modelName, rebuild = false, pruneMissing = false, metadata = {}) {
     const cfg = Config.get();
+    if (['dinov3_cses', 'content_adaptive'].includes(cfg.indexFrameSelection)) {
+      try {
+        const info = await healthInfo();
+        const capability = cfg.indexFrameSelection === 'content_adaptive' ? 'content_adaptive_frames' : 'smart_frame_selection';
+        if (!info?.capabilities?.[capability]) throw new Error('当前搜索服务尚不支持所选选帧方式，请更新并重启配套后端');
+      } catch (error) {
+        error.indexNotSubmitted = true;
+        throw error;
+      }
+    }
     return post('/api/v1/index', {
       library_id: metadata.library_id,
       library_path: metadata.library_path,
@@ -110,6 +120,8 @@ const Api = (() => {
         batch_size: cfg.indexBatchSize,
         cosine_similarity_threshold: cfg.indexSceneThreshold,
         localmax_order: cfg.indexLocalmaxOrder,
+        frame_selection: cfg.indexFrameSelection || 'triplet',
+        content_max_frames: cfg.indexContentMaxFrames ?? 12,
         use_fp16: !!cfg.indexFp16,
       },
     }, 10000);
@@ -156,12 +168,6 @@ const Api = (() => {
     }, allowedVideoPaths), DEFAULT_TIMEOUT_MS, requestOptions);
   }
 
-  function isTemporalQuery(query) {
-    const text = String(query || '');
-    if (/不眨眼|没有眨眼|without blinking|not blinking/i.test(text)) return false;
-    return /眨眼|眨动|blink(?:ing)?\b|运镜|推拉摇移|(?:相机|摄影机|摄像机|镜头).{0,6}(?:穿梭|穿行|推进|推拉|平移|移动|环绕|旋转)|(?:推|拉|摇|移|跟)镜头|camera\s+(?:movement|motion|pan|dolly|tracking|fly)/i.test(text);
-  }
-
   function search(query, indices, threshold, allowedVideoPaths = null, cfg = Config.get(), requestOptions = {}) {
     return post('/api/v1/search', withSearchScope({
       query,
@@ -177,8 +183,7 @@ const Api = (() => {
       use_dedup: !!cfg.dedup,
       dedup_threshold: cfg.dedupThreshold != null ? cfg.dedupThreshold : 0.95,
       use_mini_rerank: !!cfg.miniRerank,
-      temporal_search: isTemporalQuery(query) ? 'auto' : 'off',
-    }, allowedVideoPaths), cfg.miniRerank || isTemporalQuery(query) ? LONG_TIMEOUT_MS : DEFAULT_TIMEOUT_MS, requestOptions);
+    }, allowedVideoPaths), cfg.miniRerank ? LONG_TIMEOUT_MS : DEFAULT_TIMEOUT_MS, requestOptions);
   }
 
   function shutdown() {
@@ -248,9 +253,17 @@ const Api = (() => {
       + `&start_frame=${startFrame}&end_frame=${endFrame}`;
   }
 
+  async function prepareEditClip(body) {
+    const info = await healthInfo();
+    if (!info?.capabilities?.edit_clip) throw new Error('请重启配套新版搜索服务以启用片段准备');
+    const r = await post('/api/v1/prepare_edit_clip', body, LONG_TIMEOUT_MS);
+    if (!r.ok || !r.data?.success || !r.data.output_path) throw new Error(r.data?.error || '片段准备失败');
+    return r.data;
+  }
+
   return {
     health, healthInfo, resolveLibrary, associateLibrary, listIndexJobs, listIndexes, listModels, startIndex, indexStatus, cancelIndex, retryIndex,
-    search, searchVisual, searchHybrid, describeFrame, shutdown, isTemporalQuery,
-    dedupScan, indexCoverage, indexContents, previewUrl, clipUrl,
+    search, searchVisual, searchHybrid, describeFrame, shutdown,
+    dedupScan, indexCoverage, indexContents, previewUrl, clipUrl, prepareEditClip,
   };
 })();
