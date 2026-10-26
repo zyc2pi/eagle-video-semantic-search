@@ -464,12 +464,26 @@ const ArchiveStore = (() => {
       return { ...data, warnings };
     }
 
+    function resolveCategory(data, selection) {
+      if (selection && typeof selection === 'object') {
+        const name = typeof selection.name === 'string' ? selection.name.trim() : '';
+        if (!name || name.length > 60) throw new Error('分类名称须为 1～60 个字符');
+        const existing = data.categories.find((category) => category.name === name);
+        if (existing) return existing.id;
+        const category = { id: crypto.randomUUID(), name };
+        data.categories.push(category);
+        return category.id;
+      }
+      if (selection && !data.categories.some((category) => category.id === selection)) throw new Error('分类不存在');
+      return selection || '';
+    }
+
     function add({ name, categoryId, recipe, view, matches, favorite = false }) {
       if (typeof favorite !== 'boolean') throw new Error('星标状态格式无效');
       const data = read();
       const now = new Date().toISOString();
       const entry = { id: crypto.randomUUID(), name: name.trim() || recipe?.query || '未命名',
-        categoryId: categoryId || '', favorite, query: recipe?.query || name, recipe, view, matches,
+        categoryId: resolveCategory(data, categoryId), favorite, query: recipe?.query || name, recipe, view, matches,
         createdAt: now, updatedAt: now, newKeys: [] };
       data.entries.push(clone(entry));
       write(data);
@@ -505,7 +519,7 @@ const ArchiveStore = (() => {
         throw new Error('主题已被其他操作更新，请重新打开后重试');
       }
       if ((entry.revision || 0) !== (data.entries[index].revision || 0)) throw new Error('主题已被其他操作更新，请重新打开后重试');
-      const replacement = { ...clone(entry), revision: (entry.revision || 0) + 1 };
+      const replacement = { ...clone(entry), categoryId: resolveCategory(data, entry.categoryId), revision: (entry.revision || 0) + 1 };
       data.entries[index] = replacement;
       write(data);
       return replacement;
@@ -764,6 +778,34 @@ const ArchiveStore = (() => {
       write(data);
     }
 
+    function removeEntries(requests) {
+      if (!Array.isArray(requests)) throw new Error('删除请求格式无效');
+      const data = read();
+      const entries = new Map(data.entries.map((entry) => [entry.id, entry]));
+      const seen = new Set();
+      const deleted = new Set();
+      const results = requests.map((request) => {
+        const id = request?.id;
+        const entry = entries.get(id);
+        if (seen.has(id)) return { id, ok: false, code: 'duplicate', error: '主题请求重复' };
+        seen.add(id);
+        if (!entry) return { id, ok: false, code: 'missing', error: '主题已不存在' };
+        if (entry.updatedAt !== request.updatedAt || (entry.revision || 0) !== (request.revision || 0)) {
+          return { id, ok: false, code: 'conflict', error: '主题已被修改，请重新打开仓库后重试' };
+        }
+        const item = { entry, deletedAt: new Date().toISOString(), trashId: crypto.randomUUID() };
+        recognizedTrash.add(item);
+        data.trash.push(item);
+        deleted.add(id);
+        return { id, ok: true };
+      });
+      if (deleted.size) {
+        data.entries = data.entries.filter((entry) => !deleted.has(entry.id));
+        write(data);
+      }
+      return { results };
+    }
+
     function setCover(id, cover, expectedUpdatedAt) {
       const data = read();
       const entry = data.entries.find((value) => value.id === id);
@@ -810,7 +852,7 @@ const ArchiveStore = (() => {
     function setCategories(requests, categoryId) {
       if (!Array.isArray(requests)) throw new Error('分类请求格式无效');
       const data = read();
-      if (categoryId && !data.categories.some((c) => c.id === categoryId)) throw new Error('分类不存在');
+      categoryId = resolveCategory(data, categoryId);
       const seen = new Set();
       const entries = new Map(data.entries.map((entry) => [entry.id, entry]));
       const results = requests.map((request) => {
@@ -827,7 +869,7 @@ const ArchiveStore = (() => {
         if (error) return { id, ok: false, error, code };
         entry.categoryId = categoryId || '';
         entry.revision = (entry.revision || 0) + 1;
-        return { id, ok: true, revision: entry.revision };
+        return { id, ok: true, revision: entry.revision, categoryId: entry.categoryId };
       });
       // A commit error throws for the whole batch; no success is returned until
       // the new manifest has replaced the old one.
@@ -844,7 +886,7 @@ const ArchiveStore = (() => {
         revision: expectedRevision ?? (entry.revision || 0) };
       const result = setCategories([request], categoryId).results[0];
       if (!result.ok) throw new Error(result.error);
-      return { id: entryId, name: entry.name, categoryId: categoryId || '', updatedAt: entry.updatedAt, revision: result.revision };
+      return { id: entryId, name: entry.name, categoryId: result.categoryId, updatedAt: entry.updatedAt, revision: result.revision };
     }
 
     function restore(trashId) {
@@ -1080,7 +1122,7 @@ const ArchiveStore = (() => {
     const exportBundleAsync = (options) => runBundleWorker('export', undefined, options);
     const importBundleAsync = (text, options) => runBundleWorker('import', text, options);
 
-    return { list, add, copyEntry, replace, remove, removeMatches, restoreMatches, addMatches, undoMatches, setReviewed, setFavorite, category, setCategory, setCategories, setCover, restore, backups, restoreBackup, entryHistory, readEntryBackup, restoreEntryBackup, exportBundle, importBundle, exportBundleAsync, importBundleAsync, setRetention, hydrateEntry, recoverLock };
+    return { list, add, copyEntry, replace, remove, removeEntries, removeMatches, restoreMatches, addMatches, undoMatches, setReviewed, setFavorite, category, setCategory, setCategories, setCover, restore, backups, restoreBackup, entryHistory, readEntryBackup, restoreEntryBackup, exportBundle, importBundle, exportBundleAsync, importBundleAsync, setRetention, hydrateEntry, recoverLock };
   }
   return { open, sceneKey, sceneLookup, updatedEntry, entryChanges };
 })();

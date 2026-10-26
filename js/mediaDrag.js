@@ -7,16 +7,14 @@ const MediaDrag = (() => {
     if (library !== eagle.library.path) throw new Error('素材库已切换，请重新选择素材');
   }
 
-  function fileStamp(file) {
+  function checkFile(file) {
     const stat = fs.statSync(file);
     if (!stat.isFile() || !stat.size) throw new Error('原视频不存在或为空，请刷新结果');
-    return `${stat.size}:${stat.mtimeMs}`;
   }
 
   function sourcePath(match) {
     const item = Bridge.itemForPath(match.video_path);
     if (!item || (match.eagleItemId && item.id !== match.eagleItemId)) throw new Error('素材已失效，请刷新结果');
-    fileStamp(item.filePath);
     return item.filePath;
   }
 
@@ -44,6 +42,7 @@ const MediaDrag = (() => {
           unique.set(Bridge.normalizePath(file), file);
         }
         if (!unique.size) throw new Error('没有可拖出的素材');
+        for (const file of unique.values()) checkFile(file);
         beforeDrag?.();
         startDrag([...unique.values()]);
       } catch (error) { hooks.toast(error.message, true); }

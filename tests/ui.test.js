@@ -25,6 +25,9 @@ assert(/\.card \.hover-video\s*\{[\s\S]*?opacity:\s*0/.test(css),
   '悬停视频首帧就绪前必须保持透明，让缩略图继续显示');
 assert(css.includes('.card .hover-video.ready'), '首帧就绪后才允许显示悬停视频');
 assert(search.includes('requestVideoFrameCallback'), '悬停预览应等待浏览器实际绘制视频帧');
-assert(search.includes('video.poster = Api.previewUrl'), '主预览加载期间应使用场景缩略图作封面');
+assert(search.includes('matchThumbnails.get(match)') && search.includes('if (poster) video.poster = poster;'),
+  '主预览加载期间应复用已加载的场景缩略图作封面，不额外请求抽帧');
+assert(search.includes("video.removeAttribute('poster')"),
+  '已解码的同源播放器必须移除封面，避免封面请求打断原视频');
 
 console.log('toolbar, archive and preview interaction UI tests passed');

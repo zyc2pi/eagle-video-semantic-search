@@ -180,16 +180,18 @@
     if (!r.ok) toast(r.message, true);
   }
 
-  // ---------- 搜索范围选择器（整库 / 跟随 Eagle 选中 / 指定文件夹，均递归子文件夹）----------
+  // ---------- 搜索范围选择器（整库 / 跟随 Eagle 选中 / 指定 / 排除，均递归子文件夹）----------
   let scopeDialogChecked = new Set(); // 对话框内当前勾选的文件夹 id
   let scopeDialogExpanded = new Set(); // 对话框每次打开时默认全部折叠
   let scopeFolderRoots = [];
+  let scopeDialogTarget = null;
 
   function updateScopeButton() {
     const cfg = Config.get();
     const btn = $('btn-scope');
     if (cfg.scopeMode === 'selected') btn.textContent = '范围: 跟随 Eagle 选中';
     else if (cfg.scopeMode === 'custom') btn.textContent = `范围: ${cfg.scopeFolderIds.length} 个文件夹`;
+    else if (cfg.scopeMode === 'exclude') btn.textContent = `范围: 排除 ${cfg.scopeFolderIds.length} 个文件夹`;
     else btn.textContent = '范围: 整个库';
     btn.classList.toggle('scoped', cfg.scopeMode !== 'all');
   }
@@ -197,7 +199,7 @@
   /* 换库后自定义文件夹 id 失效，自动回退为整库 */
   function resetScopeIfLibraryChanged() {
     const cfg = Config.get();
-    if (cfg.scopeMode === 'custom' && cfg.scopeLibrary
+    if (['custom', 'exclude'].includes(cfg.scopeMode) && cfg.scopeLibrary
         && cfg.scopeLibrary !== eagle.library.path) {
       Config.save({ scopeMode: 'all', scopeFolderIds: [], scopeLibrary: '' });
     }
@@ -236,8 +238,10 @@
       cb.addEventListener('change', () => {
         if (cb.checked) scopeDialogChecked.add(r.id);
         else scopeDialogChecked.delete(r.id);
-        // 勾选任何文件夹即切到"指定文件夹"模式
-        document.querySelector('input[name="scope-mode"][value="custom"]').checked = true;
+        // 排除模式保留；其他模式勾选后切到指定文件夹。
+        if (!document.querySelector('input[name="scope-mode"][value="exclude"]').checked) {
+          document.querySelector('input[name="scope-mode"][value="custom"]').checked = true;
+        }
       });
       const name = document.createElement('span');
       name.className = 'folder-name';
@@ -255,8 +259,11 @@
     renderFolderRows(rows, container);
   }
 
-  async function openScopeDialog() {
-    const cfg = Config.get();
+  async function openScopeDialog(forTopic = false) {
+    scopeDialogTarget = forTopic ? Warehouse.getScopeContext() : null;
+    const scope = scopeDialogTarget?.scope;
+    const cfg = scope ? { scopeMode: scope.mode === 'folders' ? 'custom' : scope.mode,
+      scopeFolderIds: scope.folderIds || [] } : Config.get();
     scopeDialogChecked = new Set(cfg.scopeFolderIds || []);
     scopeDialogExpanded = new Set();
     scopeFolderRoots = [];
@@ -285,16 +292,24 @@
     }
   }
 
-  function applyScopeDialog() {
+  async function applyScopeDialog() {
     const mode = document.querySelector('input[name="scope-mode"]:checked')?.value || 'all';
-    const ids = mode === 'custom' ? [...scopeDialogChecked] : [];
-    if (mode === 'custom' && ids.length === 0) {
+    const ids = ['custom', 'exclude'].includes(mode) ? [...scopeDialogChecked] : [];
+    if (['custom', 'exclude'].includes(mode) && ids.length === 0) {
       toast('请先在列表中勾选至少一个文件夹', true);
       return;
     }
-    Config.save({ scopeMode: mode, scopeFolderIds: ids, scopeLibrary: eagle.library.path });
-    $('scope-dialog').close();
-    updateScopeButton();
+    const target = scopeDialogTarget;
+    const shouldApply = () => $('scope-dialog').open && scopeDialogTarget === target;
+    $('btn-scope-apply').disabled = true;
+    try {
+      if (target) await Warehouse.applyScopeFilter(target, mode, ids, shouldApply);
+      else Config.save({ scopeMode: mode, scopeFolderIds: ids, scopeLibrary: eagle.library.path });
+      if (!shouldApply()) return;
+      $('scope-dialog').close();
+      updateScopeButton();
+    } catch (error) { toast(error.message, true); }
+    finally { $('btn-scope-apply').disabled = false; }
   }
 
   /* 按当前范围设置返回路径集合；整库返回 null（不过滤） */
@@ -849,6 +864,8 @@
     $('cfg-project-root').value = cfg.projectRoot;
     $('cfg-port').value = cfg.port;
     $('cfg-model').value = cfg.modelName;
+    $('cfg-thumb-cache-count').value = cfg.thumbnailCacheMaxEntries ?? 5000;
+    $('cfg-thumb-cache-mb').value = cfg.thumbnailCacheMaxMB ?? 128;
     $('cfg-visual-threshold').value = cfg.visualThreshold;
     $('cfg-visual-margin').value = cfg.visualMargin;
     $('cfg-visual-agg').value = cfg.visualAgg || 'mean';
@@ -926,6 +943,8 @@
       projectRoot: $('cfg-project-root').value.trim(),
       port: $('cfg-port').value === '' ? NaN : Number($('cfg-port').value),
       modelName,
+      thumbnailCacheMaxEntries: Number($('cfg-thumb-cache-count').value),
+      thumbnailCacheMaxMB: Number($('cfg-thumb-cache-mb').value),
       visualThreshold: $('cfg-visual-threshold').value === '' ? NaN : Number($('cfg-visual-threshold').value),
       visualMargin: $('cfg-visual-margin').value === '' ? NaN : Number($('cfg-visual-margin').value),
       visualAgg: $('cfg-visual-agg').value,
@@ -950,6 +969,7 @@
       autoIndex: $('cfg-auto-index').checked,
       ...(modelName !== prevModel ? { threshold: modelName.includes('fg-clip2') ? 11 : 21 } : {}),
     }, { recover });
+    Search.configureThumbnailCache(Config.get());
     applyAutoIndexSetting();
     if (modelName !== prevModel) {
       const suggested = modelName.includes('fg-clip2') ? 11 : 21;
@@ -1260,9 +1280,53 @@
 
   function wireEvents() {
     const menus = [...document.querySelectorAll('.compact-menu')];
+    const filterMenu = $('result-filter-menu');
+    const positionFilterMenu = () => {
+      if (!filterMenu.open) return;
+      const content = filterMenu.querySelector('.menu-content');
+      const anchor = filterMenu.querySelector('summary').getBoundingClientRect();
+      const top = Math.min(anchor.bottom + 7, window.innerHeight - 120);
+      content.style.left = `${Math.max(12, Math.min(anchor.right - content.offsetWidth, window.innerWidth - content.offsetWidth - 12))}px`;
+      content.style.top = `${top}px`;
+      content.style.maxHeight = `${Math.max(100, window.innerHeight - top - 12)}px`;
+    };
+    window.addEventListener('resize', positionFilterMenu);
+    const selectionMenu = $('result-selection-menu');
+    const selectionContent = selectionMenu.querySelector('.menu-content');
+    const resetContextMenu = () => {
+      selectionContent.classList.remove('result-context-menu');
+      selectionContent.style.removeProperty('left');
+      selectionContent.style.removeProperty('top');
+    };
+    const closeContextMenu = () => {
+      if (!selectionContent.classList.contains('result-context-menu')) return;
+      selectionMenu.open = false;
+      resetContextMenu();
+    };
+    selectionMenu.querySelector('summary').addEventListener('click', resetContextMenu);
+    $('results').addEventListener('contextmenu', (event) => {
+      event.preventDefault();
+      menus.forEach((menu) => { if (menu !== selectionMenu) menu.open = false; });
+      selectionContent.classList.add('result-context-menu');
+      selectionMenu.open = true;
+      const box = selectionContent.getBoundingClientRect();
+      selectionContent.style.left = `${Math.max(8, Math.min(event.clientX, window.innerWidth - box.width - 8))}px`;
+      selectionContent.style.top = `${Math.max(8, Math.min(event.clientY, window.innerHeight - box.height - 8))}px`;
+      selectionContent.querySelector('button:not(.hidden):not(:disabled)')?.focus({ preventScroll: true });
+    });
+    $('results').addEventListener('scroll', closeContextMenu);
+    document.addEventListener('contextmenu', (event) => {
+      if (!$('results').contains(event.target) && !selectionMenu.contains(event.target)) closeContextMenu();
+    });
+    window.addEventListener('resize', closeContextMenu);
+    window.addEventListener('blur', closeContextMenu);
+    document.addEventListener('search-context', closeContextMenu);
+    document.addEventListener('search-busy', closeContextMenu);
     menus.forEach((menu) => {
       menu.addEventListener('toggle', () => {
         if (menu.open) menus.forEach((other) => { if (other !== menu) other.open = false; });
+        else if (menu === selectionMenu) resetContextMenu();
+        if (menu === filterMenu) positionFilterMenu();
       });
       menu.addEventListener('click', (event) => {
         if (event.target.closest('button') && menu.id !== 'result-filter-menu') menu.open = false;
@@ -1350,7 +1414,8 @@
     });
     $('btn-save-results').addEventListener('click', saveResults);
     $('btn-archives').addEventListener('click', openArchives);
-    $('btn-scope').addEventListener('click', openScopeDialog);
+    $('btn-scope').addEventListener('click', () => openScopeDialog());
+    $('topic-filter-scope').addEventListener('click', () => openScopeDialog(true));
     $('btn-scope-apply').addEventListener('click', applyScopeDialog);
     $('btn-scope-cancel').addEventListener('click', () => $('scope-dialog').close());
     document.addEventListener('paste', handlePaste);
@@ -1370,6 +1435,7 @@
 
   eagle.onPluginCreate((plugin) => {
     Config.init(plugin.path);
+    Search.configureThumbnailCache(Config.get());
     Config.onError?.((message) => toast(message, true, 7000));
     if (Config.getLoadError?.()) toast(Config.getLoadError(), true, 10000);
     applyTheme();

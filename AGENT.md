@@ -47,16 +47,16 @@ Eagle（素材管理软件）的窗口插件，提供视频的语义检索：中
 
 - 索引命名升级为 `indexes/<模型>/eagle_v2_<库UUID>_<模型>.lance`；先由 `Bridge.resolveLibraryIdentity()` 调用后端注册表，再按 library_id 精确查询（API 的 name 包含 `.lance`）。提纯插件使用相同协议，提交 library_path 必须取当前 Eagle 路径，不能用登记 canonical 路径代替。旧索引保留只读；离线工具迁移或新身份重建，绝不按同名库自动认领。
 - 相似度分数 = cosine × logit_scale(≈100)。文本阈值 fgclip2≈11 / clip≈21；视觉检索独立阈值(≈40)+相对落差截断
-- 右侧详情栏统一显示预览、所属主题、全部标签、Eagle星级（只读）和人工分数/相似度、基本信息。点击片段更新，Esc清空预览，列表与详情独立滚动；归属复用TopicRelations快照，主题按钮固定来源库。卡片不再铺开归属文字。接缝通过Pointer Events及pointer capture调宽，保留至少200px结果区，宽度偏好以eagle-semantic-inspector-width保存在localStorage，失败降级为会话内；ResizeObserver限宽但不覆盖偏好，恢复窗口宽度后还原。接缝支持方向键/Home/End，阻止预览切换。搜索选项、筛选、显示、整理所选、主题管理使用互斥菜单，点击外部或Esc关闭。预览仍支持以当前帧找相似及逐帧定位；已移除转文字搜索、画幅控件与快速审片入口，保留历史文字/混合主题和旧审阅字段。
+- 右侧详情栏统一显示预览、所属主题、全部标签、Eagle星级（只读）和人工分数/相似度、基本信息。双击片段更新，Esc清空预览，列表与详情独立滚动；归属复用TopicRelations快照，主题按钮固定来源库。卡片不再铺开归属文字。接缝通过Pointer Events及pointer capture调宽，保留至少200px结果区，宽度偏好以eagle-semantic-inspector-width保存在localStorage，失败降级为会话内；ResizeObserver限宽但不覆盖偏好，恢复窗口宽度后还原。接缝支持方向键/Home/End，阻止预览切换。筛选、显示、整理所选、主题管理使用互斥菜单，点击外部或Esc关闭。预览仍支持以当前帧找相似及逐帧定位；已移除转文字搜索、画幅控件与快速审片入口，保留历史文字/混合主题和旧审阅字段。
 - 单帧来源经 Search.captureFrame()/CoverFrame.capture() 固定 JPEG，携带 image_base64/source_video_path/source_frame/source_fps/source_name。单帧视觉 recipe.config.visualAgg 固定 max，不改全局设置。后端先排除包含源帧的自身镜头，再相对截断及 Top100。同视频其他镜头保留。
 - 历史单帧文字主题仍保留 runFrameText 及最终 query/payload 的重放兼容，不重新生成描述。当前页面不再提供描述生成弹窗或触发 /describe。
 - 单帧主题保存截图及文本最终查询；sourceVideoItemId 仅用于在素材移动时更新排除路径，来源缺失不阻止已存截图重放；历史 video_path/sourceItemId 查询仍须来源有效。
 - 工具栏不提供以 Eagle 选中素材搜相似入口；保留剪贴板以图搜索及已有视觉主题重放。搜索缓存键必须包含 kind/query/payload/config/library/indexNames/allowedVideoPaths，null 整库与 [] 空范围不同，不能仅用显示名称或遗漏起止帧。
 - 页面不再显示顶部标题/服务文字栏；服务加载时显示临时文字，连接成功隐藏文字，仅在索引按钮左侧亮绿灯并保留tooltip/aria状态，离线仍显示错误。设置与「新搜索」位于「搜索仓库」右侧，工具栏在仓库列表也可访问；「撤销整理」按钮只在具体主题的view-bar内显示，快捷键沿用原契约。
-- 「显示 → 预览方式」在右侧素材详情与初版顶部点击展开预览之间切换，默认右侧，偏好以eagle-semantic-preview-layout保存在localStorage。顶部模式用CSS Grid和display:contents复用同一preview-panel/video，隐藏右栏与接缝，关闭预览后释放高度；不重建结果、不改变选择或播放器状态、不重发搜索。顶部模式暂停计算侧栏宽度，切回时恢复原宽度偏好。
+- 「显示 → 预览方式」在右侧素材详情与顶部双击展开预览之间切换，默认右侧，偏好以eagle-semantic-preview-layout保存在localStorage。顶部模式用CSS Grid和display:contents复用同一preview-panel/video，隐藏右栏与接缝，关闭预览后释放高度；不重建结果、不改变选择或播放器状态、不重发搜索。顶部模式暂停计算侧栏宽度，切回时恢复原宽度偏好。
 - 页面显隐优先于预览布局：body[data-page="warehouse"] > .result-workspace使用display:none !important，避免后置的顶部Grid样式覆盖隐藏规则。进入仓库时主题栏、结果工具栏、预览及空结果提示均随整个工作区隐藏，仓库占满工具栏以下高度；返回后保留原预览模式。
 - 顶部预览横向接缝用Pointer Events调整高度并同步缩放画面，偏好eagle-semantic-preview-height保存到localStorage，缩窗限高但不覆盖偏好，至少给结果保留200px；关闭预览或切回右栏时隐藏横线。支持上下键/Home/End，观察工作区与面板尺寸更新限高与aria值。结果栏菜单和普通按钮统一28px，箭头使用5px CSS描边，避免字体符号撑高。
-- 预览启动：悬停立即加载，元数据就绪后设置currentTime并立即play，不等seeked或80ms意图等待。点击接管当前同源悬停video，包括在途加载，保留解码器及主播放器音量/静音/速度；从片段开头播放，保留两帧起播偏移，同源不重复赋src。当前大预览卡片不新建悬停解码器。preload=auto，不额外预缓冲；封面复用已加载卡片/Eagle缩略图，已解码同源video移除poster。所有格式点击时都只尝试原文件；原生停滞1.5秒load原文件一次，再停滞1.5秒直接报错，不生成替代视频。playing/play Promise成功不解除检测，实际累计推进约250ms（按低倍速缩放）才解除。waiting延迟200ms提示；暂停、结束、关闭、切换、逐帧与错误清理旧等待，加载/重载代次和尝试编号保护迟到回调。失败停止播放器，重试重新初始化。原视频定位/解码仍由浏览器完成，Eagle宿主停帧的具体根因尚未确认，独立窗口结果不能替代宿主验收；保留buffered、seeking、采样时长与媒体推进诊断。
+- 预览启动：悬停立即加载，元数据就绪后设置currentTime并立即play，不等seeked或80ms意图等待。双击接管当前同源悬停video，包括在途加载，保留解码器及主播放器音量/静音/速度；从片段开头播放，保留两帧起播偏移，同源不重复赋src。当前大预览卡片不新建悬停解码器。preload=auto，不额外预缓冲；封面复用已加载卡片/Eagle缩略图，已解码同源video移除poster。所有格式双击时都只尝试原文件；连续1.5秒无真实播放推进才load原文件一次，再停滞1.5秒直接报错，不生成替代视频。定位前同步标记seekPending，seeked后重建时间基线；seek跳转、playing/play Promise不能续期或解除检测，真实正向推进才续期，正常播放后仍监测停帧。超时复核实际时间及暂停/结束状态，防止主线程繁忙时媒体事件迟到导致误重载。waiting延迟200ms提示；暂停、结束、关闭、切换、逐帧与错误清理旧等待，加载/重载代次和尝试编号保护迟到回调。失败停止播放器，重试重新初始化。原视频定位/解码仍由浏览器完成，Eagle宿主停帧的具体根因尚未确认，独立窗口结果不能替代宿主验收；保留buffered、seeking、采样时长与媒体推进诊断，采样从首次playing开始计时。
 - Chromium 108 的video poster图加载失败也会在video上派发error，此时video.error为空，源视频仍可正常播放。主预览和主题比较onerror必须先检查MediaError，不能把封面失败当作媒体失败；已解码同源播放器展开时移除poster，不再发封面抽帧请求。兼容性验证须覆盖Eagle同版本运行环境及封面失败。
 - 改后端 Python 后必须重启 5006 服务（POST /api/v1/shutdown 再拉起）才生效
 - 主题打开性能：Search.restoreBrowsePosition先让首批绘制，再逐批恢复历史卡片/分组加载量；每批检查渲染代次、库和页面。scroll:false只在开始置顶，不覆盖用户在恢复期间的新滚动。片段归属仅更新当前详情，不遍历或重建全量结果；TopicRelations同库同签名共用在途读取，归属索引每256条设检查点、累计约8ms让出事件循环，完成后重新验证主题版本。被新快照取代使用AbortError，旧后台任务不能清空新缓存；不返回部分归属。真实大主题仍需读取/校验/解析资源，未承诺全库扫描总耗时下降。
@@ -68,7 +68,8 @@ Eagle（素材管理软件）的窗口插件，提供视频的语义检索：中
 - 配置验证、临时文件替换完成后才更新内存；失败抛错并通知 UI。损坏原件只能在明确恢复操作下另存备份后替换，不记录密钥值。配置备份同样必须排除打包与 Git。
 - 仓库 schema v3：路径哈希清单与 `<hash>-assets/` 不可变资源，旧 v1/v2 兼容，正常保存前备份；列表用 summary，打开主题异步 hydrate。修改展示 view 不调用搜索。回收站与备份默认 30 天/10 份，未知文件保留；写锁及 fingerprint/revision 防止覆盖并发修改。恢复、复制和导出必须保留资源引用完整性。
 - 分类设置/删除/重命名统一递增关联主题 revision，搜索 updatedAt 保留原义。批量分类调用 `setCategories([{id,updatedAt,revision}], categoryId)` 一次写盘，返回逐项 results；冲突不自动刷新版本重试，写盘异常不返回成功。回收站主题同样按资源引用打包，到期清理前校验内容。
-- 主题人工整理按 `sceneKey` 精确移除片段，不作用于整视频或 Eagle 原素材。`removedMatches` 保存 `{key,match,removedAt}` 完整快照，按 `removedMatchesRef` 拆分不可变资源并提供 `summary.removed`；旧主题缺省为空，随备份/回收站/包完整保留。`removeMatches/restoreMatches(id,keys,updatedAt,revision)` 原子提交并返回 `{entry,keys}`，人工修改仅递增 revision，不改变搜索 updatedAt；`updatedEntry` 应用排除后计算新增。恢复即时追加原快照并解除排除，继续使用当前视图与时间筛选。主题固定载入时的库路径，跨库旧会话不可写入；旧路径片段显示时不擅自补 ID，避免显示键与存储键不同。仓库主题右键打开移除菜单，普通搜索仍切换勾选；本地结果替换按片段键保留剩余选择且不覆盖独立搜索返回快照。
+- 分类选择器用于批量分类及保存/编辑主题，支持输入筛选、现场新建、方向键与 Enter。新分类暂存为 `{name}`，由 `add/replace/setCategories` 在同次提交中解析为分类 ID，精确同名复用；取消、全冲突或写失败不留下新分类，落盘仍是原有字符串 ID。成功应用后按库在 localStorage 记录最近使用 ID 顺序（最多100项，失败降级会话），按当前分类名称展示，删除分类不再出现；从新版首次使用开始累计，不伪造历史顺序。
+- 主题人工整理按 `sceneKey` 精确移除片段，不作用于整视频或 Eagle 原素材。`removedMatches` 保存 `{key,match,removedAt}` 完整快照，按 `removedMatchesRef` 拆分不可变资源并提供 `summary.removed`；旧主题缺省为空，随备份/回收站/包完整保留。`removeMatches/restoreMatches(id,keys,updatedAt,revision)` 原子提交并返回 `{entry,keys}`，人工修改仅递增 revision，不改变搜索 updatedAt；`updatedEntry` 应用排除后计算新增。恢复即时追加原快照并解除排除，继续使用当前视图与时间筛选。主题固定载入时的库路径，跨库旧会话不可写入；旧路径片段显示时不擅自补 ID，避免显示键与存储键不同。普通搜索及主题结果左键单选、Ctrl+左键切换单项、Shift+左键按当前筛选、排序与分组后的displayList追加连续范围；单选或单项勾选设定起点，清空选择或重绘视图重置起点。选择不切换预览，双击卡片打开预览。右键已选片段或结果空白处保留多选，未选片段先单选；菜单复用顶部「整理所选」的同一内容和事件，保留主题操作显隐、忙碌及库校验，限位到视口内，外部点击/Esc/滚动/重绘时关闭。移除从顶部或右键菜单的「从主题移除」执行；本地结果替换按片段键保留剩余选择且不覆盖独立搜索返回快照。
 - 人工收录调用 `addMatches(id,[{match,score,scoreMode}],updatedAt,revision)` 一次原子写入，返回 `{entry,keys,added,rescored,restored}`；匹配按素材 ID 与原始帧边界，只有任一侧缺 ID 才允许同路径别名匹配。已存在片段更新评分，重新加入解除排除。`match.manualScore={value,mode:'custom'|'top',scoredAt}` 与 `similarity` 相等，分数必须为有限非负数；存于已有 matches/removedMatches 资源，不创建第二份收录列表。更新结果合并所有活动人工片段、保留分数和模式，已移除人工片段保持排除，人工片段不计入 newKeys；收录/重放清除不属于目标查询的 both_hit/matched_queries。置顶分为选择时目标最高分的完整数值，之后固定；仅相似度排序中同分优先，不能盖过更高分。人工编辑保持搜索 updatedAt 并递增 revision，备份/回收站/包完整保留及校验标记。
 - 收录面板固定来源库及 search-context 版本，异步目标读取用代次丢弃迟到结果。切换目标清空评分；显式刷新参考保留已填分数，不能默默沿用最新版本重试。取消/写失败不改变来源；成功留在来源并清空勾选，同主题收录才刷新当前完整快照。参考抽帧复用 Search.loadThumbnail 并在首次加载失败时回退 Eagle 缩略图。单片段与统一输入支持 0.1/1 分键盘调整及左右切换；搜索主题输入和 select 保留原生方向键行为。
 - 主题就地改分使用 `ManualAdd.editScores(current)`，固定载入的目标与版本，预填完整人工值/模式，不沿用机器分数。刷新参考及提交均校验选中片段仍在目标中；冲突需显式刷新，改分不能重新加入已移除片段。成功复用当前主题结果替换，不改搜索更新时间。
@@ -80,16 +81,19 @@ Eagle（素材管理软件）的窗口插件，提供视频的语义检索：中
 - `addMatches` 成功返回 `{undoToken,undoBytes}`，令牌在模块 WeakMap 中保存片段差异，不写盘或进入仓库包。`undoMatches(id,token,updatedAt,revision)` 恢复原片段/人工值/排除记录/顺序/newKeys，保留 recipe/cover/favorite/category 和搜索更新时间，成功递增版本并消费令牌；失败可重试。令牌绑定库、清单文件及目标，伪造/复制/跨库使用拒绝。
 - TopicUndo 会话栈每库最多 20 步、全会话估计载荷 64 MiB，仅对已记录且连续的同主题版本祖先重基；后来的更新/星标等版本间隙不可绕过。成功撤销留在来源页面，同主题刷新本地结果；输入框及打开面板内 Ctrl+Z 保留原生行为，繁忙时不撤销；不接管已有移除撤销或 Eagle 素材写入。
 - 主题 `favorite` 持久化，旧数据缺省 false；`setFavorite` 检查版本、递增 revision、保持 updatedAt，仅轻量元数据返回。仓库常用优先后按 updatedAt 排序，常用过滤与名称/分类取交集，选择范围复用可见排序；收录目标星标优先并显示分类。筛选偏好仅会话按库保留。
-- 普通搜索及主题共用结果内组合筛选，Search 的 `archiveFilter={query,source,tags,orientation,maxDur}` 与时间和 `view.minDur` 取交集。标签按中英文逗号拆分、完整名称忽略大小写且全部满足；画幅读 Eagle width/height，缺失或无效尺寸归 unknown；时长针对片段，边界包含，maxDur=null 不限。manual 以 manualScore 存在判断。筛选只变换显示、清除隐藏勾选，不发搜索或改写 recipe/matches，新增条件不写入持久化 view；按库和主题在会话保留，独立搜索快照可恢复，成功新搜索清空组合条件，原有最短时长偏好保留。
+- 普通搜索及主题共用结果内组合筛选，Search 的 `archiveFilter={query,source,tags,orientation,maxDur,minScore,scope,scopePaths}` 与时间和 `view.minDur` 取交集。标签按中英文逗号拆分、完整名称忽略大小写且全部满足；画幅读 Eagle width/height，缺失或无效尺寸归 unknown；时长针对片段，边界包含，maxDur=null 不限。manual 以 manualScore 存在判断。筛选只变换显示、清除隐藏勾选，不发搜索或改写 recipe/matches，新增条件不写入持久化 view；按库和主题在会话保留，独立搜索快照可恢复，成功新搜索清空组合条件，原有最短时长偏好保留。
+- 原“搜索选项”并入工具栏单一“筛选”菜单，新搜索无结果时也可访问；仓库主题使用同一入口，仓库主题列表隐藏素材筛选。新搜索阈值/范围/时间仍是搜索前条件；主题的 minScore、scopePaths 及时间是本地已存结果筛选，包含人工片段，不改 recipe 或全局 Config。文件夹解析复用 SearchRecipe.resolveScope，按库/主题/导航代次与弹窗取消校验迟到结果；scopePaths=null 不限，[] 为零候选。清除结果筛选在主题中同时清除本地阈值/范围/时间。菜单固定定位并在打开和缩窗时限于视口，原主题栏时间入口已移入菜单。
 - 跨主题归属和比较只读当前库的活动 matches，不计 removedMatches 或回收站。使用与 sceneLookup 一致的素材 ID/原始帧边界及旧路径别名规则；已知不同 ID 不混同。主题清单版本签名缓存，按主题顺序异步校验 matches 资源；读取期间版本改变或资源损坏明确失败，不返回伪空归属。收录/撤销、导航及结果重绘刷新归属。比较完整已存快照，提供共有/A 独有/B 独有，分批 60 个显示，不受本地筛选影响；刷新重新取快照，跨库拒绝旧面板操作。预览只播放原文件，失败直接提示，不调用切片转码、模型或改写主题。
 - 浏览位置在会话内按库/主题保存，仓库恢复已加载批次与主题锚点。打开主题先用 `restoreBrowsePosition(position,{scroll:false})` 恢复排序、分组折叠及加载数量并停留顶部；历史 scrollTop>0 时提示 4000ms，点击「回到上次浏览位置」才按 sceneKey 锚点恢复滚动。入口绑定主题/库/导航代次，筛选排序或导航清除；同主题内部修改及返回独立搜索仍直接恢复。异步恢复须检查渲染代次及页面/库。原搜索位置在进入仓库前捕获，不能等结果容器隐藏后读取。恢复成功的非顶部提示显示 2000ms，再用 240ms 淡出，支持回到顶部及减少动画偏好。
-- 仓库选择范围使用当前筛选排序后的 ID，筛选后清除隐藏选择；每批60个主题，选择只更新 DOM，视图偏好通过 localStorage 安全降级。右键菜单单例、限制视口并支持 Esc。仓库包 UI 使用 `exportBundleAsync/importBundleAsync` 和 `js/archiveWorker.js`；兼容 v1 包，导入前核对派发时 fingerprint，后台操作期间禁止重复提交。线程中断必须报告写入结果未知，不能假称回滚。
+- 仓库选择范围使用当前筛选排序后的 ID，筛选后清除隐藏选择；每批60个主题，选择只更新 DOM，视图偏好通过 localStorage 安全降级。卡片/列表均可从网格空白处用 Pointer Events 框选，按内容坐标命中已加载卡片，边缘自动滚动；Ctrl/Shift追加、Esc/失焦/导航取消并清理，空白点击清空。右键卡片或空白处保留选中集合并提供批量分类/删除；删除经确认调用 `removeEntries([{id,updatedAt,revision}])`，一次写盘移入回收站，逐项报告冲突，写失败不返回成功，不删除 Eagle 素材。菜单单例、限制视口并支持 Esc。仓库包 UI 使用 `exportBundleAsync/importBundleAsync` 和 `js/archiveWorker.js`；兼容 v1 包，导入前核对派发时 fingerprint，后台操作期间禁止重复提交。线程中断必须报告写入结果未知，不能假称回滚。
+- 仓库工具栏已移除批量分类按钮，批量操作统一从右键进入；仓库和具体主题均移除比较入口，TopicRelations 的片段归属查询继续使用。
 - 搜索取消仅取消等待，通过 AbortSignal 与代次丢弃迟到响应；不等同后端推理停止。分组每批60，最高分对整组计算。原视频预览失败可重试，重试重新初始化代次，不再请求转码。
-- 缩略图懒加载只控制入队时机，实际请求统一走 ThumbLoader 的 6 并发。失败先释放槽位再排队备用图；换页仅取消未开始请求，已开始请求仍占槽直到完成。时间/时长及错误消息不可直接插入 HTML。
+- 缩略图统一走 ThumbLoader：HTTP 图片成功解码后保留原始压缩字节的 data URL；完整 URL（服务地址/视频路径/帧号）作键，同 URL 在途共享。主题/搜索重绘不清缓存，命中立即赋 src，未命中懒加载并保持 6 并发。默认 5000 张与 128 MiB 双上限，按 URL/data URL 双字节字符串保守计费，LRU 淘汰；不持有离屏 DOM/解码位图，预算不代表整个进程内存。Config 的 thumbnailCacheMaxEntries（0～50000）/thumbnailCacheMaxMB（0～1024）经设置保存后立即应用、缩小时淘汰，任一为0关闭；重载保留设置但清空会话缓存，后端磁盘缓存沿用。fetch失败走原生加载及已有备用图，失败不缓存；换页仅取消未开始请求，已开始请求仍占槽直到完成，旧失败不回退。时间/时长及错误消息不可直接插入 HTML。
 - 索引列表提供 `revision: string|null`；搜索缓存键包含对应版本及服务地址，缺版本时禁缓存，缓存 5 分钟到期且读取不续期。历史失败项重试接入 Indexer 监视，全部终态、服务切换/重连清缓存；覆盖查询失败是未知状态，不能视为空库或触发自动索引。
 - 仓库备份目录 `revision-clock` 保留每库已使用版本高水位，写锁内先更新再提交清单，恢复不能回退版本；失败可留下版本间隙。主题导航用代次丢弃迟到读取，loadResults 的 `options.shouldApply` 在映射读取前后检查。
 - 关闭 5006 使用启动时生成的 `state/search-control-<port>.json` 凭据及 `X-Eagle-Control-Token`，不从 health 返回令牌；默认 loopback 的请求来源、Host、Origin 必须通过校验。凭据不可读时明确报错，不自动降级无授权关闭。发行包排除 state、个人根配置/备份/日志并使用无个人信息的默认配置模板。
 - 搜索上下文：插件 `resolveSearchScope()` 返回 `{ paths, scope, time, library, config }`；`paths` 为规范化路径 Set 或 null。三个搜索入口保存本次参数，不从后续修改过的配置推测条件。仓库重放通过 Api 的可选 cfg 参数传值，不改写全局配置。
+- 文件夹排除：Config.scopeMode 与 recipe.scope.mode 支持 `exclude`，复用 folderIds；递归展开所选文件夹，按任一归属取排除并集，再与整库视频求差集、导入日期求交集。搜索前仍通过 allowed_video_paths 限制，全部排除保留空 Set，不回退整库。新搜索范围弹窗与主题条件编辑器均支持多选、保存回填及重放；失效文件夹要求重选，换库重置全局排除范围。既有人工收录片段仍遵循主题更新的人工保留契约。
 - 2026-10-21 按用户要求移除眨眼/运镜专项连续帧核验。所有动作词使用普通文本搜索，不自动改写候选、降低阈值、切换重排或绕过缓存；不展示动作核验报告或证据帧。已有主题完整保留，旧核验元数据不再参与预览定位与展示；后续通用视频动作检索方案须单独确认后接入。
 - 打开第一个仓库主题前保存当前搜索会话（完整结果、查询条件、输入框、视图与勾选）；主题切换和更新不覆盖该快照。「新搜索」恢复同库原会话，不请求搜索服务；成功执行新搜索后丢弃旧返回目标。没有原搜索或库已切换时恢复空页，预览关闭。全局 Esc 使用原生 dialog cancel 流程，不能绕过业务处理中禁止关闭的保护。
 - 仓库：`warehouse/<库路径哈希>.json` 保存主题及分类，运行数据已 gitignore；旧 `saves/` 幂等导入且不删除。更新成功写盘后才载入新结果；`newKeys` 由 Eagle 素材 ID（旧数据回退路径）与原始帧边界构成。不要用偏移后的预览帧或排序下标识别新增。
@@ -99,10 +103,12 @@ Eagle（素材管理软件）的窗口插件，提供视频的语义检索：中
 
 ## 已踩过的坑（改 UI 前必读）
 
+- 仓库列表使用可收缩内容列与独立操作列；操作按钮禁止换行，640px以下移到第二行。分类位于标题旁，不覆盖封面；选择边框不能改变卡片尺寸。备份/回收站位于页头最右侧，返回搜索统一使用顶部「新搜索」，筛选面板不放常驻操作说明；选中计数随筛选行显示，空选择时隐藏。卡片/列表共用数据及入口，缩略图沿用原限流队列。
+
 1. **flex 子项设 overflow:hidden 后最小高度变 0**——限高容器里整行被压成 0 高（文件夹树曾全体隐身）。解法：`flex-shrink: 0`
 2. **aspect-ratio 在 Eagle 环境曾失效**——缩略图用 padding-bottom:56.25% 占位盒，别改回去
 3. **原生 datalist 在 Electron 定位/收起坏**——历史下拉是自绘的 `.history-panel`
-4. 缩略图每张 = 服务端一次 ffmpeg 进程，**必须走 ThumbLoader 限流**，且入队发生在插入 DOM 前（不能用 isConnected 过滤）
+4. 缩略图在服务端磁盘缓存未命中时需要 ffmpeg 抽帧，**未缓存请求必须走 ThumbLoader 限流**，且入队发生在插入 DOM 前（不能用 isConnected 过滤）
 5. Eagle 无"文件夹视图内滚动到素材"API；`item.open()` 永远跳"全部"视图。定位=预选中+folder.open+延迟重选，已是能力上限
 6. **限高仓库网格的自动行会被压缩**：卡片有 overflow:hidden 时，三排以上会挤到约 140px 并裁掉文字和按钮。必须保留 `grid-auto-rows: max-content`；布局测试至少覆盖九张卡片。默认封面抽帧复用 Search 的缩略图队列，不能绕过 6 并发限制。
 

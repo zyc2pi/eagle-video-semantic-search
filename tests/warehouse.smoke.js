@@ -45,6 +45,7 @@ async function main() {
           files.set(file, value);
         },
         statSync: (file) => {
+          if (file.startsWith('D:/fixture/')) window.__mediaStatCalls = (window.__mediaStatCalls || 0) + 1;
           if (!files.has(file) && !file.startsWith('D:/fixture/')) throw new Error('ENOENT');
           return { size: String(files.get(file) || 'fixture').length, mtimeMs: 1, isFile: () => true };
         },
@@ -165,6 +166,225 @@ async function main() {
       window.__delayService = delay;
       window.__create({ path: '/fixture-plugin' }); await window.__show();
     }, !!process.env.WAREHOUSE_LAYOUT_ONLY);
+    if (process.env.WAREHOUSE_FILTER_ONLY) {
+      assert.strictEqual(await page.locator('.search-options').count(), 0);
+      assert(await page.locator('#result-filter-menu summary').isVisible(), '未搜索时也能设置范围');
+      await revealControl(page, '#search-time');
+      assert(await page.locator('#threshold').isVisible());
+      assert(await page.locator('#btn-scope').isVisible());
+      assert(await page.locator('#topic-scene-query').isVisible());
+      await page.locator('#query').fill('统一筛选');
+      await page.locator('#btn-search').click();
+      await page.waitForFunction(() => Search.getRawMatches().length > 0 && !Search.isBusy());
+      await revealControl(page, '#btn-save-results');
+      await page.locator('#btn-save-results').click();
+      await page.locator('#entry-name').fill('统一筛选主题');
+      await page.locator('#entry-submit').click();
+      await page.waitForFunction(() => !document.getElementById('warehouse-editor').open);
+      const baseline = await page.evaluate(() => ({ files: JSON.stringify([...window.__files]),
+        requests: window.__requests.length, count: Search.getAllMatches().length, config: JSON.stringify(Config.get()) }));
+      await revealControl(page, '#topic-filter-threshold');
+      assert(!(await page.locator('#new-search-filter').isVisible()));
+      assert(await page.locator('#topic-time-filter select').isVisible());
+      await page.locator('#topic-filter-threshold').fill('21');
+      await page.locator('#topic-filter-threshold').blur();
+      assert.strictEqual(await page.evaluate(() => Search.getAllMatches().length), 0);
+      assert(await page.locator('#result-filter-menu summary').isVisible(), '筛空仍可恢复');
+      await page.locator('#topic-filter-threshold').fill('20');
+      await page.locator('#topic-filter-threshold').blur();
+      assert.strictEqual(await page.evaluate(() => Search.getAllMatches().length), baseline.count);
+      await page.locator('#topic-filter-scope').click();
+      await page.locator('input[name="scope-mode"][value="exclude"]').check();
+      await page.locator('#folder-tree input[type=checkbox]').check();
+      await page.locator('#btn-scope-apply').click();
+      await page.waitForFunction(() => !document.getElementById('scope-dialog').open);
+      assert.strictEqual(await page.evaluate(() => Search.getAllMatches().length), 0, '排除父文件夹即时筛选已有片段');
+      await revealControl(page, '#result-tags');
+      await page.locator('#result-tags').fill('原标签');
+      await page.waitForFunction(() => Search.getArchiveFilter().tags === '原标签');
+      assert.strictEqual(await page.evaluate(() => Search.getAllMatches().length), 0, '组合条件保留范围');
+      await page.locator('#topic-back').click();
+      await page.locator('.warehouse-card-open').click();
+      await revealControl(page, '#topic-filter-threshold');
+      assert.strictEqual(await page.locator('#topic-filter-threshold').inputValue(), '20');
+      assert((await page.locator('#topic-filter-scope').textContent()).includes('排除 1'));
+      await page.locator('#result-filter-clear').click();
+      assert.strictEqual(await page.evaluate(() => Search.getAllMatches().length), baseline.count);
+      await page.locator('#topic-time-filter select').selectOption('6');
+      assert(await page.evaluate((count) => Search.getAllMatches().length < count, baseline.count));
+      await page.locator('#result-filter-clear').click();
+      assert.strictEqual(await page.locator('#topic-time-filter select').inputValue(), 'all');
+      assert.strictEqual(await page.evaluate(() => Search.getAllMatches().length), baseline.count);
+      for (const width of [1100, 360]) {
+        await page.setViewportSize({ width, height: 720 });
+        await revealControl(page, '#topic-filter-threshold');
+        const box = await page.locator('#result-filter-menu .menu-content').boundingBox();
+        assert(box.x >= 0 && box.x + box.width <= width, '筛选菜单不能超出窗口');
+        await page.screenshot({ path: path.join(os.tmpdir(), `eagle-unified-filter-${width}.png`) });
+      }
+      assert.strictEqual(await page.evaluate(() => JSON.stringify([...window.__files])), baseline.files, '本地筛选不改写主题');
+      assert.strictEqual(await page.evaluate(() => window.__requests.length), baseline.requests, '本地筛选不发搜索');
+      assert.strictEqual(await page.evaluate(() => JSON.stringify(Config.get())), baseline.config, '主题筛选不污染新搜索配置');
+      await page.locator('#topic-search').click();
+      await revealControl(page, '#search-time');
+      assert(await page.locator('#threshold').isVisible());
+      assert(!(await page.locator('#topic-result-filter').isVisible()));
+      assert.strictEqual(await page.locator('#result-tags').inputValue(), '');
+      assert.deepStrictEqual(errors, []);
+      console.log('unified search/topic filters, local scope and threshold, restore and narrow layout passed');
+      return;
+    }
+    if (process.env.WAREHOUSE_SCOPE_ONLY) {
+      await revealControl(page, '#btn-scope');
+      await page.locator('#btn-scope').click();
+      await page.locator('input[name="scope-mode"][value="exclude"]').check();
+      await page.locator('#btn-scope-apply').click();
+      assert(await page.locator('#scope-dialog').evaluate((el) => el.open), '空选择不能应用');
+      await page.locator('#folder-tree .folder-toggle').click();
+      await page.locator('#folder-tree input[type=checkbox]').nth(1).check();
+      assert(await page.locator('input[name="scope-mode"][value="exclude"]').isChecked(), '勾选不退出排除模式');
+      await page.locator('#btn-scope-apply').click();
+      assert.strictEqual(await page.locator('#btn-scope').textContent(), '范围: 排除 1 个文件夹');
+      await page.locator('#query').fill('文件夹排除');
+      await page.locator('#btn-search').click();
+      await page.waitForFunction(() => Search.getRawMatches().length > 0 && !Search.isBusy());
+      assert.deepStrictEqual(await page.evaluate(() => window.__requests.at(-1).body.allowed_video_paths.sort()), ['d:\\fixture\\a.mp4', 'd:\\fixture\\b.mp4']);
+      await revealControl(page, '#btn-save-results');
+      await page.locator('#btn-save-results').click();
+      await page.locator('#entry-name').fill('排除主题');
+      await page.locator('#entry-submit').click();
+      await page.waitForFunction(() => !document.getElementById('warehouse-editor').open);
+      await revealControl(page, '#topic-edit');
+      await page.locator('#topic-edit').click();
+      assert.strictEqual(await page.locator('#entry-scope').inputValue(), 'exclude');
+      assert(await page.locator('#entry-folders input[value=child]').isChecked());
+      await page.locator('#entry-scope').selectOption('all');
+      assert(!(await page.locator('#entry-folders').isVisible()));
+      await page.locator('#entry-scope').selectOption('exclude');
+      await page.locator('#entry-folders input[value=child]').uncheck();
+      await page.locator('#entry-submit').click();
+      assert((await page.locator('#warehouse-editor-error').textContent()).includes('至少选择'));
+      await page.locator('#entry-folders input[value=parent]').check();
+      await page.locator('#entry-folders input[value=child]').check();
+      const requestCount = await page.evaluate(() => window.__requests.length);
+      await page.locator('#entry-submit').click();
+      await page.locator('#topic-changes-apply').click();
+      await page.waitForFunction(() => !document.getElementById('warehouse-editor').open);
+      assert.strictEqual(await page.evaluate(() => Search.getAllMatches().length), 0, '父子目录全部排除后为空');
+      assert.strictEqual(await page.evaluate(() => window.__requests.length), requestCount, '空范围不请求整库');
+      assert.deepStrictEqual(await page.evaluate(async () => {
+        const store = ArchiveStore.open(Config.pluginPath(), eagle.library.path);
+        const entry = store.list().entries[0]; await store.hydrateEntry(entry);
+        return entry.recipe.scope;
+      }), { mode: 'exclude', folderIds: ['parent', 'child'] });
+      await page.locator('#topic-update').click();
+      await page.locator('#topic-changes-apply').click();
+      await page.waitForFunction(() => !document.getElementById('topic-changes-dialog'));
+      assert.strictEqual(await page.evaluate(() => window.__requests.length), requestCount, '更新继续遵循排除条件');
+      assert.deepStrictEqual(errors, []);
+      console.log('search and warehouse folder exclusion smoke passed');
+      return;
+    }
+    if (process.env.RESULT_SELECTION_ONLY) {
+      await page.locator('#query').fill('星空');
+      await page.locator('#btn-search').click();
+      await page.waitForFunction(() => Search.getRawMatches().length > 60 && !Search.isBusy());
+      await page.locator('#results .card').nth(1).click();
+      await page.locator('#results .card').nth(2).click();
+      assert.strictEqual(await page.evaluate(() => Search.getSelectedMatches().length), 1, '普通左键替换选择');
+      await page.locator('#results .card').nth(5).click({ modifiers: ['Shift'] });
+      assert.strictEqual(await page.evaluate(() => Search.getSelectedMatches().length), 4);
+      assert.strictEqual(await page.locator('#results .pick:checked').count(), 4);
+      assert.strictEqual(await page.evaluate(() => Search.getActiveMatch()), null, 'Shift 选择不打开预览');
+      await page.locator('#results .card').nth(0).click({ modifiers: ['Shift'] });
+      assert.strictEqual(await page.evaluate(() => Search.getSelectedMatches().length), 6, '反向范围保留已有勾选');
+      await page.locator('#results .card').nth(2).click({ modifiers: ['Control'] });
+      assert.strictEqual(await page.evaluate(() => Search.getSelectedMatches().length), 5, 'Ctrl 取消单项');
+      await page.locator('#results .card').nth(2).click({ modifiers: ['Control'] });
+      assert.strictEqual(await page.evaluate(() => Search.getSelectedMatches().length), 6, 'Ctrl 追加单项');
+      await page.locator('#results .card').nth(2).click({ button: 'right' });
+      assert.strictEqual(await page.evaluate(() => Search.getSelectedMatches().length), 6, '右键已选片段保留多选');
+      assert.deepStrictEqual(await page.locator('.result-context-menu button:visible').allTextContents(),
+        ['添加到主题', '取消全部选择', '添加标签', '添加到新文件夹']);
+      await page.locator('#btn-selection-tag').click();
+      assert((await page.locator('#organize-summary').textContent()).includes('1 个素材'), '菜单复用原有整理处理');
+      await page.locator('#organize-cancel').click();
+      await page.locator('#results .card').nth(7).click({ button: 'right' });
+      assert.strictEqual(await page.evaluate(() => Search.getSelectedMatches().length), 1, '右键未选片段先单选');
+      await page.keyboard.press('Escape');
+      assert.strictEqual(await page.locator('.result-context-menu').count(), 0);
+      await page.evaluate(() => document.getElementById('results').dispatchEvent(
+        new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 1098, clientY: 718 })));
+      const menuBox = await page.locator('.result-context-menu').boundingBox();
+      assert(menuBox.x >= 0 && menuBox.y >= 0 && menuBox.x + menuBox.width <= 1100 && menuBox.y + menuBox.height <= 720,
+        JSON.stringify(menuBox));
+      await page.locator('#btn-clear-selection').click();
+      assert.strictEqual(await page.evaluate(() => Search.getSelectedMatches()), null);
+      await page.evaluate(() => Search.clearSelection());
+      await page.locator('#results .pick').nth(1).check();
+      await page.locator('#results .pick').nth(4).click({ modifiers: ['Shift'] });
+      assert.strictEqual(await page.evaluate(() => Search.getSelectedMatches().length), 4, '复选框支持范围选择');
+      await page.evaluate(() => Search.clearSelection());
+      await page.locator('#results .card').nth(3).click({ modifiers: ['Shift'] });
+      assert.strictEqual(await page.evaluate(() => Search.getSelectedMatches().length), 1, '清空后不沿用旧起点');
+      await page.evaluate(() => Search.clearSelection());
+      await page.locator('#results .card').nth(0).click();
+      await page.evaluate(() => { const results = document.getElementById('results'); results.scrollTop = results.scrollHeight; });
+      await page.waitForFunction(() => document.querySelectorAll('#results .card').length > 60);
+      await page.locator('#results .card').nth(65).click({ modifiers: ['Shift'] });
+      assert.strictEqual(await page.evaluate(() => Search.getSelectedMatches().length), 66, '范围跨越加载批次');
+      await page.evaluate(() => { Search.clearSelection(); Search.setView({ sortBy: 'name', grouped: true }); });
+      await page.locator('#results .card').nth(0).click();
+      await page.locator('#results .card').nth(4).click({ modifiers: ['Shift'] });
+      assert(await page.evaluate(() => {
+        const expected = Search.getAllMatches().slice(0, 5).map(ArchiveStore.sceneKey).sort();
+        return JSON.stringify(Search.getSelectedMatches().map(ArchiveStore.sceneKey).sort()) === JSON.stringify(expected);
+      }), '范围使用当前分组排序后的顺序');
+      await page.evaluate(() => Search.setArchiveFilter({ query: '素材B' }));
+      assert.strictEqual(await page.evaluate(() => Search.getSelectedMatches()), null, '筛选清除隐藏选择');
+      await page.evaluate(() => { Search.setArchiveFilter({}); Search.setView({ sortBy: 'sim', grouped: false }); });
+      await page.locator('#results .card').nth(3).click({ modifiers: ['Shift'] });
+      assert.strictEqual(await page.evaluate(() => Search.getSelectedMatches().length), 1, '视图改变重置范围起点');
+      await page.locator('#results .card .name').first().dblclick();
+      assert(await page.locator('#preview-panel').isVisible(), '双击打开预览');
+      await page.locator('#results .card .name').nth(1).click({ modifiers: ['Control'] });
+      const activeKey = await page.evaluate(() => ArchiveStore.sceneKey(Search.getActiveMatch()));
+      await page.locator('#results .card .name').nth(2).click({ modifiers: ['Shift'] });
+      assert.strictEqual(await page.evaluate(() => ArchiveStore.sceneKey(Search.getActiveMatch())), activeKey, '多选不切换已打开的预览');
+      await page.locator('#results .card').first().click({ button: 'right' });
+      await page.keyboard.press('Escape');
+      assert(await page.locator('#preview-panel').isVisible(), 'Escape 优先关闭右键菜单');
+      await page.locator('#btn-close-preview').click();
+      for (const layout of ['sidebar', 'top']) {
+        await selectPreviewLayout(page, layout);
+        await page.setViewportSize({ width: 360, height: 600 });
+        await page.evaluate(() => document.getElementById('results').dispatchEvent(
+          new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 358, clientY: 598 })));
+        const box = await page.locator('.result-context-menu').boundingBox();
+        assert(box.x >= 0 && box.y >= 0 && box.x + box.width <= 360 && box.y + box.height <= 600, `${layout} 窄窗菜单不越界`);
+        await page.screenshot({ path: path.join(os.tmpdir(), `eagle-result-selection-${layout}.png`) });
+        await page.keyboard.press('Escape');
+        await page.setViewportSize({ width: 1100, height: 720 });
+      }
+      await selectPreviewLayout(page, 'sidebar');
+      await page.evaluate(() => Search.clearSelection());
+      await runRemovalSmoke(page);
+      assert.deepStrictEqual(errors, []);
+      console.log('result left/Ctrl/Shift selection, context actions and topic removal smoke passed');
+      return;
+    }
+    if (process.env.WAREHOUSE_CATEGORY_ONLY) {
+      await runCategoryPickerSmoke(page);
+      assert.deepStrictEqual(errors, []);
+      console.log('inline category creation, recent ordering, cancellation, write failure and library guards smoke passed');
+      return;
+    }
+    if (process.env.WAREHOUSE_SELECTION_ONLY) {
+      await runWarehouseSelectionSmoke(page);
+      assert.deepStrictEqual(errors, []);
+      console.log('warehouse box selection, context actions, deletion, retry and library guards smoke passed');
+      return;
+    }
     if (process.env.WAREHOUSE_PREVIEW_ONLY) {
       fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eagle-warehouse-media-'));
       const videoPath = path.join(fixtureDir, 'preview.mp4');
@@ -197,22 +417,52 @@ async function main() {
       console.log('result combination filters, membership and topic comparison browser smoke passed');
       return;
     }
-    assert.strictEqual(await page.locator('.search-options #search-time').count(), 1);
+    assert.strictEqual(await page.locator('#result-filter-menu #search-time').count(), 1);
     assert.strictEqual(await page.locator('#btn-visual-selected').count(), 0);
     await page.locator('#btn-settings').click();
+    assert.strictEqual(await page.locator('#cfg-thumb-cache-count').inputValue(), '5000');
+    assert.strictEqual(await page.locator('#cfg-thumb-cache-mb').inputValue(), '128');
+    await page.locator('summary').filter({ hasText: '预览图缓存' }).click();
+    await page.locator('#cfg-thumb-cache-count').fill('3000');
+    await page.locator('#cfg-thumb-cache-mb').fill('96');
+    await page.evaluate(() => {
+      const configure = Search.configureThumbnailCache;
+      window.__cacheSettingsApplied = [];
+      Search.configureThumbnailCache = (cfg) => {
+        window.__cacheSettingsApplied.push([cfg.thumbnailCacheMaxEntries, cfg.thumbnailCacheMaxMB]);
+        configure(cfg);
+      };
+    });
     await page.locator('#cfg-visual-threshold').fill('0');
     await page.locator('#btn-save-settings').click();
+    assert.deepStrictEqual(await page.evaluate(() => window.__cacheSettingsApplied), [[3000, 96]], '保存后立即应用缓存上限');
     assert.strictEqual(await page.evaluate(() => Config.get().visualThreshold), 0, '合法零阈值不被默认值覆盖');
     await page.locator('#btn-settings').click();
+    assert.strictEqual(await page.locator('#cfg-thumb-cache-count').inputValue(), '3000');
+    assert.strictEqual(await page.locator('#cfg-thumb-cache-mb').inputValue(), '96');
+    await page.locator('#cfg-thumb-cache-count').fill('1000');
+    await page.locator('#cfg-thumb-cache-mb').fill('32');
     await page.locator('#cfg-visual-threshold').fill('40');
     await page.evaluate(() => { window.__writeFail = true; });
     await page.locator('#btn-save-settings').click();
     assert.strictEqual(await page.evaluate(() => Config.get().visualThreshold), 0, '写失败保留内存');
+    assert.deepStrictEqual(await page.evaluate(() => window.__cacheSettingsApplied), [[3000, 96]], '写失败不能改变运行中的缓存上限');
     assert.strictEqual(await page.evaluate(() => document.getElementById('settings-dialog').open), true);
     assert((await page.locator('#settings-error').textContent()).includes('保存配置失败'));
     await page.evaluate(() => { window.__writeFail = false; });
     await page.locator('#btn-save-settings').click();
     assert.strictEqual(await page.evaluate(() => Config.get().visualThreshold), 40);
+    assert.deepStrictEqual(await page.evaluate(() => window.__cacheSettingsApplied), [[3000, 96], [1000, 32]]);
+    if (process.env.WAREHOUSE_SETTINGS_ONLY) {
+      await page.locator('#btn-settings').click();
+      await page.locator('#cfg-thumb-cache-count').fill('5000');
+      await page.locator('#cfg-thumb-cache-mb').fill('128');
+      await page.locator('#cfg-thumb-cache-count').scrollIntoViewIfNeeded();
+      await page.screenshot({ path: path.join(os.tmpdir(), 'eagle-thumbnail-cache-settings.png') });
+      assert.deepStrictEqual(errors, []);
+      console.log('thumbnail cache settings defaults, save, persistence and write-failure guards smoke passed');
+      return;
+    }
     await page.locator('#query').fill('城市夜景');
     await revealControl(page, '#search-time');
     await page.locator('#search-time').selectOption('6');
@@ -220,9 +470,9 @@ async function main() {
     await page.waitForFunction(() => Search.getRawMatches().length === 72);
     assert(await page.locator('#btn-selection-tag').isDisabled());
     await closeCompactMenus(page);
-    await page.locator('#results .card').nth(0).click({ button: 'right' });
+    await page.locator('#results .card').nth(0).click();
     await closeCompactMenus(page);
-    await page.locator('#results .card').nth(1).click({ button: 'right' });
+    await page.locator('#results .card').nth(1).click({ modifiers: ['Control'] });
     assert((await page.locator('#selection-count').textContent()).includes('2 个片段 / 1 个素材'));
     await revealControl(page, '#btn-clear-selection');
     await page.locator('#btn-clear-selection').click();
@@ -232,9 +482,9 @@ async function main() {
     assert(await page.locator('#btn-selection-tag').isDisabled());
     assert(await page.locator('#btn-selection-folder').isDisabled());
     await closeCompactMenus(page);
-    await page.locator('#results .card').nth(0).click({ button: 'right' });
+    await page.locator('#results .card').nth(0).click();
     await closeCompactMenus(page);
-    await page.locator('#results .card').nth(1).click({ button: 'right' });
+    await page.locator('#results .card').nth(1).click({ modifiers: ['Control'] });
     await page.locator('#query').fill('尚未执行的搜索');
     await revealControl(page, '#btn-selection-tag');
     await page.locator('#btn-selection-tag').click();
@@ -293,8 +543,8 @@ async function main() {
     await page.locator('#category-close').click();
     await page.locator('.warehouse-card-actions').first().getByRole('button', { name: '编辑', exact: true }).click();
     await page.locator('#entry-name').fill('城市与夜景');
-    const cat = await page.locator('#entry-category option').last().getAttribute('value');
-    await page.locator('#entry-category').selectOption(cat);
+    const cat = await page.locator('#entry-category .category-picker-option').filter({ hasText: '风景' }).getAttribute('data-category-id');
+    await page.locator('#entry-category').getByRole('button', { name: '风景', exact: true }).click();
     await page.locator('#entry-submit').click();
     await page.waitForFunction(() => !document.getElementById('warehouse-editor').open);
     assert.strictEqual(await page.evaluate(() => window.__requests.length), 1, '重命名和移动分类不得重新搜索');
@@ -455,6 +705,7 @@ async function main() {
     await imageCard.getByRole('button', { name: '打开主题 图片主题', exact: true }).click();
     await page.waitForFunction(() => document.body.dataset.page === 'search');
     const timeFilter = page.locator('#topic-time-filter');
+    await revealControl(page, '#topic-time-filter select');
     const visibleBeforeTimeFilter = await page.evaluate(() => Search.getAllMatches().length);
     const beforeFilter = await page.evaluate(() => ({ requests: window.__requests.length,
       files: JSON.stringify([...window.__files]),
@@ -504,7 +755,7 @@ async function main() {
       window.__items[0].fileURL = URL.createObjectURL(window.__fixtureVideo);
     }, fs.readFileSync(fixturePath).toString('base64'));
     await closeCompactMenus(page);
-    await page.locator('#results .card').first().click();
+    await page.locator('#results .card').first().dblclick();
     await page.waitForFunction(() => {
       const video = document.getElementById('preview-video');
       return video.readyState >= 2 && !video.seeking && !video.error;
@@ -594,7 +845,7 @@ async function main() {
     await page.waitForFunction(() => Search.getLastQuery() === '单帧操作测试' && !Search.isBusy());
     const openFixtureFrame = async (time) => {
       await closeCompactMenus(page);
-      await page.locator('#results .card').first().click();
+      await page.locator('#results .card').first().dblclick();
       await page.waitForFunction(() => {
         const video = document.getElementById('preview-video');
         // readyState 可能仍来自上次媒体；等待本次预览初次定位/播放处理完成。
@@ -724,9 +975,9 @@ async function main() {
     assert.strictEqual(await page.locator('.warehouse-context-menu').count(), 0);
     assert.strictEqual(await page.locator('.warehouse-card-open').last().evaluate((button) => button === document.activeElement), true);
     // 全失败保留对话框、原选择与名称/错误明细；成功重试才清空。
-    await page.locator('#warehouse-batch-category').click();
+    await openWarehouseBatchMenu(page);
     const batchDialog = page.locator('.warehouse-batch-dialog');
-    await batchDialog.locator('select').selectOption(cat);
+    await batchDialog.locator(`[data-category-id="${cat}"]`).click();
     await page.evaluate(() => { window.__writeFail = true; });
     await batchDialog.getByRole('button', { name: '确认', exact: true }).click();
     assert(await batchDialog.isVisible());
@@ -737,7 +988,7 @@ async function main() {
     await batchDialog.getByRole('button', { name: '重试失败项', exact: true }).click();
     await page.waitForFunction(() => !document.querySelector('.warehouse-batch-dialog'));
     assert.strictEqual(await batchDialog.count(), 0);
-    assert(await page.locator('#warehouse-batch-category').isDisabled());
+    assert.strictEqual(await page.locator('.warehouse-card.selected').count(), 0);
     // 部分失败只重试失败 ID，同一个确认中的分类保持固定。
     await page.locator('.warehouse-card-open').first().click({ modifiers: ['Control'] });
     await page.locator('.warehouse-card-open').last().click({ modifiers: ['Shift'] });
@@ -756,16 +1007,16 @@ async function main() {
         } };
       };
     });
-    await page.locator('#warehouse-batch-category').click();
+    await openWarehouseBatchMenu(page);
     await batchDialog.getByRole('button', { name: '确认', exact: true }).click();
     assert.strictEqual(await page.locator('.warehouse-card.selected').count(), 1);
-    assert.strictEqual(await batchDialog.locator('select').isDisabled(), true);
+    assert.strictEqual(await batchDialog.locator('.category-picker-input').isDisabled(), true);
     await batchDialog.getByRole('button', { name: '重试失败项', exact: true }).click();
     assert.deepStrictEqual(await page.evaluate(() => window.__batchCalls.map((ids) => ids.length)), [3, 1]);
     await page.evaluate(() => { ArchiveStore.open = window.__originalArchiveOpen; });
     // 冲突不能以最新版本静默覆盖；需关闭、重新打开并再次确认。
     await page.locator('.warehouse-card-open').first().click({ modifiers: ['Control'] });
-    await page.locator('#warehouse-batch-category').click();
+    await openWarehouseBatchMenu(page);
     await page.evaluate(() => {
       const archive = ArchiveStore.open(Config.pluginPath(), eagle.library.path);
       const entry = archive.list().entries.find((value) => value.name === '批次测试可见 A');
@@ -777,7 +1028,7 @@ async function main() {
     assert.strictEqual(await page.locator('.warehouse-card.selected').count(), 1);
     await batchDialog.getByRole('button', { name: '取消', exact: true }).click();
     await page.evaluate(() => Warehouse.open());
-    await page.locator('#warehouse-batch-category').click();
+    await openWarehouseBatchMenu(page);
     await batchDialog.getByRole('button', { name: '确认', exact: true }).click();
     await page.waitForFunction(() => !document.querySelector('.warehouse-batch-dialog'));
     assert.strictEqual(await batchDialog.count(), 0);
@@ -833,8 +1084,7 @@ async function main() {
     await page.locator('#warehouse-category').selectOption('*');
     await page.waitForFunction(() => document.querySelectorAll('.warehouse-card').length === 60);
     // Opening warehouse topics must not replace the live search session.
-    await page.locator('#warehouse-back').click();
-    if (await page.locator('#topic-search').isVisible()) await page.locator('#topic-search').click();
+    await page.locator('#topic-search').click();
     await revealControl(page, '#search-time');
     await page.locator('#search-time').selectOption('all');
     await page.locator('#query').fill('烟花');
@@ -867,6 +1117,7 @@ async function main() {
     assert.strictEqual(await page.locator('#query').inputValue(), '导航主题 A');
     await page.locator('#topic-back').click();
     await navCard('导航主题 B').locator('.warehouse-card-open').click();
+    await revealControl(page, '#topic-time-filter select');
     await page.locator('#topic-time-filter select').selectOption('6');
     await page.locator('#topic-search').click();
     await page.waitForFunction(() => document.body.dataset.topic === 'false');
@@ -953,7 +1204,7 @@ async function main() {
     assert((await recovery.textContent()).includes('已合并 0 个新主题'));
     await recovery.getByRole('button', { name: '关闭', exact: true }).click();
     await page.evaluate(() => { ArchiveStore.open = window.__bundleOpen; });
-    await page.locator('#warehouse-back').click();
+    await page.locator('#topic-search').click();
     const actionSearch = await page.evaluate(async () => {
       const context = await SearchRecipe.currentContext();
       const before = window.__requests.length;
@@ -999,6 +1250,223 @@ async function main() {
     assert.deepStrictEqual([...clipRequests, ...fetchClipRequests], [], '原视频预览、媒体失败与拖出均不请求切片转码');
   }
 }
+async function openWarehouseBatchMenu(page, label = '批量修改分类') {
+  await page.locator('.warehouse-card.selected .warehouse-card-open').first().click({ button: 'right' });
+  await page.getByRole('menuitem', { name: label, exact: true }).click();
+}
+
+async function runCategoryPickerSmoke(page) {
+  const fixture = await page.evaluate(() => {
+    const archive = ArchiveStore.open(Config.pluginPath(), eagle.library.path);
+    ['风景', '人物', '天空'].forEach((name) => archive.category('add', '', name));
+    const entry = archive.add({ name: '分类交互主题', matches: [], view: { minDur: 0, sortBy: 'sim', grouped: true },
+      recipe: { kind: 'text', query: 'fixture', config: SearchRecipe.options(Config.get()),
+        scope: { mode: 'all' }, time: { mode: 'all' }, library: eagle.library.path } });
+    return { id: entry.id, library: eagle.library.path, requests: window.__requests.length };
+  });
+  await page.evaluate(() => Warehouse.open());
+  const dialog = page.locator('.warehouse-batch-dialog');
+  const openBatch = async () => {
+    await page.locator('.warehouse-card-open').first().click({ button: 'right' });
+    await page.getByRole('menuitem', { name: '批量修改分类', exact: true }).click();
+  };
+  const confirm = async () => {
+    await dialog.getByRole('button', { name: '确认', exact: true }).click();
+    await dialog.waitFor({ state: 'detached' });
+  };
+  const categories = () => page.evaluate(() => ArchiveStore.open(Config.pluginPath(), eagle.library.path).list().categories);
+  await openBatch();
+  await dialog.locator('input').fill('取消不创建');
+  await page.keyboard.press('Enter');
+  assert((await dialog.locator('.category-picker-selected').textContent()).includes('确认后创建'));
+  await dialog.getByRole('button', { name: '取消', exact: true }).click();
+  assert.strictEqual((await categories()).length, 3);
+  await openBatch();
+  await dialog.getByRole('button', { name: '风景', exact: true }).click();
+  await confirm();
+  await openBatch();
+  await dialog.locator('input').fill('雨夜');
+  await confirm();
+  assert.strictEqual((await categories()).length, 4);
+  await openBatch();
+  assert.deepStrictEqual(await dialog.getByRole('group', { name: '最近使用', exact: true }).locator('button').allTextContents(), ['雨夜', '风景']);
+  await page.setViewportSize({ width: 360, height: 600 });
+  const narrowBox = await dialog.boundingBox();
+  assert(narrowBox.x >= 0 && narrowBox.x + narrowBox.width <= 360, '窄窗分类面板不溢出');
+  await page.setViewportSize({ width: 1100, height: 720 });
+  await page.evaluate(() => { document.documentElement.dataset.theme = 'light'; document.body.dataset.theme = 'light'; });
+  if (process.env.WAREHOUSE_CATEGORY_SCREENSHOT) await page.screenshot({ path: process.env.WAREHOUSE_CATEGORY_SCREENSHOT });
+  await dialog.locator('input').fill('  风景  ');
+  assert.strictEqual(await dialog.locator('.category-picker-create').count(), 0);
+  await page.keyboard.press('ArrowDown'); await page.keyboard.press('Enter');
+  await confirm();
+  assert.strictEqual((await categories()).length, 4, '相同名称复用已有分类');
+  await openBatch();
+  assert.deepStrictEqual(await dialog.getByRole('group', { name: '最近使用', exact: true }).locator('button').allTextContents(), ['风景', '雨夜']);
+  await dialog.locator('input').fill('写盘失败分类');
+  await page.evaluate(() => { window.__writeFail = true; });
+  await dialog.getByRole('button', { name: '确认', exact: true }).click();
+  assert((await dialog.locator('.warehouse-batch-status').textContent()).includes('模拟写盘失败'));
+  assert.strictEqual((await categories()).length, 4);
+  await page.evaluate(() => { window.__writeFail = false; });
+  await dialog.getByRole('button', { name: '重试失败项', exact: true }).click();
+  await dialog.waitFor({ state: 'detached' });
+  assert.strictEqual((await categories()).length, 5);
+  await page.locator('.warehouse-card-actions').first().getByRole('button', { name: '编辑', exact: true }).click();
+  await page.locator('#entry-category input').fill('编辑新分类');
+  await page.locator('#entry-submit').click();
+  await page.waitForFunction(() => !document.getElementById('warehouse-editor').open);
+  const saved = await page.evaluate(() => {
+    const archive = ArchiveStore.open(Config.pluginPath(), eagle.library.path).list();
+    return { category: archive.categories.find((item) => item.id === archive.entries[0].categoryId)?.name,
+      recent: JSON.parse(localStorage.getItem(`eagle-semantic-recent-categories:${SearchRecipe.normalize(eagle.library.path)}`)) };
+  });
+  assert.strictEqual(saved.category, '编辑新分类');
+  assert.strictEqual(saved.recent.length, 4);
+  await openBatch();
+  await dialog.locator('input').fill('跨库禁止');
+  await page.evaluate(() => { eagle.library.path = 'D:/other-category.library'; });
+  await dialog.getByRole('button', { name: '确认', exact: true }).click();
+  assert((await dialog.locator('.warehouse-batch-status').textContent()).includes('素材库已切换'));
+  await dialog.getByRole('button', { name: '取消', exact: true }).click();
+  await page.evaluate(() => {
+    const archive = ArchiveStore.open(Config.pluginPath(), eagle.library.path);
+    archive.category('add', '', '另一库分类');
+    archive.add({ name: '另一库主题', matches: [], recipe: {}, view: {} });
+    return Warehouse.open();
+  });
+  await openBatch();
+  assert.strictEqual(await dialog.getByRole('group', { name: '最近使用', exact: true }).count(), 0);
+  assert.strictEqual(await dialog.getByRole('button', { name: '风景', exact: true }).count(), 0);
+  await dialog.getByRole('button', { name: '取消', exact: true }).click();
+  assert.strictEqual(await page.evaluate(() => window.__requests.length), fixture.requests, '分类操作不触发搜索');
+}
+
+async function runWarehouseSelectionSmoke(page) {
+  const fixture = await page.evaluate(() => {
+    const archive = ArchiveStore.open(Config.pluginPath(), eagle.library.path);
+    archive.category('add', '', '框选分类');
+    for (let i = 0; i < 12; i++) archive.add({ name: `框选主题 ${i}`, categoryId: '',
+      recipe: { kind: 'text', query: 'fixture' }, view: {}, matches: [] });
+    return { category: archive.list().categories[0].id, library: eagle.library.path };
+  });
+  await page.evaluate(() => Warehouse.open());
+  assert.strictEqual(await page.locator('#warehouse-compare, #topic-compare, #warehouse-batch-category').count(), 0);
+  const grid = page.locator('#warehouse-grid');
+  const cards = page.locator('.warehouse-card');
+  const count = () => page.locator('.warehouse-card.selected').count();
+  const geometry = () => grid.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const first = element.querySelectorAll('.warehouse-card')[0].getBoundingClientRect();
+    const second = element.querySelectorAll('.warehouse-card')[1].getBoundingClientRect();
+    return { start: { x: second.right + 2, y: second.bottom + 3 },
+      end: { x: first.left + 10, y: first.top + 10 },
+      blank: { x: rect.left + element.clientWidth - 2, y: rect.top + 20 }, bottom: rect.bottom };
+  });
+  const dragTwo = async (cancel = false) => {
+    await grid.evaluate((element) => { element.scrollTop = 0; });
+    const points = await geometry();
+    await page.mouse.move(points.start.x, points.start.y);
+    await page.mouse.down();
+    await page.mouse.move(points.end.x, points.end.y, { steps: 8 });
+    assert.strictEqual(await count(), 2);
+    assert(await page.locator('.warehouse-selection-box').isVisible());
+    if (cancel) await page.keyboard.press('Escape');
+    await page.mouse.up();
+    assert.strictEqual(await page.locator('.warehouse-selection-box').count(), 0);
+  };
+  const before = await page.evaluate(() => ({ files: JSON.stringify([...window.__files]), requests: window.__requests.length }));
+  await dragTwo();
+  assert.strictEqual(await page.locator('#warehouse-selection-count').textContent(), '已选择 2 个主题');
+  assert.strictEqual(await page.evaluate(() => document.body.dataset.page), 'warehouse', '框选松手不打开主题');
+  assert.deepStrictEqual(await page.evaluate(() => ({ files: JSON.stringify([...window.__files]), requests: window.__requests.length })), before);
+  // 空白右键保留框选集合；删除需明确确认，取消不改数据。
+  let points = await geometry();
+  await page.mouse.click(points.blank.x, points.blank.y, { button: 'right' });
+  assert.deepStrictEqual(await page.getByRole('menuitem').allTextContents(), ['批量修改分类', '删除所选主题']);
+  assert.strictEqual(await count(), 2);
+  await page.getByRole('menuitem', { name: '删除所选主题', exact: true }).click();
+  const dialog = page.locator('.warehouse-batch-dialog');
+  await dialog.getByRole('button', { name: '取消', exact: true }).click();
+  assert.deepStrictEqual(await page.evaluate(() => ({ files: JSON.stringify([...window.__files]), requests: window.__requests.length })), before);
+  // Ctrl 框选可追加；Esc 恢复框选开始前的集合。
+  await cards.nth(2).locator('.warehouse-card-open').click({ modifiers: ['Control'] });
+  assert.strictEqual(await count(), 3);
+  await dragTwo(true);
+  assert.strictEqual(await count(), 3);
+  await page.keyboard.down('Control');
+  await grid.evaluate((element) => { element.scrollTop = 0; });
+  points = await geometry();
+  await page.mouse.move(points.start.x, points.start.y);
+  await page.mouse.down();
+  await page.mouse.move(points.end.x, points.end.y, { steps: 5 });
+  await page.mouse.up();
+  await page.keyboard.up('Control');
+  assert.strictEqual(await count(), 3);
+  await page.mouse.click(points.blank.x, points.blank.y);
+  assert.strictEqual(await count(), 0);
+  // 列表视图使用同一框选逻辑。
+  await page.locator('#warehouse-view-list').click();
+  await dragTwo();
+  await openWarehouseBatchMenu(page);
+  await dialog.locator(`.category-picker-option[data-category-id="${fixture.category}"]`).click();
+  await dialog.getByRole('button', { name: '确认', exact: true }).click();
+  await dialog.waitFor({ state: 'detached' });
+  assert.strictEqual(await count(), 0);
+  assert.strictEqual(await page.evaluate(() => ArchiveStore.open(Config.pluginPath(), eagle.library.path).list()
+    .entries.filter((entry) => entry.categoryId).length), 2);
+  // 写盘失败保留选择，重试只操作原集合；成功进入回收站。
+  await dragTwo();
+  const selectedIds = await page.locator('.warehouse-card.selected').evaluateAll((elements) => elements.map((element) => element.dataset.entryId));
+  await openWarehouseBatchMenu(page, '删除所选主题');
+  await page.evaluate(() => { window.__writeFail = true; });
+  await dialog.getByRole('button', { name: '确认', exact: true }).click();
+  assert((await dialog.textContent()).includes('失败 2 个'));
+  assert.strictEqual(await count(), 2);
+  await page.evaluate(() => { window.__writeFail = false; });
+  await dialog.getByRole('button', { name: '重试失败项', exact: true }).click();
+  await dialog.waitFor({ state: 'detached' });
+  assert.strictEqual(await cards.count(), 10);
+  const trashIds = await page.evaluate(() => ArchiveStore.open(Config.pluginPath(), eagle.library.path).list().trash.map((item) => item.entry.id));
+  assert.deepStrictEqual(trashIds.sort(), selectedIds.sort());
+  // 部分冲突只删除未变化主题，保留冲突项供重新核对。
+  await dragTwo();
+  await openWarehouseBatchMenu(page, '删除所选主题');
+  await page.evaluate(() => {
+    const archive = ArchiveStore.open(Config.pluginPath(), eagle.library.path);
+    const id = document.querySelector('.warehouse-card.selected').dataset.entryId;
+    const entry = archive.list().entries.find((value) => value.id === id);
+    archive.setFavorite(id, true, entry.updatedAt, entry.revision);
+  });
+  await dialog.getByRole('button', { name: '确认', exact: true }).click();
+  assert((await dialog.textContent()).includes('已删除 1 个主题，失败 1 个'));
+  assert(await dialog.getByRole('button', { name: '重试失败项', exact: true }).isDisabled());
+  assert.strictEqual(await count(), 1);
+  await dialog.getByRole('button', { name: '取消', exact: true }).click();
+  await page.evaluate(() => Warehouse.open());
+  // 跨库确认不得写入任意一库。
+  await openWarehouseBatchMenu(page, '删除所选主题');
+  const crossBefore = await page.evaluate(() => JSON.stringify([...window.__files]));
+  await page.evaluate(() => { eagle.library.path = 'D:/different.library'; });
+  await dialog.getByRole('button', { name: '确认', exact: true }).click();
+  assert((await dialog.textContent()).includes('素材库已切换'));
+  assert.strictEqual(await page.evaluate(() => JSON.stringify([...window.__files])), crossBefore);
+  await dialog.getByRole('button', { name: '取消', exact: true }).click();
+  await page.evaluate((library) => { eagle.library.path = library; }, fixture.library);
+  await page.evaluate(() => Warehouse.open());
+  // 持续拖到下沿时自动滚动，松手后停止并清理框选层。
+  await grid.evaluate((element) => { element.scrollTop = 0; });
+  points = await geometry();
+  await page.mouse.move(points.blank.x, points.blank.y);
+  await page.mouse.down();
+  await page.mouse.move(points.end.x, points.bottom - 2, { steps: 6 });
+  await page.waitForFunction(() => document.getElementById('warehouse-grid').scrollTop > 80);
+  await page.mouse.up();
+  assert.strictEqual(await page.locator('.warehouse-selection-box').count(), 0);
+  assert((await count()) >= 3);
+  if (process.env.WAREHOUSE_SCREENSHOT) await page.screenshot({ path: process.env.WAREHOUSE_SCREENSHOT });
+}
+
 async function runRemovalSmoke(page) {
   const warehouseQuery = await page.locator('#warehouse-query').inputValue();
   const fixture = await page.evaluate(async () => {
@@ -1060,15 +1528,21 @@ async function runRemovalSmoke(page) {
   await closeCompactMenus(page);
   await page.locator('#results .pick').nth(1).check();
   await closeCompactMenus(page);
-  await page.locator('#results .card').nth(2).click({ button: 'right' });
-  await page.locator('.result-context-menu').getByRole('menuitem').click();
-  assert.strictEqual((await persisted()).matches.length, 4, '右键未选中的卡片只移除该片段');
-  assert.strictEqual(await page.evaluate(() => Search.getSelectedMatches().length), 2, '保留其他片段勾选');
-  await page.locator('#topic-removal-undo').click();
+  await page.locator('#results .card').nth(1).click({ button: 'right' });
+  assert.deepStrictEqual(await page.locator('.result-context-menu button:visible').allTextContents(),
+    ['添加到主题', '从主题移除', '调整评分', '取消全部选择', '添加标签', '添加到新文件夹']);
+  assert.strictEqual((await persisted()).matches.length, 5, '右键不移除片段');
+  assert.strictEqual(await page.evaluate(() => Search.getSelectedMatches().length), 2, '主题右键保留多选');
   await closeCompactMenus(page);
-  await page.locator('#results .card.selected').first().click({ button: 'right' });
-  assert((await page.locator('.result-context-menu').textContent()).includes('选中 2 个片段'));
-  await page.locator('.result-context-menu').getByRole('menuitem').click();
+  await page.locator('#results .card').nth(2).click({ button: 'right' });
+  assert.strictEqual(await page.evaluate(() => Search.getSelectedMatches().length), 1, '右键未选片段改为单选');
+  await page.keyboard.press('Escape');
+  await page.evaluate(() => Search.clearSelection());
+  await page.locator('#results .card').nth(0).click();
+  await page.locator('#results .card').nth(1).click({ modifiers: ['Shift'] });
+  assert.strictEqual(await page.evaluate(() => Search.getSelectedMatches().length), 2, '主题分组排序下支持连续选择');
+  await page.locator('#results .card').nth(1).click({ button: 'right' });
+  await page.locator('#btn-topic-remove').click();
   edited = await persisted();
   const excluded = edited.removedMatches.map((record) => record.key);
   assert.strictEqual(edited.matches.length, 3);
@@ -1196,7 +1670,6 @@ async function runRemovalSmoke(page) {
     await Warehouse.open();
     return JSON.stringify(other.list());
   });
-  await page.locator('#warehouse-back').click();
   await page.evaluate(() => document.getElementById('btn-topic-remove').dispatchEvent(new MouseEvent('click')));
   await page.waitForFunction(() => document.querySelector('.toast')?.textContent.includes('素材库已切换'));
   assert.strictEqual(await page.evaluate(() => JSON.stringify(ArchiveStore.open(Config.pluginPath(), eagle.library.path).list())),
@@ -1635,13 +2108,12 @@ async function runWarehouseUsabilitySmoke(page) {
   }))), groupState, '恢复分组折叠及每组已加载片段数');
   assert.strictEqual(await page.evaluate(() => window.__requests.length), localBefore.requests, '全部整理与浏览操作不搜索');
   await page.locator('#topic-search').click();
-  assert.strictEqual(await page.locator('#result-filter-menu summary').isVisible(),
-    await page.evaluate(() => Search.getRawMatches().length > 0), '普通搜索同样提供结果内筛选');
+  assert(await page.locator('#result-filter-menu summary').isVisible(), '普通搜索始终提供统一筛选');
   assert.strictEqual(await page.evaluate(() => Search.getArchiveFilter().source), 'all');
   await page.locator('#btn-archives').click();
   await page.locator('#warehouse-query').fill(warehouseQuery);
   await page.locator('#warehouse-view-card').click();
-  await page.locator('#warehouse-back').click();
+  await page.locator('#topic-search').click();
 }
 async function runOrganizingFeaturesSmoke(page) {
   const query = await page.locator('#warehouse-query').inputValue();
@@ -1671,7 +2143,7 @@ async function runOrganizingFeaturesSmoke(page) {
   await page.locator('#warehouse-favorites').click();
   await page.locator('#warehouse-view-list').click();
   assert.strictEqual(await card('功能验证 A').locator('.warehouse-favorite').getAttribute('aria-pressed'), 'true');
-  await page.locator('#warehouse-back').click();
+  await page.locator('#topic-search').click();
   await page.evaluate(async () => Search.run('新整理功能', 11, await SearchRecipe.currentContext()));
   const requests = await page.evaluate(() => window.__requests.length);
   const rawBefore = await page.evaluate(() => JSON.stringify(Search.getRawMatches()));
@@ -1783,7 +2255,7 @@ async function runOrganizingFeaturesSmoke(page) {
   assert.strictEqual(await card('功能验证 A').locator('.warehouse-favorite').getAttribute('aria-pressed'), 'false');
   await page.locator('#warehouse-query').fill(query);
   await page.locator('#warehouse-view-card').click();
-  await page.locator('#warehouse-back').click();
+  await page.locator('#topic-search').click();
 }
 
 async function runContinuousCollectionSmoke(page) {
@@ -1850,7 +2322,7 @@ async function runContinuousCollectionSmoke(page) {
   await page.locator('#btn-archives').click();
   await page.locator('#warehouse-query').fill(query);
   await page.locator('#warehouse-view-card').click();
-  await page.locator('#warehouse-back').click();
+  await page.locator('#topic-search').click();
 }
 
 async function runTopicHistorySmoke(page) {
@@ -1941,7 +2413,7 @@ async function runTopicHistorySmoke(page) {
   await page.locator('#topic-search').click();
   await page.locator('#btn-archives').click();
   await page.locator('#warehouse-query').fill(query);
-  await page.locator('#warehouse-back').click();
+  await page.locator('#topic-search').click();
 }
 
 async function runTopicCopySmoke(page) {
@@ -2010,7 +2482,7 @@ async function runTopicCopySmoke(page) {
   await page.locator('#topic-search').click();
   await page.locator('#btn-archives').click();
   await page.locator('#warehouse-query').fill(query);
-  await page.locator('#warehouse-back').click();
+  await page.locator('#topic-search').click();
 }
 
 async function revealControl(page, selector) {
@@ -2041,10 +2513,10 @@ async function runCompactLayoutSmoke(page) {
   assert((await page.locator('#service-dot').getAttribute('class')).includes('online'));
   assert(!(await page.locator('#service-text').isVisible()), '连接后仅保留绿灯');
   assert.strictEqual(await page.locator('#service-status + #index-mode-picker').count(), 1);
-  assert.strictEqual(await page.locator('#btn-archives + #topic-search + #btn-settings').count(), 1);
+  assert.strictEqual(await page.locator('#btn-archives + #topic-search + #result-filter-menu + #btn-settings').count(), 1);
   assert(!(await page.locator('#btn-organize-undo').isVisible()), '普通搜索不显示撤销整理');
   assert.strictEqual(await page.locator('#btn-prepare-clip, #btn-drag-clip, #btn-clip-directory, #btn-frame-text, #result-orientation, #topic-review, #frame-text-dialog').count(), 0);
-  await page.locator('.search-options summary').click();
+  await page.locator('#result-filter-menu summary').click();
   await revealControl(page, '#search-time');
   assert(await page.locator('#search-time').isVisible());
   await revealControl(page, '#search-time');
@@ -2072,7 +2544,7 @@ async function runCompactLayoutSmoke(page) {
     return { name: entry.name, files: JSON.stringify([...window.__files]), requests: window.__requests.length };
   });
   await closeCompactMenus(page);
-  await page.locator('#results .card .name').first().click();
+  await page.locator('#results .card .name').first().dblclick();
   assert(await page.locator('#preview-panel').isVisible());
   assert(!(await page.locator('#inspector-empty').isVisible()));
   assert.strictEqual(await page.locator('#preview-tags button').count(), 14);
@@ -2185,7 +2657,7 @@ async function runCompactLayoutSmoke(page) {
     '缩小窗口限高但不覆盖偏好');
   await page.locator('#btn-close-preview').click();
   assert(!(await vertical.isVisible()), '收起预览后隐藏高度接缝');
-  await page.locator('#results .card .name').first().click();
+  await page.locator('#results .card .name').first().dblclick();
   assert(await vertical.isVisible());
   await selectPreviewLayout(page, 'sidebar');
   await page.setViewportSize({ width: 1100, height: 740 });
@@ -2210,20 +2682,19 @@ async function runCompactLayoutSmoke(page) {
   assert(!(await page.locator('#results').isVisible()));
   assert(!(await page.locator('#btn-organize-undo').isVisible()), '仓库列表不显示撤销整理');
   assert(await page.locator('#btn-settings').isVisible());
-  await page.locator('#warehouse-back').click();
+  await page.locator('#topic-search').click();
   assert.strictEqual(await page.locator('.result-workspace').evaluate((node) => getComputedStyle(node).display), 'grid',
     '返回后恢复顶部预览布局');
   await selectPreviewLayout(page, 'sidebar');
-  await page.locator('#topic-search').click();
   assert(!(await page.locator('#btn-organize-undo').isVisible()), '回到普通搜索隐藏撤销整理');
   assert.strictEqual(await page.evaluate(() => JSON.stringify([...window.__files])), fixture.files, '查看详情和主题跳转不写盘');
   assert.strictEqual(await page.evaluate(() => window.__requests.length), fixture.requests, '查看详情不重新推理');
   await closeCompactMenus(page);
-  await page.locator('#results .card .name').first().click();
+  await page.locator('#results .card .name').first().dblclick();
   await page.locator('#btn-close-preview').click();
   assert(await page.locator('#inspector-empty').isVisible());
   await closeCompactMenus(page);
-  await page.locator('#results .card .name').first().click();
+  await page.locator('#results .card .name').first().dblclick();
   await page.keyboard.press('ArrowRight');
   assert.strictEqual(await page.locator('#results .preview-active').count(), 1);
   await page.keyboard.press('Escape');
@@ -2236,7 +2707,7 @@ async function runCompactLayoutSmoke(page) {
   await page.waitForFunction(() => document.body.dataset.page === 'warehouse');
   assert(!(await page.locator('#empty-state').isVisible()), '空搜索提示不得叠在仓库下半屏');
   assert.strictEqual(await page.locator('.result-workspace').evaluate((node) => getComputedStyle(node).display), 'none');
-  await page.locator('#warehouse-back').click();
+  await page.locator('#topic-search').click();
   await page.evaluate((state) => Search.restoreState(state), savedSearch);
   await selectPreviewLayout(page, 'sidebar');
 }
@@ -2286,7 +2757,7 @@ async function runResultRelationsSmoke(page) {
   await revealControl(page, '#result-filter-clear');
   await page.locator('#result-filter-clear').click();
   await closeCompactMenus(page);
-  await page.locator('#results .card .name').first().click();
+  await page.locator('#results .card .name').first().dblclick();
   await page.waitForFunction(() => document.getElementById('preview-membership').textContent.includes('组合比较 A'));
   for (const width of [1100, 480]) {
     await page.setViewportSize({ width, height: 720 });
@@ -2336,7 +2807,7 @@ async function runResultRelationsSmoke(page) {
   assert.strictEqual(await page.locator('#relations-tabs button').allTextContents().then((v) => v.join(',')), '共有 0,A 独有 1,B 独有 2');
   await page.locator('#relations-close').click();
   await closeCompactMenus(page);
-  await page.locator('#results .card .name').first().click();
+  await page.locator('#results .card .name').first().dblclick();
   await page.waitForFunction(() => document.getElementById('preview-membership').textContent === '组合比较 B 改名');
   await page.evaluate(({ a, b }) => TopicRelations.showCompare([a, b]), fixture);
   await page.evaluate(() => { eagle.library.path = 'D:/other-relations.library'; });
@@ -2380,7 +2851,7 @@ async function runPreviewPlaybackSmoke(page, base64) {
     __warmHoverPlayer.addEventListener('seeking', () => { window.__handoffSeeks += 1; });
     return { loads: __mediaEvents.filter((event) => event.name === 'loadstart').length };
   });
-  await page.locator('#results .thumb-box').first().click();
+  await page.locator('#results .thumb-box').first().dblclick();
   await page.waitForFunction(() => document.getElementById('preview-panel').dataset.state === 'ready');
   const after = await page.evaluate(() => ({
     samePlayer: document.getElementById('preview-video') === __warmHoverPlayer,
@@ -2405,7 +2876,7 @@ async function runPreviewPlaybackSmoke(page, base64) {
   assert.strictEqual(await page.locator('.hover-video').count(), 0, '当前预览卡片不重复创建悬停解码器');
   await page.waitForFunction(() => document.getElementById('preview-video').currentTime > 5.7);
   const loaded = after.loads;
-  await page.locator('#results .card .name').nth(1).click();
+  await page.locator('#results .card .name').nth(1).dblclick();
   await page.waitForFunction(() => document.getElementById('preview-panel').dataset.state === 'ready'
     && document.getElementById('preview-video').currentTime >= 7.2);
   assert.strictEqual(await page.evaluate(() => __mediaEvents.filter((event) => event.name === 'loadstart').length), loaded,
@@ -2428,7 +2899,7 @@ async function runPreviewPlaybackSmoke(page, base64) {
     const video = document.getElementById('preview-video');
     Object.defineProperty(video, 'buffered', { configurable: true, get: () => ({ length: 0 }) });
   });
-  await page.locator('#results .card .name').first().click();
+  await page.locator('#results .card .name').first().dblclick();
   await page.waitForFunction(() => {
     const video = document.getElementById('preview-video');
     return document.getElementById('preview-panel').dataset.state === 'ready'
@@ -2442,7 +2913,7 @@ async function runPreviewPlaybackSmoke(page, base64) {
     thumb.dispatchEvent(new MouseEvent('mouseenter'));
     const loading = document.querySelector('.hover-video');
     const ready = loading.readyState;
-    thumb.click();
+    thumb.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
     return { ready, reused: loading === document.getElementById('preview-video') };
   });
   assert.strictEqual(quick.ready, 0, '快速点击覆盖元数据尚未到达的分支');
@@ -2452,7 +2923,7 @@ async function runPreviewPlaybackSmoke(page, base64) {
     return !video.paused && !video.seeking && video.currentTime > 5.2;
   });
   await page.evaluate(() => Search.pausePreview());
-  await page.locator('#results .card .name').first().click();
+  await page.locator('#results .card .name').first().dblclick();
   await page.waitForFunction(() => {
     const video = document.getElementById('preview-video');
     return !video.paused && !video.seeking && video.currentTime > 5.2;
@@ -2495,12 +2966,14 @@ async function runMediaDragSmoke(page) {
   await page.locator('#results .pick').nth(0).check();
   await closeCompactMenus(page);
   await page.locator('#results .pick').nth(1).check();
+  await page.evaluate(() => { window.__mediaStatCalls = 0; });
   await thumbs.first().dispatchEvent('dragstart');
   assert.strictEqual(await page.evaluate(() => __drags[1].length), 1, '同素材多个片段只拖一份');
+  assert.strictEqual(await page.evaluate(() => __mediaStatCalls), 1, '同原视频多个片段只检查一次文件');
   assert.strictEqual(await page.evaluate(() => window.__clipRequests?.length || 0), 0, '原视频拖拽不调用生成接口');
   // 点击文字打开预览，避开刚拖拽后的缩略图点击抑制。
   await closeCompactMenus(page);
-  await page.locator('#results .card .name').first().click();
+  await page.locator('#results .card .name').first().dblclick();
   assert.strictEqual(await page.locator('#btn-drag-clip, #btn-prepare-clip, #btn-clip-directory').count(), 0);
   const count = await page.evaluate(() => __drags.length);
   await page.evaluate(() => { eagle.library.path = 'D:/other.library'; });

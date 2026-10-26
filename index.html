@@ -13,32 +13,6 @@
       <div id="history-panel" class="history-panel hidden"></div>
     </div>
     <button id="btn-search" class="primary" disabled>搜索</button>
-    <details class="compact-menu search-options">
-      <summary>搜索选项</summary>
-      <div class="menu-content">
-        <h3>搜索选项</h3>
-        <div class="threshold">
-          <label for="threshold">阈值</label>
-          <input id="threshold" type="range" min="5" max="35" step="0.5">
-          <span id="threshold-val">11</span>
-        </div>
-        <button id="btn-scope" class="scope-btn" title="设置搜索范围（含子文件夹）">范围: 整个库</button>
-        <div class="time-filter" role="group" aria-label="素材加入时间">
-          <label for="search-time">素材加入时间</label>
-          <select id="search-time" aria-label="搜索时间范围">
-            <option value="all">不限时间</option><option value="6">近半年</option>
-            <option value="12">近 1 年</option><option value="24">近 2 年</option>
-            <option value="36">近 3 年</option><option value="48">近 4 年</option>
-            <option value="60">近 5 年</option><option value="custom">自定义日期</option>
-          </select>
-          <span id="search-time-dates" class="date-pair hidden">
-            <input id="search-time-start" type="date" aria-label="开始日期"><span>至</span>
-            <input id="search-time-end" type="date" aria-label="结束日期">
-          </span>
-          <span id="time-warning" class="hint" role="status"></span>
-        </div>
-      </div>
-    </details>
   </section>
 
   <section class="toolbar">
@@ -80,29 +54,78 @@
     <div class="spacer"></div>
     <button id="btn-archives" title="打开主题仓库，查看保存结果与更新时间">搜索仓库</button>
     <button id="topic-search" type="button">新搜索</button>
+    <details id="result-filter-menu" class="compact-menu">
+      <summary>筛选<span id="filter-active-indicator" class="menu-indicator hidden" aria-label="已启用筛选"></span></summary>
+      <div class="menu-content">
+        <section id="new-search-filter" class="filter-section">
+          <h3>搜索范围</h3>
+          <div class="threshold">
+            <label for="threshold">阈值</label>
+            <input id="threshold" type="range" min="5" max="35" step="0.5">
+            <span id="threshold-val">11</span>
+          </div>
+          <button id="btn-scope" class="scope-btn" title="设置搜索范围（含子文件夹）">范围: 整个库</button>
+          <div class="time-filter" role="group" aria-label="素材加入时间">
+            <label for="search-time">素材加入时间</label>
+            <select id="search-time" aria-label="搜索时间范围">
+              <option value="all">不限时间</option><option value="6">近半年</option>
+              <option value="12">近 1 年</option><option value="24">近 2 年</option>
+              <option value="36">近 3 年</option><option value="48">近 4 年</option>
+              <option value="60">近 5 年</option><option value="custom">自定义日期</option>
+            </select>
+            <span id="search-time-dates" class="date-pair hidden">
+              <input id="search-time-start" type="date" aria-label="开始日期"><span>至</span>
+              <input id="search-time-end" type="date" aria-label="结束日期">
+            </span>
+            <span id="time-warning" class="hint" role="status"></span>
+          </div>
+        </section>
+        <section id="topic-result-filter" class="filter-section">
+          <h3>已存结果范围</h3>
+          <label>阈值 <input id="topic-filter-threshold" type="number" min="0" step="0.5" placeholder="不限" aria-label="主题结果阈值"></label>
+          <button id="topic-filter-scope" class="scope-btn" type="button">范围: 整个库</button>
+          <span class="hint">素材加入时间</span>
+          <div id="topic-time-filter"></div>
+        </section>
+        <section id="topic-scene-filter" class="topic-scene-filter" aria-label="结果内组合筛选">
+          <h3>结果内筛选</h3>
+          <label for="topic-scene-query">视频名称</label>
+          <input id="topic-scene-query" type="search" placeholder="视频名包含…" aria-label="查找主题中的视频名">
+          <label for="result-tags">素材标签</label>
+          <input id="result-tags" type="search" placeholder="标签，逗号分隔（全部满足）" aria-label="筛选素材标签" title="完整标签名，多个标签用中英文逗号分隔，全部满足">
+          <label>片段 ≤ <input id="result-max-dur" type="number" min="0" step="0.5" placeholder="不限" aria-label="片段时长上限"> 秒</label>
+          <select id="topic-scene-source" aria-label="按人工评分筛选片段">
+            <option value="all">全部片段</option><option value="manual">人工评分</option><option value="auto">未人工评分</option>
+          </select>
+          <label>片段 ≥ <input id="view-min-dur" type="number" min="0" max="600" step="0.5" value="0" title="只显示不短于此秒数的场景"> 秒</label>
+          <button id="result-filter-clear" type="button">清除结果筛选</button>
+          <span id="result-filter-error" class="form-error" role="status"></span>
+        </section>
+      </div>
+    </details>
     <button id="btn-settings" class="icon-btn" type="button" title="设置" aria-label="设置">⚙</button>
   </section>
 
   <section id="warehouse-page" class="warehouse-page hidden" aria-label="搜索仓库">
     <header class="warehouse-header">
-      <div><p class="warehouse-eyebrow">已整理的素材，随时回来继续</p><h1>搜索仓库</h1>
+      <div><h1>搜索仓库</h1>
         <p id="warehouse-summary" class="hint"></p></div>
-      <button id="warehouse-back" type="button">返回搜索</button>
-    </header>
-    <div class="warehouse-filters">
-      <input id="warehouse-query" type="search" placeholder="查找主题名称…" aria-label="查找主题名称">
-      <select id="warehouse-category" aria-label="按分类筛选"></select>
-      <button id="warehouse-favorites" type="button" aria-pressed="false" title="只显示已星标的常用主题">★ 常用</button>
-      <button id="warehouse-categories" type="button">管理分类</button>
-      <div class="warehouse-view-toggle" role="group" aria-label="视图方式">
-        <button id="warehouse-view-card" type="button" class="active" title="卡片视图">⊞</button>
-        <button id="warehouse-view-list" type="button" title="条栏视图">☰</button>
+      <div class="warehouse-header-actions">
+        <button id="warehouse-recovery" type="button">备份 / 回收站</button>
       </div>
-    </div>
-    <div class="warehouse-actions">
-      <button id="warehouse-batch-category" type="button" disabled>批量修改分类</button>
-      <button id="warehouse-compare" type="button" title="比较两个主题的完整已存片段">比较主题</button>
-      <span id="warehouse-selection-count" class="hint"></span>
+    </header>
+    <div class="warehouse-controls">
+      <div class="warehouse-filters">
+        <input id="warehouse-query" type="search" placeholder="查找主题名称…" aria-label="查找主题名称">
+        <select id="warehouse-category" aria-label="按分类筛选"></select>
+        <button id="warehouse-favorites" type="button" aria-pressed="false" title="只显示已星标的常用主题">★ 常用</button>
+        <button id="warehouse-categories" type="button">管理分类</button>
+        <div class="warehouse-view-toggle" role="group" aria-label="视图方式">
+          <button id="warehouse-view-card" type="button" class="active" title="卡片视图" aria-label="卡片视图"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="2" width="4" height="4" rx=".6"/><rect x="10" y="2" width="4" height="4" rx=".6"/><rect x="2" y="10" width="4" height="4" rx=".6"/><rect x="10" y="10" width="4" height="4" rx=".6"/></svg></button>
+          <button id="warehouse-view-list" type="button" title="列表视图" aria-label="列表视图"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3h8M6 8h8M6 13h8"/><path d="M2 3h.5M2 8h.5M2 13h.5"/></svg></button>
+        </div>
+        <span id="warehouse-selection-count" class="hint"></span>
+      </div>
     </div>
     <p id="warehouse-warning" class="hint" role="status"></p>
     <div id="warehouse-grid" class="warehouse-grid"></div>
@@ -114,7 +137,6 @@
     <button id="topic-back" type="button">← 仓库</button>
     <div class="topic-heading"><h2 id="topic-name"></h2><p id="topic-meta" class="hint"></p></div>
     <button id="topic-favorite" type="button" aria-pressed="false" title="设为常用主题">☆</button>
-    <div id="topic-time-filter"></div>
     <button id="topic-update" type="button" class="primary" title="按已保存的搜索条件重新搜索并替换结果">更新结果</button>
     <details class="compact-menu topic-options">
       <summary>主题管理</summary>
@@ -123,34 +145,12 @@
         <button id="topic-edit" type="button">编辑条件</button>
         <button id="topic-history" type="button" title="查看备份中的此主题版本，仅恢复当前主题">主题历史</button>
         <button id="topic-removed" type="button">已移除 (0)</button>
-        <button id="topic-compare" type="button">比较主题</button>
         <button id="topic-reset-cover" type="button" class="hidden">恢复默认封面</button>
       </div>
     </details>
   </section>
 
   <section id="view-bar" class="view-bar hidden">
-    <details id="result-filter-menu" class="compact-menu">
-      <summary>筛选<span id="filter-active-indicator" class="menu-indicator hidden" aria-label="已启用筛选"></span></summary>
-      <div class="menu-content">
-  <section id="topic-scene-filter" class="topic-scene-filter hidden" aria-label="结果内组合筛选">
-    <h3>结果内筛选</h3>
-    <label for="topic-scene-query">视频名称</label>
-    <input id="topic-scene-query" type="search" placeholder="视频名包含…" aria-label="查找主题中的视频名">
-    <label for="result-tags">素材标签</label>
-    <input id="result-tags" type="search" placeholder="标签，逗号分隔（全部满足）" aria-label="筛选素材标签" title="完整标签名，多个标签用中英文逗号分隔，全部满足">
-    <label>片段 ≤ <input id="result-max-dur" type="number" min="0" step="0.5" placeholder="不限" aria-label="片段时长上限"> 秒</label>
-    <select id="topic-scene-source" aria-label="按人工评分筛选片段">
-      <option value="all">全部片段</option>
-      <option value="manual">人工评分</option>
-      <option value="auto">未人工评分</option>
-    </select>
-    <label>片段 ≥ <input id="view-min-dur" type="number" min="0" max="600" step="0.5" value="0" title="只显示不短于此秒数的场景"> 秒</label>
-    <button id="result-filter-clear" type="button">清除筛选</button>
-    <span id="result-filter-error" class="form-error" role="status"></span>
-  </section>
-      </div>
-    </details>
     <details class="compact-menu">
       <summary>显示</summary>
       <div class="menu-content">
@@ -158,7 +158,7 @@
         <label>预览方式
           <select id="preview-layout" aria-label="预览方式">
             <option value="sidebar">右侧素材详情</option>
-            <option value="top">顶部预览（点击展开）</option>
+            <option value="top">顶部预览（双击展开）</option>
           </select>
         </label>
     <label>排序
@@ -174,7 +174,7 @@
     <button id="btn-save-results" class="mini-btn" title="保存当前筛选后的全部结果及搜索条件">保存到仓库</button>
     <button id="btn-organize-undo" type="button" class="mini-btn hidden" title="撤销最近一次收录或改分（Ctrl+Z）" disabled>撤销整理</button>
     <span id="selection-count" class="hint" aria-live="polite"></span>
-    <details class="compact-menu">
+    <details id="result-selection-menu" class="compact-menu">
       <summary>整理所选</summary>
       <div class="menu-content">
         <h3>整理所选片段</h3>
@@ -336,8 +336,9 @@
       <label class="check-row"><input type="radio" name="scope-mode" value="all"> 整个库</label>
       <label class="check-row"><input type="radio" name="scope-mode" value="selected"> 跟随 Eagle 当前选中的文件夹（含子文件夹）</label>
       <label class="check-row"><input type="radio" name="scope-mode" value="custom"> 指定以下文件夹（含子文件夹，可多选）：</label>
+      <label class="check-row"><input type="radio" name="scope-mode" value="exclude"> 排除以下文件夹（含子文件夹，可多选）：</label>
       <div id="folder-tree" class="folder-tree"></div>
-      <p class="hint">勾选父文件夹即包含其下所有子文件夹；三种搜索方式（文本/以图/以片）都遵循此范围。</p>
+      <p class="hint">包含或排除均作用于所有子文件夹；素材属于任一排除文件夹即不参与搜索。三种搜索方式（文本/以图/以片）都遵循此范围。</p>
       <div class="dialog-actions">
         <button id="btn-scope-apply" class="primary" type="button">应用</button>
         <button id="btn-scope-cancel" type="button">取消</button>
@@ -376,7 +377,7 @@
       <h3 id="warehouse-editor-title">保存到仓库</h3>
       <p id="warehouse-editor-hint" class="hint"></p>
       <label>主题名称<input id="entry-name" maxlength="120" required></label>
-      <label>分类<select id="entry-category"></select></label>
+      <div class="entry-category-field"><span>分类</span><div id="entry-category"></div></div>
       <div id="entry-conditions">
         <label>搜索词 / 查询名称<input id="entry-query" required></label>
         <p id="entry-source" class="hint"></p>
@@ -399,7 +400,7 @@
           <input id="entry-time-start" type="date" aria-label="开始日期"><span>至</span>
           <input id="entry-time-end" type="date" aria-label="结束日期">
         </div>
-        <label>文件夹范围<select id="entry-scope"><option value="all">整个库</option><option value="folders">指定文件夹（含子文件夹）</option></select></label>
+        <label>文件夹范围<select id="entry-scope"><option value="all">整个库</option><option value="folders">指定文件夹（含子文件夹，可多选）</option><option value="exclude">排除文件夹（含子文件夹，可多选）</option></select></label>
         <div id="entry-folders" class="entry-folders hidden"></div>
         <details class="entry-advanced"><summary>更多搜索参数</summary>
           <label>索引模型<input id="entry-model" required></label>
@@ -456,6 +457,18 @@
           <option value="openai-clip-vit-large-patch14">openai-clip-vit-large-patch14（仅英文）</option>
         </select>
       </label>
+      <details class="settings-group">
+        <summary>预览图缓存</summary>
+        <div class="field-pair">
+          <label>最多缓存张数
+            <input id="cfg-thumb-cache-count" type="number" min="0" max="50000" step="1" required>
+          </label>
+          <label>缓存内存上限（MB）
+            <input id="cfg-thumb-cache-mb" type="number" min="0" max="1024" step="1" required>
+          </label>
+        </div>
+        <p class="hint">主题和搜索共用，优先保留最近浏览的图片；任一上限设为 0 可关闭。保存后立即生效。此处限制图片缓存数据，不含页面显示和解码占用；重载插件会清空会话缓存，已生成的磁盘预览图仍保留。</p>
+      </details>
       <label>以图/以片搜相似阈值
         <input id="cfg-visual-threshold" type="number" min="0" max="120" step="1">
       </label>

@@ -137,10 +137,54 @@ async function main() {
   let nextStartupTimer = 0;
   context.setTimeout = (callback, delay) => {
     const id = ++nextStartupTimer;
-    startupTimers.set(id, { callback, delay });
+    startupTimers.set(id, { callback: () => { startupTimers.delete(id); callback(); }, delay });
     return id;
   };
   context.clearTimeout = (id) => startupTimers.delete(id);
+  // seek 跳转与真实播放推进必须分开，否则既会漏掉停帧，也会误重载。
+  const seekMatch = { ...matches[0], start_frame: 250, end_frame: 500, fps: 25 };
+  inspect.setup([seekMatch]);
+  const seekProgressVideo = inspect.el.previewVideo;
+  Object.assign(seekProgressVideo, { readyState: 2, currentTime: 0, paused: false, seeking: false });
+  inspect.openPreview(seekMatch);
+  seekProgressVideo.onloadedmetadata();
+  seekProgressVideo.onwaiting();
+  const seekWatchdog = [...startupTimers.values()].find((timer) => timer.delay === 1500);
+  // 浏览器可能在 seeked 前派发 timeupdate，此时 seeking 已经为 false。
+  seekProgressVideo.ontimeupdate();
+  assert([...startupTimers.values()].includes(seekWatchdog), '定位跳转不能清除或延期停滞检测');
+  seekProgressVideo.onseeked();
+  seekProgressVideo.ontimeupdate();
+  assert([...startupTimers.values()].includes(seekWatchdog), '仅完成定位仍不算真实播放');
+  inspect.closePreview();
+
+  const shortMatch = { ...matches[0], start_frame: 3, end_frame: 17, fps: 24 };
+  inspect.setup([shortMatch]);
+  const shortVideo = inspect.el.previewVideo;
+  Object.assign(shortVideo, { readyState: 2, currentTime: 0.44, paused: false, seeking: false });
+  let shortReloads = 0;
+  shortVideo.load = () => { shortReloads += 1; };
+  inspect.openPreview(shortMatch);
+  shortVideo.onloadedmetadata();
+  shortVideo.onseeked();
+  const oldShortTimeout = [...startupTimers.values()].find((timer) => timer.delay === 1500);
+  for (const time of [0.24, 0.4, 0.6]) {
+    shortVideo.currentTime = time;
+    shortVideo.ontimeupdate();
+  }
+  oldShortTimeout.callback();
+  assert.strictEqual(shortReloads, 0, '倒回后连续播放跨过旧时间，不能被旧期限重载');
+  assert([...startupTimers.values()].some((timer) => timer.delay === 1500), '恢复后仍监测后续停帧');
+  const delayedTimeupdate = [...startupTimers.values()].find((timer) => timer.delay === 1500);
+  shortVideo.currentTime = 0.65;
+  shortVideo.onwaiting();
+  delayedTimeupdate.callback();
+  assert.strictEqual(shortReloads, 0, 'timeupdate 延迟且先派发 waiting 时，仍检查实际推进而不误重载');
+  const realStall = [...startupTimers.values()].filter((timer) => timer.delay === 1500).at(-1);
+  realStall.callback();
+  assert.strictEqual(shortReloads, 1, '真实停止推进后才重载一次');
+  inspect.closePreview();
+  startupTimers.clear();
   inspect.setup(matches);
   const suspendedVideo = inspect.el.previewVideo;
   Object.assign(suspendedVideo, { readyState: 2, currentTime: 0.08, duration: 10,
@@ -155,7 +199,7 @@ async function main() {
   suspendedVideo.currentTime = 0.4;
   suspendedVideo.paused = false;
   suspendedVideo.ontimeupdate();
-  assert.strictEqual(startupTimers.size, 0, '真实播放进度足够后清理停滞检测');
+  assert.strictEqual(startupTimers.size, 1, '真实播放推进后续期检测，继续保护后续停帧');
   inspect.closePreview();
   for (const action of ['close', 'switch', 'step', 'error', 'reload']) {
     suspendedVideo.currentTime = 0.08;
@@ -217,7 +261,10 @@ async function main() {
   stalledVideo.onplaying();
   stalledVideo.currentTime = 0.12;
   stalledVideo.ontimeupdate();
-  assert([...startupTimers.values()].includes(watchdog), 'playing 和一帧的进展不能取消停滞恢复');
+  assert([...startupTimers.values()].some((timer) => timer.delay === 1500), '一帧进展只能续期，不能取消后续停滞检测');
+  const reloadsBeforeProgress = reloads;
+  watchdog.callback();
+  assert.strictEqual(reloads, reloadsBeforeProgress, '进度续期后旧超时回调不能重载');
   for (const [id, timer] of startupTimers) if (timer === notice) startupTimers.delete(id);
   assert.strictEqual(startupTimers.size, 1);
   stalledVideo.paused = true;

@@ -16,6 +16,18 @@ async function main() {
     const proxyFs = { ...fs, renameSync: (...args) => { if (fail) throw Object.assign(new Error('denied'), { code: 'EACCES' }); return fs.renameSync(...args); } };
     const config = load('Config', { require: (name) => name === 'fs' ? proxyFs : require(name), console });
     config.init(root);
+    assert.strictEqual(config.get().thumbnailCacheMaxEntries, 5000);
+    assert.strictEqual(config.get().thumbnailCacheMaxMB, 128);
+    for (const value of [-1, 1.5, 50001, NaN]) assert.throws(() => config.save({ thumbnailCacheMaxEntries: value }));
+    for (const value of [-1, 1.5, 1025, NaN]) assert.throws(() => config.save({ thumbnailCacheMaxMB: value }));
+    config.save({ thumbnailCacheMaxEntries: 3000, thumbnailCacheMaxMB: 96 });
+    config.init(root);
+    assert.strictEqual(config.get().thumbnailCacheMaxEntries, 3000);
+    assert.strictEqual(config.get().thumbnailCacheMaxMB, 96);
+    config.save({ scopeMode: 'exclude', scopeFolderIds: ['parent', 'other'], scopeLibrary: 'D:/fixture.library' });
+    config.init(root);
+    assert.strictEqual(config.get().scopeMode, 'exclude');
+    assert.deepStrictEqual(Array.from(config.get().scopeFolderIds), ['parent', 'other']);
     assert.strictEqual(config.get().indexFrameSelection, 'content_adaptive');
     assert.strictEqual(config.get().indexContentMaxFrames, 12);
     assert.throws(() => config.save({ indexContentMaxFrames: 0 }));
