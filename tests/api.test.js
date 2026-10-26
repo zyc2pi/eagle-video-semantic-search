@@ -129,19 +129,7 @@ async function main() {
     assert.strictEqual(requests.at(-1).body.threshold, 11);
     assert(!('temporal_search' in requests.at(-1).body), '动作词走普通搜索，不发送专项核验参数');
   }
-  const originalFetch = context.fetch;
-  context.fetch = async (url) => ({ ok: true, status: 200, json: async () => ({ success: true, capabilities: {} }) });
-  await assert.rejects(api.prepareEditClip({}), /重启配套新版/);
-  const clipBody = { video_path: 'D:/a.mp4', start_frame: 13, end_frame: 37, output_dir: 'D:/clips' };
-  context.fetch = async (url, options) => {
-    if (url.endsWith('/health')) return { ok: true, status: 200, json: async () => ({ capabilities: { edit_clip: true } }) };
-    assert(url.endsWith('/api/v1/prepare_edit_clip'));
-    assert.deepStrictEqual(JSON.parse(options.body), clipBody);
-    return { ok: true, status: 200, json: async () => ({ success: true, output_path: 'D:/clips/a.mp4' }) };
-  };
-  assert.strictEqual((await api.prepareEditClip(clipBody)).output_path, 'D:/clips/a.mp4');
-  context.fetch = originalFetch;
-  console.log('API indexing, search propagation and editing clip capability tests passed');
+  console.log('API indexing and search propagation tests passed');
 }
 
 main().catch((error) => {

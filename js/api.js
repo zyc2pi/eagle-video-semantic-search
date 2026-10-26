@@ -248,22 +248,9 @@ const Api = (() => {
     return `${Config.baseUrl()}/get_preview?video_path=${encodeURIComponent(videoPath)}&frame=${frame}`;
   }
 
-  function clipUrl(videoPath, startFrame, endFrame) {
-    return `${Config.baseUrl()}/get_clip?video_path=${encodeURIComponent(videoPath)}`
-      + `&start_frame=${startFrame}&end_frame=${endFrame}`;
-  }
-
-  async function prepareEditClip(body) {
-    const info = await healthInfo();
-    if (!info?.capabilities?.edit_clip) throw new Error('请重启配套新版搜索服务以启用片段准备');
-    const r = await post('/api/v1/prepare_edit_clip', body, LONG_TIMEOUT_MS);
-    if (!r.ok || !r.data?.success || !r.data.output_path) throw new Error(r.data?.error || '片段准备失败');
-    return r.data;
-  }
-
   return {
     health, healthInfo, resolveLibrary, associateLibrary, listIndexJobs, listIndexes, listModels, startIndex, indexStatus, cancelIndex, retryIndex,
     search, searchVisual, searchHybrid, describeFrame, shutdown,
-    dedupScan, indexCoverage, indexContents, previewUrl, clipUrl, prepareEditClip,
+    dedupScan, indexCoverage, indexContents, previewUrl,
   };
 })();

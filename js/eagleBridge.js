@@ -2,7 +2,7 @@
 const Bridge = (() => {
   // 与 create_video_index 的 supported_ext 保持一致
   const VIDEO_EXTS = new Set(['mp4', 'mov', 'mkv', 'avi', 'webm', 'flv']);
-  // <video> 标签可直接播放的格式，其余走 /get_clip 转码
+  // 悬停仅尝试这些常用格式；点击预览始终直接读取原文件。
   const WEB_PLAYABLE = new Set(['mp4', 'webm', 'mov']);
   // 可作为以图搜视频查询源的图片格式
   const IMAGE_EXTS = new Set(['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif', 'tif', 'tiff']);

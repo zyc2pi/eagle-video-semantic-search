@@ -11,7 +11,8 @@ class Element {
   removeAttribute() {}
   pause() {}
   load() {}
-  play() { return Promise.resolve(); }
+  remove() {}
+  play() { this.playCount = (this.playCount || 0) + 1; return Promise.resolve(); }
 }
 const source = fs.readFileSync(path.join(__dirname, '..', 'js', 'search.js'), 'utf8');
 const deferred = [];
@@ -45,7 +46,7 @@ const context = {
       assert.deepStrictEqual(Array.from(indices), ['index'], '仅使用当前稳定库身份的精确模型索引');
       return new Promise((resolve) => deferred.push(resolve));
     },
-    previewUrl: () => 'poster', clipUrl: () => 'clip',
+    previewUrl: () => 'poster',
   },
 };
 const injection = `
@@ -54,7 +55,7 @@ const injection = `
       el.previewVideo = new Element(); el.previewInfo = new Element();
       el.previewStatus = new Element(); el.previewRetry = new Element();
       el.previewPanel = new Element(); el.btnLocate = new Element(); },
-    buildCard, buildGroup, computeDisplayList, openPreview, closePreview, el,
+    buildCard, buildGroup, computeDisplayList, openPreview, closePreview, startHoverPreview, stopHoverPreview, hover, el,
     setResults(root) { el.results = root; },
     simulateRestore(total) {
       const previous = renderNextChunk;
@@ -88,15 +89,144 @@ async function main() {
   inspect.openPreview(matches[0]);
   const firstError = inspect.el.previewVideo.onerror;
   firstError();
-  assert.strictEqual(inspect.el.previewPanel.dataset.state, 'transcoding');
-  inspect.el.previewVideo.onerror();
-  assert.strictEqual(inspect.el.previewPanel.dataset.state, 'error');
+  assert.strictEqual(inspect.el.previewPanel.dataset.state, 'native', '封面错误没有 MediaError，不能打断源视频');
+  inspect.el.previewVideo.error = { code: 4 };
+  firstError();
+  assert.strictEqual(inspect.el.previewPanel.dataset.state, 'error', '真实媒体失败直接提示，不请求切片转码');
   assert.strictEqual(inspect.el.previewRetry.hidden, false);
   inspect.openPreview(matches[1]);
   firstError();
   assert.strictEqual(inspect.el.previewPanel.dataset.state, 'native', '过期媒体事件不能覆盖新预览');
   inspect.closePreview();
   assert.strictEqual(Search.getActiveMatch(), null);
+
+  inspect.setup(matches);
+  const bufferingVideo = inspect.el.previewVideo;
+  bufferingVideo.readyState = 2;
+  bufferingVideo.currentTime = 0.08;
+  bufferingVideo.duration = 10;
+  bufferingVideo.buffered = { length: 1, start: () => 0, end: () => 0.12 };
+  inspect.openPreview(matches[0]);
+  bufferingVideo.onloadedmetadata();
+  assert.strictEqual(bufferingVideo.playCount, 1, '定位完成立即请求播放，由浏览器继续加载，不人为等待预缓冲');
+  bufferingVideo.readyState = 4;
+  bufferingVideo.buffered.end = () => 5;
+  bufferingVideo.oncanplay?.();
+  assert.strictEqual(bufferingVideo.playCount, 1, '后续缓冲事件不能重复请求播放');
+  bufferingVideo.onseeked?.();
+  assert.strictEqual(bufferingVideo.playCount, 1, '后续定位事件不能重复自动播放');
+  inspect.closePreview();
+
+  inspect.startHoverPreview(new Element(), matches[0]);
+  const hoveringVideo = inspect.hover.video;
+  Object.assign(hoveringVideo, { currentTime: 0, seeking: true });
+  hoveringVideo.onloadedmetadata();
+  assert.strictEqual(hoveringVideo.playCount, 1, '悬停元数据就绪即请求播放，不等意图定时器或 seeked');
+  inspect.stopHoverPreview();
+
+  inspect.setup(matches);
+  const seekingVideo = inspect.el.previewVideo;
+  Object.assign(seekingVideo, { readyState: 1, currentTime: 0, seeking: true });
+  inspect.openPreview(matches[0]);
+  seekingVideo.onloadedmetadata();
+  assert.strictEqual(seekingVideo.playCount, 1, '已发出片段定位时就请求播放，不能等 seeked 才驱动加载');
+  inspect.closePreview();
+
+  // 浏览器可能在首帧就绪后停止预加载，必须主动 play 才会继续读取。
+  const startupTimers = new Map();
+  let nextStartupTimer = 0;
+  context.setTimeout = (callback, delay) => {
+    const id = ++nextStartupTimer;
+    startupTimers.set(id, { callback, delay });
+    return id;
+  };
+  context.clearTimeout = (id) => startupTimers.delete(id);
+  inspect.setup(matches);
+  const suspendedVideo = inspect.el.previewVideo;
+  Object.assign(suspendedVideo, { readyState: 2, currentTime: 0.08, duration: 10,
+    buffered: { length: 1, start: () => 0, end: () => 0.12 } });
+  inspect.openPreview(matches[0]);
+  suspendedVideo.onloadedmetadata();
+  assert.strictEqual(startupTimers.size, 1, '启动超时仅负责停滞恢复，不推迟播放请求');
+  assert.strictEqual(suspendedVideo.playCount, 1, '无后续媒体事件时也必须请求播放以恢复加载');
+  await Promise.resolve();
+  assert.strictEqual(inspect.el.previewPanel.dataset.state, 'ready');
+  assert.strictEqual(startupTimers.size, 1, 'play Promise 成功不代表持续出帧，保留进度检测');
+  suspendedVideo.currentTime = 0.4;
+  suspendedVideo.paused = false;
+  suspendedVideo.ontimeupdate();
+  assert.strictEqual(startupTimers.size, 0, '真实播放进度足够后清理停滞检测');
+  inspect.closePreview();
+  for (const action of ['close', 'switch', 'step', 'error', 'reload']) {
+    suspendedVideo.currentTime = 0.08;
+    suspendedVideo.seeking = true;
+    inspect.openPreview(matches[0]);
+    const staleMetadata = suspendedVideo.onloadedmetadata;
+    const staleTimer = [...startupTimers.values()][0].callback;
+    const played = suspendedVideo.playCount;
+    suspendedVideo.seeking = false;
+    if (action === 'close') inspect.closePreview();
+    if (action === 'switch') inspect.openPreview(matches[1]);
+    if (action === 'step') {
+      context.CoverFrame = { stepTime: (time) => time + 0.04 };
+      Search.stepPreviewFrame(1);
+    }
+    if (action === 'error') {
+      suspendedVideo.error = { code: 4 };
+      suspendedVideo.onerror();
+      suspendedVideo.error = null;
+    }
+    if (action === 'reload') {
+      startupTimers.clear();
+      staleTimer();
+    }
+    assert.strictEqual(startupTimers.size, ['switch', 'reload'].includes(action) ? 1 : 0, `${action} 清理旧定时器，仅保留新加载检测`);
+    staleMetadata();
+    staleTimer();
+    assert.strictEqual(suspendedVideo.playCount, played, `${action} 后迟到定位回调不能自动播放`);
+    inspect.closePreview();
+  }
+  inspect.setup(matches);
+  const stalledVideo = inspect.el.previewVideo;
+  inspect.openPreview(matches[0]);
+  const nativeTimeout = [...startupTimers.values()][0];
+  assert.strictEqual(nativeTimeout.delay, 1500);
+  let reloads = 0;
+  stalledVideo.load = () => { reloads += 1; };
+  startupTimers.clear();
+  nativeTimeout.callback();
+  assert.strictEqual(reloads, 1, '停滞仅重载原视频一次');
+  const reloadTimeout = [...startupTimers.values()][0];
+  assert.strictEqual(reloadTimeout.delay, 1500);
+  startupTimers.clear();
+  reloadTimeout.callback();
+  assert.strictEqual(inspect.el.previewPanel.dataset.state, 'error', '重载仍停滞时停止并提示，不等待切片转码');
+  assert.strictEqual(startupTimers.size, 0);
+  inspect.closePreview();
+
+  inspect.openPreview(matches[0]);
+  Object.assign(stalledVideo, { currentTime: 0.08, readyState: 2, seeking: false, paused: false });
+  stalledVideo.onloadedmetadata();
+  await Promise.resolve();
+  stalledVideo.onwaiting();
+  assert.strictEqual(inspect.el.previewPanel.dataset.state, 'ready', '短暂定位等待不闪烁缓冲提示');
+  const notice = [...startupTimers.values()].find((timer) => timer.delay === 200);
+  notice.callback();
+  assert.strictEqual(inspect.el.previewPanel.dataset.state, 'buffering');
+  const watchdog = [...startupTimers.values()].find((timer) => timer.delay === 1500);
+  stalledVideo.onplaying();
+  stalledVideo.currentTime = 0.12;
+  stalledVideo.ontimeupdate();
+  assert([...startupTimers.values()].includes(watchdog), 'playing 和一帧的进展不能取消停滞恢复');
+  for (const [id, timer] of startupTimers) if (timer === notice) startupTimers.delete(id);
+  assert.strictEqual(startupTimers.size, 1);
+  stalledVideo.paused = true;
+  stalledVideo.onpause();
+  assert.strictEqual(inspect.el.previewPanel.dataset.state, 'ready', '暂停后清除缓冲提示');
+  assert.strictEqual(startupTimers.size, 0, '暂停后不启动旧加载恢复');
+  inspect.closePreview();
+  context.setTimeout = setTimeout;
+  context.clearTimeout = clearTimeout;
 
   const payload = '<img src="missing" onerror="window.__marker=1">';
   const malicious = { ...matches[0], start: payload, end: payload, duration_display: payload,

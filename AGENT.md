@@ -29,7 +29,7 @@ Eagle（素材管理软件）的窗口插件，提供视频的语义检索：中
 | `js/search.js` | 结果渲染核心：分批渲染+缩略图限流(6并发)、分组/排序/过滤视图、悬停自动播放、右侧预览及主题/标签/评分/基本信息详情、勾选 |
 | `js/searchRecipe.js` | 搜索参数白名单快照、导入日期边界及文件夹交集、视觉查询来源持久化和重放 |
 | `js/archiveStore.js` | 按库隔离的搜索仓库 JSON、原子替换、旧 saves 迁移、片段新增比较与分类持久化 |
-| `js/coverFrame.js` | 预览逐帧定位、转码片段到源视频的帧号换算、封面 JPEG 截图 |
+| `js/coverFrame.js` | 原视频逐帧定位、源帧号换算、封面 JPEG 截图 |
 | `js/frameSearch.js` | 固定当前画面进行视觉单帧查询、取消及查询画面展示；历史文字主题仍由 Search 重放 |
 | `js/mediaDrag.js` | 缩略图原生拖出完整原视频、勾选去重、库与文件有效性校验 |
 | `js/manualAdd.js` | 从搜索或主题收录选中片段；目标参考、逐片段/批量人工分数及键盘调整 |
@@ -43,7 +43,7 @@ Eagle（素材管理软件）的窗口插件，提供视频的语义检索：中
 
 ## 关键契约（改动需两侧同步）
 
-- 外部拖拽使用 Eagle `drag.startDrag(string[])`，在 dragstart 内同步读取已映射真实文件并立即调用，不传缩略图/HTTP URL。缩略图拖完整原视频，已选卡片拖全部选中素材并按路径去重；跨库、映射失效或文件丢失拒绝拖出。当前页面已移除片段目录、准备与拖出片段，不调用 prepare_edit_clip；既有后端接口及已生成文件保留。原生跨应用拖放仍需真实 Eagle / PR / AE 验收。
+- 外部拖拽使用 Eagle `drag.startDrag(string[])`，在 dragstart 内同步读取已映射真实文件并立即调用，不传缩略图/HTTP URL。缩略图拖完整原视频，已选卡片拖全部选中素材并按路径去重；跨库、映射失效或文件丢失拒绝拖出。只有完整原视频拖出，不提供整段/片段选择、片段目录或准备功能；插件已删除clipUrl/prepareEditClip与目录配置定义，全部预览也禁止视频切片转码。共享后端接口及已有文件保留，不由此插件调用。原生跨应用拖放仍需真实 Eagle / PR / AE 验收。
 
 - 索引命名升级为 `indexes/<模型>/eagle_v2_<库UUID>_<模型>.lance`；先由 `Bridge.resolveLibraryIdentity()` 调用后端注册表，再按 library_id 精确查询（API 的 name 包含 `.lance`）。提纯插件使用相同协议，提交 library_path 必须取当前 Eagle 路径，不能用登记 canonical 路径代替。旧索引保留只读；离线工具迁移或新身份重建，绝不按同名库自动认领。
 - 相似度分数 = cosine × logit_scale(≈100)。文本阈值 fgclip2≈11 / clip≈21；视觉检索独立阈值(≈40)+相对落差截断
@@ -54,6 +54,10 @@ Eagle（素材管理软件）的窗口插件，提供视频的语义检索：中
 - 工具栏不提供以 Eagle 选中素材搜相似入口；保留剪贴板以图搜索及已有视觉主题重放。搜索缓存键必须包含 kind/query/payload/config/library/indexNames/allowedVideoPaths，null 整库与 [] 空范围不同，不能仅用显示名称或遗漏起止帧。
 - 页面不再显示顶部标题/服务文字栏；服务加载时显示临时文字，连接成功隐藏文字，仅在索引按钮左侧亮绿灯并保留tooltip/aria状态，离线仍显示错误。设置与「新搜索」位于「搜索仓库」右侧，工具栏在仓库列表也可访问；「撤销整理」按钮只在具体主题的view-bar内显示，快捷键沿用原契约。
 - 「显示 → 预览方式」在右侧素材详情与初版顶部点击展开预览之间切换，默认右侧，偏好以eagle-semantic-preview-layout保存在localStorage。顶部模式用CSS Grid和display:contents复用同一preview-panel/video，隐藏右栏与接缝，关闭预览后释放高度；不重建结果、不改变选择或播放器状态、不重发搜索。顶部模式暂停计算侧栏宽度，切回时恢复原宽度偏好。
+- 页面显隐优先于预览布局：body[data-page="warehouse"] > .result-workspace使用display:none !important，避免后置的顶部Grid样式覆盖隐藏规则。进入仓库时主题栏、结果工具栏、预览及空结果提示均随整个工作区隐藏，仓库占满工具栏以下高度；返回后保留原预览模式。
+- 顶部预览横向接缝用Pointer Events调整高度并同步缩放画面，偏好eagle-semantic-preview-height保存到localStorage，缩窗限高但不覆盖偏好，至少给结果保留200px；关闭预览或切回右栏时隐藏横线。支持上下键/Home/End，观察工作区与面板尺寸更新限高与aria值。结果栏菜单和普通按钮统一28px，箭头使用5px CSS描边，避免字体符号撑高。
+- 预览启动：悬停立即加载，元数据就绪后设置currentTime并立即play，不等seeked或80ms意图等待。点击接管当前同源悬停video，包括在途加载，保留解码器及主播放器音量/静音/速度；从片段开头播放，保留两帧起播偏移，同源不重复赋src。当前大预览卡片不新建悬停解码器。preload=auto，不额外预缓冲；封面复用已加载卡片/Eagle缩略图，已解码同源video移除poster。所有格式点击时都只尝试原文件；原生停滞1.5秒load原文件一次，再停滞1.5秒直接报错，不生成替代视频。playing/play Promise成功不解除检测，实际累计推进约250ms（按低倍速缩放）才解除。waiting延迟200ms提示；暂停、结束、关闭、切换、逐帧与错误清理旧等待，加载/重载代次和尝试编号保护迟到回调。失败停止播放器，重试重新初始化。原视频定位/解码仍由浏览器完成，Eagle宿主停帧的具体根因尚未确认，独立窗口结果不能替代宿主验收；保留buffered、seeking、采样时长与媒体推进诊断。
+- Chromium 108 的video poster图加载失败也会在video上派发error，此时video.error为空，源视频仍可正常播放。主预览和主题比较onerror必须先检查MediaError，不能把封面失败当作媒体失败；已解码同源播放器展开时移除poster，不再发封面抽帧请求。兼容性验证须覆盖Eagle同版本运行环境及封面失败。
 - 改后端 Python 后必须重启 5006 服务（POST /api/v1/shutdown 再拉起）才生效
 - 主题打开性能：Search.restoreBrowsePosition先让首批绘制，再逐批恢复历史卡片/分组加载量；每批检查渲染代次、库和页面。scroll:false只在开始置顶，不覆盖用户在恢复期间的新滚动。片段归属仅更新当前详情，不遍历或重建全量结果；TopicRelations同库同签名共用在途读取，归属索引每256条设检查点、累计约8ms让出事件循环，完成后重新验证主题版本。被新快照取代使用AbortError，旧后台任务不能清空新缓存；不返回部分归属。真实大主题仍需读取/校验/解析资源，未承诺全库扫描总耗时下降。
 - 索引代表帧：插件 `indexFrameSelection` 默认 `content_adaptive`，可选 `triplet` / `dinov3_cses`，经 `/index.options.frame_selection` 传给后端。内容模式复用现有FG-CLIP2/CLIP特征，按代表性、最远点覆盖及时间平局规则选实际帧，余弦距离≤0.02时提前停止；`indexContentMaxFrames`→`content_max_frames` 默认12、范围1～32，无新增解码或推理。提交前分别检查health的 `capabilities.content_adaptive_frames` / `smart_frame_selection`，旧服务不静默忽略。DINOv3仅选帧，最终仍存当前检索模型向量；三种模式保持原镜头边界，按feature_count兼容旧schema，不自动重建已有素材。更多向量可能增加索引/搜索成本、改变max/mean和去重结果，真实质量未测评。`dinov3-cses`工具模型不出现在检索模型下拉。
@@ -77,10 +81,10 @@ Eagle（素材管理软件）的窗口插件，提供视频的语义检索：中
 - TopicUndo 会话栈每库最多 20 步、全会话估计载荷 64 MiB，仅对已记录且连续的同主题版本祖先重基；后来的更新/星标等版本间隙不可绕过。成功撤销留在来源页面，同主题刷新本地结果；输入框及打开面板内 Ctrl+Z 保留原生行为，繁忙时不撤销；不接管已有移除撤销或 Eagle 素材写入。
 - 主题 `favorite` 持久化，旧数据缺省 false；`setFavorite` 检查版本、递增 revision、保持 updatedAt，仅轻量元数据返回。仓库常用优先后按 updatedAt 排序，常用过滤与名称/分类取交集，选择范围复用可见排序；收录目标星标优先并显示分类。筛选偏好仅会话按库保留。
 - 普通搜索及主题共用结果内组合筛选，Search 的 `archiveFilter={query,source,tags,orientation,maxDur}` 与时间和 `view.minDur` 取交集。标签按中英文逗号拆分、完整名称忽略大小写且全部满足；画幅读 Eagle width/height，缺失或无效尺寸归 unknown；时长针对片段，边界包含，maxDur=null 不限。manual 以 manualScore 存在判断。筛选只变换显示、清除隐藏勾选，不发搜索或改写 recipe/matches，新增条件不写入持久化 view；按库和主题在会话保留，独立搜索快照可恢复，成功新搜索清空组合条件，原有最短时长偏好保留。
-- 跨主题归属和比较只读当前库的活动 matches，不计 removedMatches 或回收站。使用与 sceneLookup 一致的素材 ID/原始帧边界及旧路径别名规则；已知不同 ID 不混同。主题清单版本签名缓存，按主题顺序异步校验 matches 资源；读取期间版本改变或资源损坏明确失败，不返回伪空归属。收录/撤销、导航及结果重绘刷新归属。比较完整已存快照，提供共有/A 独有/B 独有，分批 60 个显示，不受本地筛选影响；刷新重新取快照，跨库拒绝旧面板操作。预览优先源文件，失败仅一次 get_clip 回退，不调用模型或改写主题。
+- 跨主题归属和比较只读当前库的活动 matches，不计 removedMatches 或回收站。使用与 sceneLookup 一致的素材 ID/原始帧边界及旧路径别名规则；已知不同 ID 不混同。主题清单版本签名缓存，按主题顺序异步校验 matches 资源；读取期间版本改变或资源损坏明确失败，不返回伪空归属。收录/撤销、导航及结果重绘刷新归属。比较完整已存快照，提供共有/A 独有/B 独有，分批 60 个显示，不受本地筛选影响；刷新重新取快照，跨库拒绝旧面板操作。预览只播放原文件，失败直接提示，不调用切片转码、模型或改写主题。
 - 浏览位置在会话内按库/主题保存，仓库恢复已加载批次与主题锚点。打开主题先用 `restoreBrowsePosition(position,{scroll:false})` 恢复排序、分组折叠及加载数量并停留顶部；历史 scrollTop>0 时提示 4000ms，点击「回到上次浏览位置」才按 sceneKey 锚点恢复滚动。入口绑定主题/库/导航代次，筛选排序或导航清除；同主题内部修改及返回独立搜索仍直接恢复。异步恢复须检查渲染代次及页面/库。原搜索位置在进入仓库前捕获，不能等结果容器隐藏后读取。恢复成功的非顶部提示显示 2000ms，再用 240ms 淡出，支持回到顶部及减少动画偏好。
 - 仓库选择范围使用当前筛选排序后的 ID，筛选后清除隐藏选择；每批60个主题，选择只更新 DOM，视图偏好通过 localStorage 安全降级。右键菜单单例、限制视口并支持 Esc。仓库包 UI 使用 `exportBundleAsync/importBundleAsync` 和 `js/archiveWorker.js`；兼容 v1 包，导入前核对派发时 fingerprint，后台操作期间禁止重复提交。线程中断必须报告写入结果未知，不能假称回滚。
-- 搜索取消仅取消等待，通过 AbortSignal 与代次丢弃迟到响应；不等同后端推理停止。分组每批60，最高分对整组计算。预览原生失败仅转码回退一次，重试重新初始化代次。
+- 搜索取消仅取消等待，通过 AbortSignal 与代次丢弃迟到响应；不等同后端推理停止。分组每批60，最高分对整组计算。原视频预览失败可重试，重试重新初始化代次，不再请求转码。
 - 缩略图懒加载只控制入队时机，实际请求统一走 ThumbLoader 的 6 并发。失败先释放槽位再排队备用图；换页仅取消未开始请求，已开始请求仍占槽直到完成。时间/时长及错误消息不可直接插入 HTML。
 - 索引列表提供 `revision: string|null`；搜索缓存键包含对应版本及服务地址，缺版本时禁缓存，缓存 5 分钟到期且读取不续期。历史失败项重试接入 Indexer 监视，全部终态、服务切换/重连清缓存；覆盖查询失败是未知状态，不能视为空库或触发自动索引。
 - 仓库备份目录 `revision-clock` 保留每库已使用版本高水位，写锁内先更新再提交清单，恢复不能回退版本；失败可留下版本间隙。主题导航用代次丢弃迟到读取，loadResults 的 `options.shouldApply` 在映射读取前后检查。
@@ -91,7 +95,7 @@ Eagle（素材管理软件）的窗口插件，提供视频的语义检索：中
 - 仓库：`warehouse/<库路径哈希>.json` 保存主题及分类，运行数据已 gitignore；旧 `saves/` 幂等导入且不删除。更新成功写盘后才载入新结果；`newKeys` 由 Eagle 素材 ID（旧数据回退路径）与原始帧边界构成。不要用偏移后的预览帧或排序下标识别新增。
 - 时间筛选：读取 Eagle `item.importedAt`（毫秒）；不用 modifiedAt、文件时间代替。范围在检索前经 `allowed_video_paths` 限制；空 Set 表示零候选，绝不能退回整库。
 - 主题栏保持紧凑：仅展示主题名、素材/片段数及更新时间，不展示分类名、新增计数和封面说明；不再提供只看新增筛选。封面操作仍在预览中，片段新增标记及存档差异数据保留。
-- 仓库卡片不放时间控件；打开主题后的时间控件即时本地筛选已存 matches，按 Eagle importedAt 判断，缺日期时排除；不限时间恢复全部快照。筛选状态按库和主题保留于会话内存，不写 recipe.time/matches/updatedAt，旧存档同样可筛选。独立“更新结果”操作才按原 recipe 重新搜索；旧存档更新前须补齐条件。搜索页工具栏时间仍是搜索前范围条件。自选 `cover` 保存 JPEG data URL 和来源帧，不改变搜索 updatedAt；更新结果必须保留 cover。转码预览的 currentTime 从 0 开始，换算源帧要加 previewOffsetFrame。
+- 仓库卡片不放时间控件；打开主题后的时间控件即时本地筛选已存 matches，按 Eagle importedAt 判断，缺日期时排除；不限时间恢复全部快照。筛选状态按库和主题保留于会话内存，不写 recipe.time/matches/updatedAt，旧存档同样可筛选。独立“更新结果”操作才按原 recipe 重新搜索；旧存档更新前须补齐条件。搜索页工具栏时间仍是搜索前范围条件。自选 `cover` 保存 JPEG data URL 和来源帧，不改变搜索 updatedAt；更新结果必须保留 cover。预览currentTime始终属于原视频，截图与逐帧不再使用转码偏移。
 
 ## 已踩过的坑（改 UI 前必读）
 

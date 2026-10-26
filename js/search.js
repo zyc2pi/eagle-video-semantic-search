@@ -2,7 +2,6 @@
 const Search = (() => {
   const CHUNK_SIZE = 60;        // 每批渲染的卡片数，滚动到底部续加（分组模式按组为粒度）
   const THUMB_CONCURRENCY = 6;  // 缩略图并发上限（每张图都是服务端一次 ffmpeg 抽帧进程）
-  const HOVER_DELAY_MS = 260;   // 悬停多少毫秒后开始播放，避免扫过误触发
   const PREVIEW_LEAD_IN_FRAMES = 2; // 跳过切点前两帧，避免转场/解码黑帧闪现
 
   let lastMatches = [];
@@ -15,6 +14,7 @@ const Search = (() => {
   let topicMembership = null;
   let topicMembershipStatus = '主题归属…';
   const cardMatches = new WeakMap();
+  const matchThumbnails = new WeakMap();
   let renderGeneration = 0;
   let busy = false;
   let requestGeneration = 0;
@@ -51,7 +51,8 @@ const Search = (() => {
   let activeMatch = null;
   let previewLoadToken = 0;     // 连续切换结果时废弃上一轮异步媒体事件
   let sentinelObserver = null;
-  let previewOffsetFrame = 0; // 转码片段的起点；源视频直播放时为 0。
+  let cancelPreviewLoad = () => {};
+  let previewDiag = null;      // 临时诊断：当前预览的播放采样记录器
 
   const el = {};
 
@@ -109,14 +110,22 @@ const Search = (() => {
   })();
 
   /* ---------- 悬停自动播放（小窗静音循环该片段） ---------- */
-  const hover = { timer: null, video: null, box: null };
+  const hover = { video: null, box: null, diag: null };
+
+  function clearPreviewMediaEvents(video) {
+    for (const name of ['loadedmetadata', 'seeked', 'timeupdate', 'playing', 'waiting', 'pause', 'ended', 'error', 'canplay', 'loadeddata', 'progress']) {
+      video[`on${name}`] = null;
+    }
+  }
 
   function stopHoverPreview() {
-    if (hover.timer) {
-      clearTimeout(hover.timer);
-      hover.timer = null;
+    if (hover.diag) {
+      hover.diag.mark('hover-stop');
+      hover.diag.flush();
+      hover.diag = null;
     }
     if (hover.video) {
+      clearPreviewMediaEvents(hover.video);
       hover.video.pause();
       hover.video.removeAttribute('src');
       hover.video.load();
@@ -130,8 +139,10 @@ const Search = (() => {
   }
 
   function startHoverPreview(box, m) {
+    // 当前大预览已持有此片段，不再为同一张卡片创建第二个解码器。
+    if (activeMatch === m) return;
     const item = Bridge.itemForPath(m.video_path);
-    // 只对 <video> 可直接播放的格式做悬停预览；mkv/avi/flv 悬停转码代价太高，保持点击预览
+    // 悬停仅尝试常用浏览器格式；其他格式点击后也只播放原文件，不转码。
     if (!item || !item.fileURL || !Bridge.isWebPlayable(item)) return;
 
     const fps = m.fps || 25;
@@ -143,8 +154,9 @@ const Search = (() => {
     v.muted = true;
     v.playsInline = true;
     v.preload = 'auto';
-    v.src = item.fileURL;
     let revealRequested = false;
+    let located = false;
+    let starting = false;
 
     const revealAfterPaint = () => {
       if (revealRequested || hover.video !== v) return;
@@ -161,33 +173,51 @@ const Search = (() => {
     };
 
     const playFromScene = () => {
-      if (hover.video !== v) return;
-      v.play().then(revealAfterPaint).catch(() => {});
+      if (hover.video !== v || starting || !located) return;
+      starting = true;
+      diag.mark('play');
+      v.play().then(() => { diag.mark('play-ok'); revealAfterPaint(); }).catch((error) => {
+        diag.mark('play-error', error.name);
+        if (hover.video === v && error.name !== 'AbortError') stopHoverPreview();
+      });
     };
     v.onloadedmetadata = () => {
-      if (Math.abs(v.currentTime - startSec) < 0.04) playFromScene();
-      else v.currentTime = startSec;
+      located = true;
+      if (Math.abs(v.currentTime - startSec) >= 0.04) v.currentTime = startSec;
+      playFromScene();
     };
-    v.onseeked = playFromScene;
+    v.onseeked = () => { located = true; playFromScene(); };
+    v.oncanplay = playFromScene;
+    v.onprogress = playFromScene;
+    v.onplaying = () => diag.mark('playing');
     v.onerror = () => {
+      if (v.error) diag.mark('error', `${v.error.code}:${String(v.error.message || '').slice(0, 40)}`);
       if (hover.video === v) stopHoverPreview();
     };
     v.ontimeupdate = () => {
       if (v.currentTime >= endSec) v.currentTime = startSec; // 片段内循环
     };
+    const diag = PreviewDiag.begin({
+      mode: 'hover',
+      video: v,
+      clip: m.video_name,
+      file: item.fileURL,
+      scene: [m.start_frame, m.end_frame],
+      srcKind: 'file',
+    });
+    diag.setPath('hover', 'file');
     box.appendChild(v);
     box.classList.add('hovering');
     hover.video = v;
     hover.box = box;
+    hover.diag = diag;
+    v.src = item.fileURL;
   }
 
   function bindHover(box, m) {
     box.addEventListener('mouseenter', () => {
       stopHoverPreview();
-      hover.timer = setTimeout(() => {
-        hover.timer = null;
-        startHoverPreview(box, m);
-      }, HOVER_DELAY_MS);
+      startHoverPreview(box, m);
     });
     box.addEventListener('mouseleave', stopHoverPreview);
   }
@@ -540,6 +570,7 @@ const Search = (() => {
     img.className = 'thumb';
     img.alt = m.video_name;
     img.draggable = false;
+    matchThumbnails.set(m, img);
     thumbBox.appendChild(img);
     ThumbLoader.load(img, Api.previewUrl(m.video_path, thumbFrame(m)));
     bindHover(thumbBox, m);
@@ -882,83 +913,378 @@ const Search = (() => {
     return true;
   }
 
+  /* ---------- 预览诊断（临时：把真实播放数据追加到 <插件目录>/preview-diag.log） ---------- */
+  const PreviewDiag = (() => {
+    const SAMPLE_MS = 2000;   // 起播后采样多久的帧间隔
+    const now = () => (typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now());
+    function logPath() {
+      try {
+        // 写到系统临时目录，避免往插件目录写文件触发 Eagle 的重载监听
+        return require('path').join(require('os').tmpdir(), 'eagle-preview-diag.log');
+      } catch (error) { return ''; }
+    }
+    function push(record) {
+      const file = logPath();
+      if (!file) return;
+      try {
+        require('fs').appendFileSync(file, JSON.stringify(record) + '\n');
+        if (require('fs').statSync(file).size > 512 * 1024) require('fs').writeFileSync(file, '');
+      } catch (error) { /* 诊断失败不影响播放 */ }
+    }
+    function elementInfo(video) {
+      const rect = video.getBoundingClientRect ? video.getBoundingClientRect() : null;
+      const panel = el.previewPanel;
+      const workspace = typeof document.querySelector === 'function'
+        ? document.querySelector('.result-workspace') : null;
+      return {
+        box: rect ? `${Math.round(rect.width)}x${Math.round(rect.height)}` : '',
+        panelHidden: !!(panel && panel.classList.contains('hidden')),
+        panelState: (panel && panel.dataset.state) || '',
+        layout: (workspace && workspace.dataset.previewLayout) || '',
+      };
+    }
+    function begin(meta) {
+      if (!logPath()) return { mark() {}, setPath() {}, flush() {} };
+      const t0 = now();
+      const rec = {
+        at: new Date().toISOString(),
+        mode: meta.mode,
+        path: '',
+        clip: meta.clip || '',
+        scene: meta.scene || null,
+        file: meta.file || '',
+        srcKind: meta.srcKind || '',
+        events: [],
+      };
+      if (typeof navigator !== 'undefined' && navigator.userAgent) {
+        const chrome = /Chrome\/([\d.]+)/.exec(navigator.userAgent);
+        rec.chrome = chrome ? chrome[1] : navigator.userAgent;
+      }
+      let sampling = false;
+      let finished = false;
+      let sampleTimer = null;
+      const finish = () => {
+        if (finished) return;
+        finished = true;
+        if (sampleTimer !== null) clearTimeout(sampleTimer);
+        sampleTimer = null;
+        const video = meta.video;
+        const quality = video && video.getVideoPlaybackQuality ? video.getVideoPlaybackQuality() : null;
+        if (video) {
+          rec.video = `${video.videoWidth}x${video.videoHeight}`;
+          rec.readyState = video.readyState;
+          rec.networkState = video.networkState;
+          rec.seeking = video.seeking;
+          rec.currentTime = video.currentTime;
+          rec.buffered = [];
+          for (let i = 0; i < (video.buffered?.length || 0); i += 1) {
+            rec.buffered.push([video.buffered.start(i), video.buffered.end(i)]);
+          }
+          rec.paused = video.paused;
+          rec.currentSrc = (video.currentSrc || '').slice(0, 160);
+          rec.muted = video.muted;
+          rec.rate = video.playbackRate;
+          rec.controls = !!video.controls;
+          Object.assign(rec, elementInfo(video));
+          try { rec.videos = document.querySelectorAll('video').length; } catch (error) { /* ignore */ }
+        }
+        if (quality) rec.droppedTotal = quality.droppedVideoFrames;
+        push(rec);
+      };
+      const sample = () => {
+        sampling = true;
+        const video = meta.video;
+        const sampleStarted = now();
+        const mediaStarted = video ? video.currentTime : 0;
+        const startQuality = video && video.getVideoPlaybackQuality ? video.getVideoPlaybackQuality() : null;
+        const gaps = [];
+        const rafGaps = [];
+        let last = null;
+        let lastRaf = null;
+        const onRaf = (time) => {
+          if (finished) return;
+          if (lastRaf !== null) rafGaps.push(+(time - lastRaf).toFixed(1));
+          lastRaf = time;
+          if (now() - t0 < SAMPLE_MS) requestAnimationFrame(onRaf);
+        };
+        if (typeof requestAnimationFrame === 'function') requestAnimationFrame(onRaf);
+        const onFrame = (time) => {
+          if (finished) return;
+          if (last !== null) gaps.push(+(time - last).toFixed(1));
+          last = time;
+          if (now() - t0 < SAMPLE_MS && typeof video.requestVideoFrameCallback === 'function') {
+            video.requestVideoFrameCallback(onFrame);
+          } else {
+            stop();
+          }
+        };
+        const stop = () => {
+          if (finished) return;
+          const endQuality = video && video.getVideoPlaybackQuality ? video.getVideoPlaybackQuality() : null;
+          rec.sampleMs = Math.round(now() - sampleStarted);
+          rec.advanced = video ? +(video.currentTime - mediaStarted).toFixed(3) : 0;
+          rec.frames = gaps.length;
+          rec.gapMean = gaps.length ? +(gaps.reduce((a, b) => a + b, 0) / gaps.length).toFixed(1) : 0;
+          rec.gapMax = gaps.length ? +Math.max(...gaps).toFixed(1) : 0;
+          rec.gapOver40 = gaps.filter((g) => g > 40).length;
+          rec.rafFrames = rafGaps.length;
+          rec.rafGapMean = rafGaps.length ? +(rafGaps.reduce((a, b) => a + b, 0) / rafGaps.length).toFixed(1) : 0;
+          rec.rafGapMax = rafGaps.length ? +Math.max(...rafGaps).toFixed(1) : 0;
+          rec.rafGapOver40 = rafGaps.filter((g) => g > 40).length;
+          if (startQuality && endQuality) {
+            rec.dropped = endQuality.droppedVideoFrames - startQuality.droppedVideoFrames;
+            rec.decoded = endQuality.totalVideoFrames - startQuality.totalVideoFrames;
+          }
+          finish();
+        };
+        sampleTimer = setTimeout(stop, SAMPLE_MS + 1500);
+        if (video && typeof video.requestVideoFrameCallback === 'function') video.requestVideoFrameCallback(onFrame);
+      };
+      return {
+        mark(name, extra) {
+          if (finished) return;
+          rec.events.push(extra === undefined ? `${name}@${Math.round(now() - t0)}` : `${name}(${extra})@${Math.round(now() - t0)}`);
+          if (name === 'playing' && !sampling) sample();
+        },
+        setPath(path, srcKind) {
+          rec.path = path;
+          if (srcKind) rec.srcKind = srcKind;
+        },
+        flush: finish,
+      };
+    }
+    function boot() {
+      const rec = { at: new Date().toISOString(), mode: 'boot', file: logPath() };
+      if (typeof navigator !== 'undefined' && navigator.userAgent) rec.ua = navigator.userAgent;
+      const workspace = typeof document.querySelector === 'function' ? document.querySelector('.result-workspace') : null;
+      if (workspace) rec.layout = workspace.dataset.previewLayout || '';
+      if (typeof window !== 'undefined') rec.window = `${window.innerWidth}x${window.innerHeight}@${window.devicePixelRatio}`;
+      push(rec);
+    }
+    return { begin, boot };
+  })();
+  if (typeof document !== 'undefined') {
+    try { PreviewDiag.boot(); } catch (error) { /* 诊断不可用时忽略 */ }
+  }
+
   function openPreview(match) {
+    cancelPreviewLoad();
+    if (previewDiag) { previewDiag.mark('superseded'); previewDiag.flush(); previewDiag = null; }
+    const item = Bridge.itemForPath(match.video_path);
+    const warmVideo = hover.video;
+    const fps = match.fps || 25;
+    const startFrame = previewStartFrame(match);
+    const startSec = startFrame / fps;
+    const endSec = match.end_frame / fps;
+    let tookOver = false;
+    if (warmVideo && item?.fileURL === warmVideo.getAttribute('src') && !warmVideo.error) {
+      // 连正在加载的播放器一起接管，随后定位回片段开头，不重新加载源文件。
+      tookOver = true;
+      hover.video = null;
+      const previous = el.previewVideo;
+      clearPreviewMediaEvents(warmVideo);
+      warmVideo.controls = true; warmVideo.muted = previous.muted;
+      warmVideo.volume = previous.volume; warmVideo.playbackRate = previous.playbackRate;
+      clearPreviewMediaEvents(previous);
+      previous.pause(); previous.removeAttribute('src'); previous.load();
+      warmVideo.id = 'preview-video'; warmVideo.className = '';
+      previous.replaceWith(warmVideo);
+      el.previewVideo = warmVideo;
+    }
     stopHoverPreview();
     const changed = activeMatch !== match;
     activeMatch = match;
     document.dispatchEvent(new CustomEvent('preview-change'));
     const loadToken = ++previewLoadToken;
-    const item = Bridge.itemForPath(match.video_path);
-    const fps = match.fps || 25;
-    const startFrame = previewStartFrame(match);
-    const startSec = startFrame / fps;
-    const endSec = match.end_frame / fps;
-
     const video = el.previewVideo;
-    video.onloadedmetadata = null;
-    video.onseeked = null;
-    video.ontimeupdate = null;
-    video.onplaying = null;
-    video.onerror = null;
+    clearPreviewMediaEvents(video);
     video.pause();
-    previewOffsetFrame = 0;
-    video.poster = Api.previewUrl(match.video_path, thumbFrame(match));
+    video.preload = 'auto';
+    if (item?.fileURL && video.getAttribute?.('src') === item.fileURL && video.readyState >= 2 && !video.error) {
+      // 已有解码画面时不再请求封面，避免抽帧请求干扰正在播放的源视频。
+      video.removeAttribute('poster');
+    } else {
+      const thumbnail = matchThumbnails.get(match);
+      const poster = thumbnail?.complete && thumbnail.naturalWidth > 0 ? thumbnail.currentSrc || thumbnail.src : item?.thumbnailURL;
+      if (poster) video.poster = poster;
+      else video.removeAttribute('poster');
+    }
+    const diag = PreviewDiag.begin({
+      mode: 'preview',
+      video,
+      clip: match.video_name,
+      file: (item && item.fileURL) || '',
+      scene: [match.start_frame, match.end_frame],
+      srcKind: item && item.fileURL ? 'file' : 'missing',
+    });
+    diag.setPath(tookOver ? 'takeover' : 'unknown');
+    diag.mark('begin', `readyState=${video.readyState}`);
+    previewDiag = diag;
 
     const isCurrent = () => loadToken === previewLoadToken;
-    let fallbackUsed = false;
+    let positioned = false;
+    let pendingPlayback = true;
+    let attempt = 0;
+    let stallTimer = null;
+    let bufferingTimer = null;
+    let nativeReloaded = false;
+    let locateNative = null;
+    let lastPlaybackTime = null;
+    const clearStallTimer = () => {
+      if (stallTimer !== null) clearTimeout(stallTimer);
+      stallTimer = null;
+    };
+    cancelPreviewLoad = () => {
+      clearStallTimer();
+      if (bufferingTimer !== null) clearTimeout(bufferingTimer);
+      bufferingTimer = null;
+      pendingPlayback = false;
+      attempt += 1;
+    };
     const setPreviewState = (state, message) => {
       if (!isCurrent()) return;
+      if (bufferingTimer !== null) clearTimeout(bufferingTimer);
+      bufferingTimer = null;
       el.previewPanel.dataset.state = state;
       el.previewStatus.textContent = message;
       el.previewStatus.hidden = !message;
       el.previewRetry.hidden = state !== 'error';
     };
     setPreviewState('loading', '正在加载预览…');
-    const fail = () => setPreviewState('error', '预览失败：素材不可读取、编码不支持或转码服务不可用。可重试预览。');
-    const playCurrent = () => {
+    const fail = (message = '无法直接播放原视频，请重试或在 Eagle 中打开素材。') => {
       if (!isCurrent()) return;
-      setPreviewState('ready', fallbackUsed ? '转码预览已就绪' : '');
-      video.play().catch((error) => {
-        if (!isCurrent() || error.name === 'AbortError') return;
-        if (error.name === 'NotAllowedError') setPreviewState('ready', '预览已就绪，请点击播放');
-        else if (fallbackUsed) fail();
-        else useClipFallback();
+      diag.mark('fail');
+      cancelPreviewLoad();
+      clearPreviewMediaEvents(video);
+      video.pause();
+      setPreviewState('error', message);
+    };
+    const watchForStall = () => {
+      if (!isCurrent() || stallTimer !== null) return;
+      const watchedAttempt = attempt;
+      lastPlaybackTime = video.currentTime;
+      const timer = setTimeout(() => {
+        if (!isCurrent() || watchedAttempt !== attempt || stallTimer !== timer) return;
+        stallTimer = null;
+        diag.mark('stall-timeout', 'native');
+        if (!nativeReloaded && locateNative) {
+          // 解码管线可能在接管/seek 后停住，仅重开原文件一次。
+          nativeReloaded = true;
+          attempt += 1;
+          pendingPlayback = true;
+          positioned = false;
+          video.pause();
+          const reloadAttempt = attempt;
+          video.onloadedmetadata = () => {
+            if (!isCurrent() || attempt !== reloadAttempt) return;
+            video.onloadedmetadata = locateNative;
+            locateNative();
+          };
+          diag.mark('native-reload');
+          setPreviewState('native', '正在重新加载预览…');
+          video.load();
+          watchForStall();
+        } else fail('原视频播放停滞，请重试或在 Eagle 中打开素材。');
+      }, 1500);
+      stallTimer = timer;
+    };
+    const playCurrent = () => {
+      if (!isCurrent() || !pendingPlayback || !positioned) return;
+      // play() 本身会等待浏览器缓冲，并驱动继续读取；额外门槛只会推迟起播。
+      pendingPlayback = false;
+      video.onloadedmetadata = null;
+      video.onseeked = null;
+      video.oncanplay = null; video.onloadeddata = null; video.onprogress = null;
+      const playingAttempt = attempt;
+      diag.mark('play');
+      video.play().then(() => {
+        if (!isCurrent() || playingAttempt !== attempt) return;
+        diag.mark('play-ok');
+        setPreviewState('ready', '');
+      }).catch((error) => {
+        if (!isCurrent() || playingAttempt !== attempt || error.name === 'AbortError') return;
+        diag.mark('play-error', error.name);
+        if (error.name === 'NotAllowedError') {
+          clearStallTimer();
+          setPreviewState('ready', '预览已就绪，请点击播放');
+        }
+        else fail();
       });
     };
 
-    const useClipFallback = () => {
-      // mkv/avi/flv、编码不支持或素材已删：走服务端转码片段
+    video.oncanplay = playCurrent; video.onloadeddata = playCurrent; video.onprogress = playCurrent;
+    video.onplaying = () => {
       if (!isCurrent()) return;
-      if (fallbackUsed) { fail(); return; }
-      fallbackUsed = true;
-      setPreviewState('transcoding', '正在请求转码预览…');
-      video.onerror = fail;
-      video.onseeked = null;
-      video.ontimeupdate = null;
-      previewOffsetFrame = startFrame;
-      video.src = Api.clipUrl(match.video_path, startFrame, match.end_frame);
-      video.onloadedmetadata = playCurrent;
+      diag.mark('playing');
+      if (!pendingPlayback && !video.seeking) {
+        watchForStall();
+        setPreviewState('ready', '');
+      }
+    };
+    video.onwaiting = () => {
+      if (isCurrent() && !video.paused) {
+        diag.mark('waiting', video.currentTime.toFixed(2));
+        if (bufferingTimer === null) {
+          const noticeAttempt = attempt;
+          const timer = setTimeout(() => {
+            if (bufferingTimer !== timer) return;
+            bufferingTimer = null;
+            if (isCurrent() && attempt === noticeAttempt && !video.paused) setPreviewState('buffering', '正在缓冲预览…');
+          }, 200);
+          bufferingTimer = timer;
+        }
+        watchForStall();
+      }
+    };
+    video.onpause = video.onended = () => {
+      if (!isCurrent() || !video.paused || pendingPlayback) return;
+      diag.mark('paused');
+      diag.flush();
+      cancelPreviewLoad();
+      setPreviewState('ready', '');
+    };
+    video.ontimeupdate = () => {
+      if (!isCurrent()) return;
+      // playing/play() 成功可能只跟着一帧；按播放速度累计足够进度才算恢复。
+      const minProgress = 0.25 * Math.min(1, video.playbackRate || 1);
+      if (!pendingPlayback && !video.paused && !video.seeking && Math.abs(video.currentTime - lastPlaybackTime) >= minProgress) {
+        lastPlaybackTime = video.currentTime;
+        clearStallTimer();
+        setPreviewState('ready', '');
+      }
+      if (video.currentTime >= endSec) video.pause();
     };
 
-    if (item && item.fileURL && Bridge.isWebPlayable(item)) {
+    if (item && item.fileURL) {
       setPreviewState('native', '正在加载源视频…');
-      // 直接播源文件，秒开且不产生转码缓存
-      video.src = item.fileURL;
-      video.onerror = useClipFallback;
-      video.onloadedmetadata = () => {
-        if (!isCurrent()) return;
-        if (Math.abs(video.currentTime - startSec) < 0.04) playCurrent();
-        else {
-          // 只在初次定位后自动播放；用户暂停选帧时，后续 seek 不应重新播放。
-          video.onseeked = () => { video.onseeked = null; playCurrent(); };
+      diag.setPath(tookOver ? 'takeover' : 'native', 'file');
+      // Chromium 108 的 poster 失败也会向 video 派发 error，但不设置 MediaError。
+      video.onerror = () => {
+        if (!video.error) { diag.mark('error-empty'); return; }
+        diag.mark('error', `${video.error.code}:${String(video.error.message || '').slice(0, 40)}`);
+        fail();
+      };
+      watchForStall();
+      const locate = () => {
+        if (!isCurrent() || video.onloadedmetadata !== locate) return;
+        video.onloadedmetadata = null;
+        if (Math.abs(video.currentTime - startSec) >= 0.04) {
+          diag.mark('seek', `${video.currentTime.toFixed(2)}->${startSec.toFixed(2)}`);
           video.currentTime = startSec;
         }
+        // 先发定位再 play；浏览器在定位完成后起播，同时驱动被暂停的预加载。
+        positioned = true;
+        playCurrent();
       };
-      video.ontimeupdate = () => {
-        if (isCurrent() && video.currentTime >= endSec) video.pause();
-      };
+      locateNative = locate;
+      video.onloadedmetadata = locate;
+      if (video.getAttribute?.('src') === item.fileURL && !video.error) {
+        diag.mark('reuse-src', `readyState=${video.readyState}`);
+        if (video.readyState >= 1) locate();
+      } else { diag.mark('src-set'); video.src = item.fileURL; }
     } else {
-      useClipFallback();
+      diag.setPath('missing', 'missing');
+      fail('原视频已不在当前 Eagle 库中，请刷新结果。');
     }
 
     const hybridInfo = match.both_hit
@@ -983,17 +1309,16 @@ const Search = (() => {
   }
 
   function closePreview() {
+    cancelPreviewLoad();
     previewLoadToken += 1;
     activeMatch = null;
     activePos = -1;
+    if (previewDiag) { previewDiag.mark('close'); previewDiag.flush(); previewDiag = null; }
     document.getElementById('inspector-empty')?.classList.remove('hidden');
     el.results?.querySelectorAll('.preview-active').forEach((card) => card.classList.remove('preview-active'));
     if (el.previewVideo) {
+      clearPreviewMediaEvents(el.previewVideo);
       el.previewVideo.pause();
-      el.previewVideo.onloadedmetadata = null;
-      el.previewVideo.onseeked = null;
-      el.previewVideo.ontimeupdate = null;
-      el.previewVideo.onerror = null;
       el.previewVideo.removeAttribute('src');
       el.previewVideo.removeAttribute('poster');
       el.previewVideo.load();
@@ -1004,7 +1329,7 @@ const Search = (() => {
 
   async function captureFrame() {
     const token = previewLoadToken;
-    const cover = await CoverFrame.capture(el.previewVideo, activeMatch, previewOffsetFrame);
+    const cover = await CoverFrame.capture(el.previewVideo, activeMatch);
     if (token !== previewLoadToken) throw new Error('预览素材已切换，请重新选择画面');
     return cover;
   }
@@ -1017,7 +1342,10 @@ const Search = (() => {
       throw new Error('请等待视频加载或定位完成');
     }
     video.pause();
+    cancelPreviewLoad();
+    video.onloadedmetadata = null;
     video.onseeked = null;
+    video.oncanplay = null; video.onloadeddata = null; video.onprogress = null;
     video.currentTime = CoverFrame.stepTime(video.currentTime, direction, Number(activeMatch.fps) || 25, video.duration);
   }
 

@@ -189,21 +189,22 @@ const TopicRelations = (() => {
     const video = $('relations-video');
     const start = match.start_frame / (match.fps || 30);
     const end = match.end_frame / (match.fps || 30);
-    let fallback = false;
     video.classList.remove('hidden');
     $('relations-preview-status').textContent = match.video_name || path;
     video.onloadedmetadata = () => {
       if (!validPreview()) return;
-      video.currentTime = fallback ? 0 : start;
-      video.play().catch(() => {});
+      video.currentTime = start;
+      video.play().catch((error) => {
+        if (!validPreview() || error.name === 'AbortError') return;
+        $('relations-preview-status').textContent = error.name === 'NotAllowedError'
+          ? '请点击播放原视频' : '无法直接播放原视频，请在 Eagle 中打开素材';
+      });
     };
-    video.ontimeupdate = () => { if (validPreview() && !fallback && video.currentTime >= end) video.pause(); };
+    video.ontimeupdate = () => { if (validPreview() && video.currentTime >= end) video.pause(); };
     video.onerror = () => {
-      if (!validPreview()) return;
-      if (fallback) { $('relations-preview-status').textContent = '预览失败，请检查素材路径及本地服务后重试'; return; }
-      fallback = true;
-      $('relations-preview-status').textContent = '正在加载片段预览…';
-      video.src = Api.clipUrl(path, match.start_frame, match.end_frame);
+      if (!validPreview() || !video.error) return;
+      video.pause();
+      $('relations-preview-status').textContent = '无法直接播放原视频，请在 Eagle 中打开素材';
     };
     video.src = item?.fileURL || `file:///${String(path).replace(/\\/g, '/')}`;
     video.load();

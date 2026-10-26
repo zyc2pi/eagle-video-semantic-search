@@ -12,10 +12,14 @@ async function main() {
   let page;
   let fixtureDir;
   const errors = [];
+  const clipRequests = [];
   try {
     const context = await browser.newContext({ viewport: { width: 1100, height: 720 } });
     page = await context.newPage();
     page.on('pageerror', (error) => errors.push(error.message));
+    page.on('request', (request) => {
+      if (/\/(get_clip|prepare_edit_clip|clip_file)(?:[?\/]|$)/.test(request.url())) clipRequests.push(request.url());
+    });
     await page.route('**/*', (route) => route.fulfill({ status: 200, body: '' }));
     await page.goto('http://warehouse.fixture/');
     const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8')
@@ -110,13 +114,10 @@ async function main() {
       window.fetch = async (url, init) => {
         let result;
         if (url.includes('/indexes')) result = { indexes: [{ model: 'qihoo360-fg-clip2-base', name: 'eagle_v2_fixture_qihoo360-fg-clip2-base.lance', path: 'fixture.lance' }] };
-        else if (url.endsWith('/health')) result = { success: true, protocol_version: 2, capabilities: { library_identity: true, index_jobs_v2: true, edit_clip: true } };
-        else if (url.endsWith('/prepare_edit_clip')) {
-          (window.__clipRequests ||= []).push(JSON.parse(init.body));
-          if (window.__clipDelay) await new Promise((resolve) => { window.__releaseClip = resolve; });
-          if (window.__clipFail) return { ok: false, status: 500, json: async () => ({ success: false, error: '模拟片段生成失败' }) };
-          files.set('D:/edit-clips/clip.mp4', 'prepared video');
-          result = { success: true, output_path: 'D:/edit-clips/clip.mp4' };
+        else if (url.endsWith('/health')) result = { success: true, protocol_version: 2, capabilities: { library_identity: true, index_jobs_v2: true } };
+        else if (/\/(get_clip|prepare_edit_clip|clip_file)(?:[?\/]|$)/.test(url)) {
+          (window.__clipRequests ||= []).push(url);
+          throw new Error('预览和拖拽禁止请求片段生成');
         }
         else if (url.endsWith('/libraries/resolve')) result = { success: true, library: { id: 'fixture', path: 'D:/fixture.library', index_name: 'eagle_v2_fixture' } };
         else if (url.includes('/index/jobs')) result = { jobs: [] };
@@ -164,6 +165,18 @@ async function main() {
       window.__delayService = delay;
       window.__create({ path: '/fixture-plugin' }); await window.__show();
     }, !!process.env.WAREHOUSE_LAYOUT_ONLY);
+    if (process.env.WAREHOUSE_PREVIEW_ONLY) {
+      fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eagle-warehouse-media-'));
+      const videoPath = path.join(fixtureDir, 'preview.mp4');
+      execFileSync(process.env.FFMPEG || 'ffmpeg', ['-hide_banner', '-loglevel', 'error',
+        '-f', 'lavfi', '-i', 'testsrc2=size=1280x720:rate=25', '-t', '12',
+        '-c:v', 'libx264', '-preset', 'ultrafast', '-g', '150', '-pix_fmt', 'yuv420p',
+        '-movflags', '+faststart', videoPath], { windowsHide: true, timeout: 20000 });
+      await runPreviewPlaybackSmoke(page, fs.readFileSync(videoPath).toString('base64'));
+      assert.deepStrictEqual(errors, []);
+      console.log('hover warm-player reuse, playback buffering and same-source seeking smoke passed');
+      return;
+    }
     if (process.env.WAREHOUSE_LAYOUT_ONLY) {
       await runCompactLayoutSmoke(page);
       await runMediaDragSmoke(page);
@@ -977,11 +990,13 @@ async function main() {
     })));
     throw error;
   } finally {
+    const fetchClipRequests = page && !page.isClosed() ? await page.evaluate(() => window.__clipRequests || []) : [];
     await browser.close();
     if (fixtureDir && path.dirname(fixtureDir) === os.tmpdir()
         && path.basename(fixtureDir).startsWith('eagle-warehouse-media-')) {
       fs.rmSync(fixtureDir, { recursive: true, force: true });
     }
+    assert.deepStrictEqual([...clipRequests, ...fetchClipRequests], [], '原视频预览、媒体失败与拖出均不请求切片转码');
   }
 }
 async function runRemovalSmoke(page) {
@@ -2043,6 +2058,9 @@ async function runCompactLayoutSmoke(page) {
   await page.locator('#query').fill('侧栏布局验证');
   await page.locator('#btn-search').click();
   await page.waitForFunction(() => Search.getRawMatches().length > 0);
+  const actionHeights = await page.locator('#view-bar > button, #view-bar > .compact-menu > summary').evaluateAll((nodes) => nodes
+    .filter((node) => node.getBoundingClientRect().height > 0).map((node) => node.getBoundingClientRect().height));
+  assert(actionHeights.every((height) => height === 28), '下拉菜单与普通操作按钮等高');
   assert(await page.locator('#inspector-empty').isVisible());
   const fixture = await page.evaluate(() => {
     Object.assign(window.__items[0], { width: 1920, height: 1080, size: 10485760, star: 3,
@@ -2136,6 +2154,41 @@ async function runCompactLayoutSmoke(page) {
     requests: window.__requests.length, files: JSON.stringify([...window.__files]),
   })), layoutSnapshot, '切换布局保留当前片段与结果，不搜索或写仓库');
   assert.strictEqual(await page.locator('#results .pick:checked').count(), 1);
+  await selectPreviewLayout(page, 'top');
+  await page.setViewportSize({ width: 1100, height: 900 });
+  const vertical = page.locator('#preview-resizer');
+  assert(await vertical.isVisible());
+  await page.waitForFunction(() => document.getElementById('preview-resizer').getAttribute('aria-valuemax') > 400);
+  const initialHeight = await page.locator('#preview-panel').evaluate((node) => node.getBoundingClientRect().height);
+  const firstVideoHeight = await page.locator('#preview-video').evaluate((node) => node.getBoundingClientRect().height);
+  const divider = await vertical.boundingBox();
+  await page.mouse.move(divider.x + divider.width / 2, divider.y + divider.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(divider.x + divider.width / 2, divider.y + divider.height / 2 + 80, { steps: 5 });
+  await page.mouse.up();
+  assert(Math.abs(await page.locator('#preview-panel').evaluate((node) => node.getBoundingClientRect().height) - initialHeight - 80) <= 1,
+    '横向接缝往下拖增大顶部预览');
+  assert(await page.locator('#preview-video').evaluate((node) => node.getBoundingClientRect().height) > firstVideoHeight,
+    '调整高度同时放大画面');
+  assert.strictEqual(Number(await page.evaluate(() => localStorage.getItem('eagle-semantic-preview-height'))), Math.round(initialHeight + 80));
+  await vertical.focus();
+  await page.keyboard.press('ArrowUp');
+  assert.strictEqual(Number(await vertical.getAttribute('aria-valuenow')), Math.round(initialHeight + 70));
+  await page.keyboard.press('Home');
+  assert.strictEqual(await vertical.getAttribute('aria-valuenow'), await vertical.getAttribute('aria-valuemin'));
+  await page.keyboard.press('End');
+  assert.strictEqual(await vertical.getAttribute('aria-valuenow'), await vertical.getAttribute('aria-valuemax'));
+  const preferredHeight = await page.evaluate(() => localStorage.getItem('eagle-semantic-preview-height'));
+  await page.setViewportSize({ width: 1100, height: 600 });
+  await page.waitForFunction(() => document.getElementById('results').getBoundingClientRect().height >= 199);
+  assert.strictEqual(await page.evaluate(() => localStorage.getItem('eagle-semantic-preview-height')), preferredHeight,
+    '缩小窗口限高但不覆盖偏好');
+  await page.locator('#btn-close-preview').click();
+  assert(!(await vertical.isVisible()), '收起预览后隐藏高度接缝');
+  await page.locator('#results .card .name').first().click();
+  assert(await vertical.isVisible());
+  await selectPreviewLayout(page, 'sidebar');
+  await page.setViewportSize({ width: 1100, height: 740 });
   await revealControl(page, '#btn-clear-selection');
   await page.locator('#btn-clear-selection').click();
   await page.locator('#result-filter-menu summary').click();
@@ -2145,11 +2198,22 @@ async function runCompactLayoutSmoke(page) {
   await page.waitForFunction((name) => document.getElementById('topic-name').textContent === name, fixture.name);
   assert(await page.locator('#btn-organize-undo').isVisible(), '具体主题内显示撤销整理');
   assert.strictEqual(await page.locator('#view-bar #btn-save-results + #btn-organize-undo').count(), 1);
+  await selectPreviewLayout(page, 'top');
   await page.locator('#btn-archives').click();
   await page.waitForFunction(() => document.body.dataset.page === 'warehouse');
+  assert.strictEqual(await page.locator('.result-workspace').evaluate((node) => getComputedStyle(node).display), 'none',
+    '顶部模式进入仓库时，主题结果工作区必须整体隐藏');
+  const warehouseBounds = await page.locator('#warehouse-page').boundingBox();
+  assert(Math.abs(warehouseBounds.y + warehouseBounds.height - 740) <= 1, '仓库占满工具栏下方剩余高度');
+  assert(!(await page.locator('#warehouse-topic').isVisible()));
+  assert(!(await page.locator('#view-bar').isVisible()));
+  assert(!(await page.locator('#results').isVisible()));
   assert(!(await page.locator('#btn-organize-undo').isVisible()), '仓库列表不显示撤销整理');
   assert(await page.locator('#btn-settings').isVisible());
   await page.locator('#warehouse-back').click();
+  assert.strictEqual(await page.locator('.result-workspace').evaluate((node) => getComputedStyle(node).display), 'grid',
+    '返回后恢复顶部预览布局');
+  await selectPreviewLayout(page, 'sidebar');
   await page.locator('#topic-search').click();
   assert(!(await page.locator('#btn-organize-undo').isVisible()), '回到普通搜索隐藏撤销整理');
   assert.strictEqual(await page.evaluate(() => JSON.stringify([...window.__files])), fixture.files, '查看详情和主题跳转不写盘');
@@ -2164,6 +2228,17 @@ async function runCompactLayoutSmoke(page) {
   assert.strictEqual(await page.locator('#results .preview-active').count(), 1);
   await page.keyboard.press('Escape');
   assert(!(await page.locator('#preview-panel').isVisible()));
+  const savedSearch = await page.evaluate(() => Search.captureState());
+  await selectPreviewLayout(page, 'top');
+  await page.evaluate(() => Search.restoreState(null));
+  assert(await page.locator('#empty-state').isVisible());
+  await page.locator('#btn-archives').click();
+  await page.waitForFunction(() => document.body.dataset.page === 'warehouse');
+  assert(!(await page.locator('#empty-state').isVisible()), '空搜索提示不得叠在仓库下半屏');
+  assert.strictEqual(await page.locator('.result-workspace').evaluate((node) => getComputedStyle(node).display), 'none');
+  await page.locator('#warehouse-back').click();
+  await page.evaluate((state) => Search.restoreState(state), savedSearch);
+  await selectPreviewLayout(page, 'sidebar');
 }
 
 async function runResultRelationsSmoke(page) {
@@ -2270,6 +2345,142 @@ async function runResultRelationsSmoke(page) {
   await page.locator('#relations-close').click();
   await page.evaluate((source) => { eagle.library.path = 'D:/fixture.library'; Search.restoreState(source); }, fixture.source);
   await page.setViewportSize({ width: 1100, height: 720 });
+}
+
+async function runPreviewPlaybackSmoke(page, base64) {
+  await page.evaluate(async (data) => {
+    const bytes = Uint8Array.from(atob(data), (char) => char.charCodeAt(0));
+    const item = window.__items[0];
+    item.fileURL = URL.createObjectURL(new Blob([bytes], { type: 'video/mp4' }));
+    await Bridge.refreshPathMap();
+    const matches = [125, 180].map((frame) => ({ video_path: item.filePath, video_name: item.name,
+      start_frame: frame, end_frame: frame + 100, fps: 25, similarity: 20,
+      start: String(frame / 25), end: String(frame / 25 + 4), duration_seconds: 4 }));
+    await Search.loadResults(matches, '预览回归', null, { minDur: 0, sortBy: 'sim', grouped: false });
+    Object.assign(document.getElementById('preview-video'), { muted: true, volume: 0.4, playbackRate: 1.25 });
+    window.__mediaEvents = [];
+    for (const name of ['loadstart', 'loadedmetadata', 'playing', 'waiting', 'seeked']) {
+      document.addEventListener(name, (event) => {
+        if (event.target.tagName === 'VIDEO') __mediaEvents.push({ name, time: performance.now(), id: event.target.id,
+          hover: event.target.classList.contains('hover-video') });
+      }, true);
+    }
+    document.querySelector('#results .thumb-box').addEventListener('mouseenter', () => { window.__hoverStarted = performance.now(); });
+  }, base64);
+  await selectPreviewLayout(page, 'top');
+  await page.locator('#btn-archives').hover();
+  await page.locator('#results .thumb-box').first().hover();
+  await page.waitForFunction(() => document.querySelector('.hover-video.ready'));
+  const firstPaintMs = await page.evaluate(() => performance.now() - __hoverStarted);
+  await page.waitForFunction(() => document.querySelector('.hover-video')?.currentTime > 5.8);
+  const before = await page.evaluate(() => {
+    window.__warmHoverPlayer = document.querySelector('.hover-video');
+    window.__handoffTime = __warmHoverPlayer.currentTime;
+    window.__handoffSeeks = 0;
+    __warmHoverPlayer.addEventListener('seeking', () => { window.__handoffSeeks += 1; });
+    return { loads: __mediaEvents.filter((event) => event.name === 'loadstart').length };
+  });
+  await page.locator('#results .thumb-box').first().click();
+  await page.waitForFunction(() => document.getElementById('preview-panel').dataset.state === 'ready');
+  const after = await page.evaluate(() => ({
+    samePlayer: document.getElementById('preview-video') === __warmHoverPlayer,
+    loads: __mediaEvents.filter((event) => event.name === 'loadstart').length,
+    volume: document.getElementById('preview-video').volume,
+    muted: document.getElementById('preview-video').muted,
+    rate: document.getElementById('preview-video').playbackRate,
+    time: document.getElementById('preview-video').currentTime,
+    handoffTime: __handoffTime,
+    seeks: __handoffSeeks,
+    poster: document.getElementById('preview-video').getAttribute('poster'),
+  }));
+  console.log('preview timing evidence', { firstPaintMs, ...before, ...after });
+  assert(after.samePlayer, '点击悬停中的素材复用已解码播放器');
+  assert.strictEqual(after.loads, before.loads, '悬停转点击不重新加载同一文件');
+  assert.strictEqual(after.poster, null, '接管已有解码画面时不再请求封面');
+  assert.strictEqual(after.seeks, 1, '已播放的悬停视频展开后定位回片段开头');
+  assert(after.time >= 5.08 && after.time < after.handoffTime, '大预览从片段开头播放，保留原有两帧起播偏移');
+  assert(after.muted && after.volume === 0.4 && after.rate === 1.25, '复用播放器保留音量、静音与播放速度');
+  await page.locator('#btn-archives').hover();
+  await page.locator('#results .thumb-box').first().hover();
+  assert.strictEqual(await page.locator('.hover-video').count(), 0, '当前预览卡片不重复创建悬停解码器');
+  await page.waitForFunction(() => document.getElementById('preview-video').currentTime > 5.7);
+  const loaded = after.loads;
+  await page.locator('#results .card .name').nth(1).click();
+  await page.waitForFunction(() => document.getElementById('preview-panel').dataset.state === 'ready'
+    && document.getElementById('preview-video').currentTime >= 7.2);
+  assert.strictEqual(await page.evaluate(() => __mediaEvents.filter((event) => event.name === 'loadstart').length), loaded,
+    '同一视频切换片段只定位，不重载源文件');
+  await page.evaluate(() => {
+    const video = document.getElementById('preview-video');
+    video.dispatchEvent(new Event('waiting'));
+    if (document.getElementById('preview-panel').dataset.state !== 'ready') throw new Error('短暂等待不应立即闪烁缓冲提示');
+    video.pause();
+  });
+  await page.waitForFunction(() => document.getElementById('preview-status').hidden);
+  assert.strictEqual(await page.locator('#preview-panel').getAttribute('data-state'), 'ready', '暂停后清除缓冲提示');
+  const videoTime = await page.evaluate(() => document.getElementById('preview-video').currentTime);
+  await page.locator('#btn-cover-next-frame').click();
+  await page.waitForFunction(() => !document.getElementById('preview-video').seeking);
+  assert(await page.evaluate((time) => document.getElementById('preview-video').paused
+    && document.getElementById('preview-video').currentTime > time, videoTime), '逐帧保持暂停，不被加载事件恢复播放');
+  // 保留真实解码/播放，空 buffered 也不能额外延迟播放请求。
+  await page.evaluate(() => {
+    const video = document.getElementById('preview-video');
+    Object.defineProperty(video, 'buffered', { configurable: true, get: () => ({ length: 0 }) });
+  });
+  await page.locator('#results .card .name').first().click();
+  await page.waitForFunction(() => {
+    const video = document.getElementById('preview-video');
+    return document.getElementById('preview-panel').dataset.state === 'ready'
+      && !video.paused && video.currentTime > 5.2;
+  }, null, { timeout: 5000 });
+  await page.evaluate(() => { delete document.getElementById('preview-video').buffered; });
+  // 同一事件轮中进入并点击，元数据尚未到达时也应接管在途加载。
+  const quick = await page.evaluate(() => {
+    Search.pausePreview();
+    const thumb = document.querySelector('#results .thumb-box');
+    thumb.dispatchEvent(new MouseEvent('mouseenter'));
+    const loading = document.querySelector('.hover-video');
+    const ready = loading.readyState;
+    thumb.click();
+    return { ready, reused: loading === document.getElementById('preview-video') };
+  });
+  assert.strictEqual(quick.ready, 0, '快速点击覆盖元数据尚未到达的分支');
+  assert(quick.reused, '快速点击也复用正在加载的悬停播放器');
+  await page.waitForFunction(() => {
+    const video = document.getElementById('preview-video');
+    return !video.paused && !video.seeking && video.currentTime > 5.2;
+  });
+  await page.evaluate(() => Search.pausePreview());
+  await page.locator('#results .card .name').first().click();
+  await page.waitForFunction(() => {
+    const video = document.getElementById('preview-video');
+    return !video.paused && !video.seeking && video.currentTime > 5.2;
+  });
+  const sourceBeforePosterError = await page.evaluate(() => {
+    const video = document.getElementById('preview-video');
+    if (video.error) throw new Error('必须在源视频正常播放时模拟封面错误');
+    const before = { src: video.src, time: video.currentTime };
+    // Eagle Chromium 108 的 poster 失败会向 video 派发 error，MediaError 仍为空。
+    video.dispatchEvent(new Event('error'));
+    return before;
+  });
+  await page.waitForFunction((before) => {
+    const video = document.getElementById('preview-video');
+    return video.src === before.src && !video.paused && video.currentTime > before.time + 0.1
+      && document.getElementById('preview-panel').dataset.state === 'ready';
+  }, sourceBeforePosterError, { timeout: 5000 });
+  const mediaFailure = await page.evaluate(() => {
+    const video = document.getElementById('preview-video');
+    const src = video.src;
+    Object.defineProperty(video, 'error', { configurable: true, value: { code: 4, message: '模拟解码失败' } });
+    video.dispatchEvent(new Event('error'));
+    const result = { src, after: video.src, state: document.getElementById('preview-panel').dataset.state, paused: video.paused };
+    delete video.error;
+    return result;
+  });
+  assert.strictEqual(mediaFailure.after, mediaFailure.src, '媒体失败不改变原视频地址，不触发切片');
+  assert(mediaFailure.paused && mediaFailure.state === 'error', '失败后停止播放器并显示可重试错误');
 }
 
 async function runMediaDragSmoke(page) {

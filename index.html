@@ -209,7 +209,7 @@
     <header class="inspector-heading"><span>素材详情</span><span class="hint">← / → 切换</span></header>
     <div id="inspector-empty" class="inspector-empty"><span class="inspector-placeholder">▧</span><p>选择一个片段</p><p class="hint">在这里预览画面、查看主题和素材信息</p></div>
   <section id="preview-panel" class="preview-panel hidden" aria-label="当前片段详情">
-    <video id="preview-video" controls preload="metadata"></video>
+    <video id="preview-video" controls preload="auto"></video>
     <div class="preview-side">
       <div id="preview-info"></div>
       <div id="preview-feedback" class="preview-feedback"></div>
@@ -233,6 +233,7 @@
     </div>
   </section>
   </aside>
+  <div id="preview-resizer" class="preview-resizer" role="separator" tabindex="0" aria-label="调整顶部预览高度" aria-orientation="horizontal" aria-controls="preview-panel" aria-valuemin="140" aria-valuemax="500" aria-valuenow="268"></div>
   </div>
   <aside id="browse-position-notice" class="browse-position-notice hidden" role="status" aria-live="polite">
     <span id="browse-position-message">已回到上次浏览位置</span>
