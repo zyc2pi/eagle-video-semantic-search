@@ -44,7 +44,10 @@
     serviceOnline = state === 'online';
     if (!serviceOnline || !wasOnline) clearSearchCache();
     $('service-dot').className = `dot ${state}`;
-    $('service-text').textContent = message;
+    $('service-text').textContent = state === 'starting' ? '加载搜索服务…' : message;
+    $('service-text').hidden = serviceOnline;
+    $('service-status').title = message;
+    $('service-status').setAttribute('aria-label', message);
     updateButtons();
     if (serviceOnline && !wasOnline) {
       refreshIndexHint();
@@ -71,9 +74,7 @@
       $(id).disabled = !serviceOnline || indexing;
     });
     if (indexing) closeIndexModeMenu();
-    ['btn-frame-visual', 'btn-frame-text'].forEach((id) => {
-      $(id).disabled = !serviceOnline || indexing;
-    });
+    $('btn-frame-visual').disabled = !serviceOnline || indexing;
   }
 
   function closeIndexModeMenu() {
@@ -1097,7 +1098,113 @@
   }
 
   // ---------- 初始化 ----------
+  function initPreviewLayout() {
+    const workspace = document.querySelector('.result-workspace');
+    const select = $('preview-layout');
+    const preferenceKey = 'eagle-semantic-preview-layout';
+    let layout = 'sidebar';
+    try {
+      if (localStorage.getItem(preferenceKey) === 'top') layout = 'top';
+    } catch { /* 偏好不可用时使用右侧详情。 */ }
+    const apply = () => {
+      workspace.dataset.previewLayout = layout;
+      select.value = layout;
+      document.dispatchEvent(new CustomEvent('preview-layout-change'));
+    };
+    select.addEventListener('change', () => {
+      layout = select.value === 'top' ? 'top' : 'sidebar';
+      apply();
+      try { localStorage.setItem(preferenceKey, layout); } catch { /* 保留会话选择。 */ }
+    });
+    apply();
+  }
+
+  function initInspectorResize() {
+    const workspace = document.querySelector('.result-workspace');
+    const inspector = $('inspector');
+    const resizer = $('inspector-resizer');
+    const preferenceKey = 'eagle-semantic-inspector-width';
+    let preferredWidth = null;
+    let drag = null;
+    try {
+      const saved = Number(localStorage.getItem(preferenceKey));
+      if (Number.isFinite(saved) && saved >= 160 && saved <= 640) preferredWidth = saved;
+    } catch { /* 偏好不可用时保留会话宽度。 */ }
+    const bounds = () => {
+      const max = Math.max(160, Math.min(640, workspace.clientWidth - 206));
+      return { min: Math.min(220, max), max };
+    };
+    const applyWidth = () => {
+      if (workspace.dataset.previewLayout === 'top') return;
+      if (preferredWidth === null) workspace.style.removeProperty('--inspector-width');
+      const { min, max } = bounds();
+      const width = Math.round(Math.max(min, Math.min(max, preferredWidth ?? inspector.getBoundingClientRect().width)));
+      workspace.style.setProperty('--inspector-width', `${width}px`);
+      resizer.setAttribute('aria-valuemin', String(min));
+      resizer.setAttribute('aria-valuemax', String(max));
+      resizer.setAttribute('aria-valuenow', String(width));
+    };
+    const saveWidth = () => {
+      try { localStorage.setItem(preferenceKey, String(preferredWidth)); } catch { /* 保留会话宽度。 */ }
+    };
+    const finish = (event) => {
+      if (!drag || (event.pointerId != null && drag.id !== event.pointerId)) return;
+      const id = drag.id;
+      drag = null;
+      document.body.classList.remove('resizing-inspector');
+      if (resizer.hasPointerCapture(id)) resizer.releasePointerCapture(id);
+      saveWidth();
+    };
+    resizer.addEventListener('pointerdown', (event) => {
+      if (event.button !== 0 || !event.isPrimary) return;
+      event.preventDefault();
+      drag = { id: event.pointerId, x: event.clientX, width: inspector.getBoundingClientRect().width };
+      preferredWidth = drag.width;
+      resizer.setPointerCapture(event.pointerId);
+      document.body.classList.add('resizing-inspector');
+    });
+    resizer.addEventListener('pointermove', (event) => {
+      if (!drag || drag.id !== event.pointerId) return;
+      const { min, max } = bounds();
+      preferredWidth = Math.max(min, Math.min(max, drag.width + drag.x - event.clientX));
+      applyWidth();
+    });
+    ['pointerup', 'pointercancel', 'lostpointercapture'].forEach((name) => resizer.addEventListener(name, finish));
+    window.addEventListener('blur', finish);
+    resizer.addEventListener('keydown', (event) => {
+      if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+      event.preventDefault(); event.stopPropagation();
+      const { min, max } = bounds();
+      const step = event.shiftKey ? 40 : 10;
+      preferredWidth = event.key === 'Home' ? min : event.key === 'End' ? max
+        : Math.max(min, Math.min(max, inspector.getBoundingClientRect().width + (event.key === 'ArrowLeft' ? step : -step)));
+      applyWidth(); saveWidth();
+    });
+    new ResizeObserver(() => { if (workspace.clientWidth) applyWidth(); }).observe(workspace);
+    document.addEventListener('preview-layout-change', applyWidth);
+    applyWidth();
+  }
+
   function wireEvents() {
+    const menus = [...document.querySelectorAll('.compact-menu')];
+    menus.forEach((menu) => {
+      menu.addEventListener('toggle', () => {
+        if (menu.open) menus.forEach((other) => { if (other !== menu) other.open = false; });
+      });
+      menu.addEventListener('click', (event) => {
+        if (event.target.closest('button') && menu.id !== 'result-filter-menu') menu.open = false;
+      });
+    });
+    document.addEventListener('click', (event) => {
+      menus.forEach((menu) => { if (!menu.contains(event.target)) menu.open = false; });
+    });
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && menus.some((menu) => menu.open)) {
+        const menu = menus.find((value) => value.open);
+        menus.forEach((value) => { value.open = false; });
+        menu.querySelector('summary').focus();
+      }
+    });
     Search.setSelectionHandler(updateSelectionActions);
     $('btn-clear-selection').addEventListener('click', () => Search.clearSelection());
     document.addEventListener('search-busy', updateSelectionActions);
@@ -1196,11 +1303,12 @@
     Search.bindDom();
     MediaDrag.init({ toast });
     Warehouse.init({ toast, canSearch: () => serviceOnline && !Indexer.isRunning() });
+    initPreviewLayout();
+    initInspectorResize();
     wireEvents();
     FrameSearch.init({ toast,
       canSearch: () => serviceOnline && !Indexer.isRunning(),
       resolveScope: resolveSearchScope,
-      onTextSuccess(query) { $('query').value = query; pushHistory(query); },
     });
     initShortcuts();
 
@@ -1232,7 +1340,10 @@
   });
 
   eagle.onPluginShow(() => {
-    if (!serviceOnline) Service.ensure(setServiceStatus);
+    if (!serviceOnline) {
+      setServiceStatus('starting', '加载搜索服务…');
+      Service.ensure(setServiceStatus);
+    }
     else if (!Indexer.isRunning()) refreshIndexHint();
   });
 

@@ -302,6 +302,14 @@ const TopicRelations = (() => {
       scheduleRefresh();
     });
   }
+  async function openTopic(id, library) {
+    try {
+      if (library !== eagle.library.path) throw new Error('素材库已切换，请重新选择片段');
+      hooks.checkIdle();
+      await hooks.openEntry(id);
+    } catch (error) { hooks.toast(error.message, true); }
+  }
   return { init, showCompare, buildMembership, compare, refresh: scheduleRefresh,
+    openTopic,
     showMembership: (match) => showMembership(match).catch((error) => hooks.toast(error.message, true)) };
 })();

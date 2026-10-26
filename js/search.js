@@ -238,6 +238,7 @@ const Search = (() => {
     document.addEventListener('keydown', (e) => {
       if (document.querySelector('dialog[open]')) return;
       if (e.key === 'Escape') {
+        if (document.querySelector('.compact-menu[open]')) return;
         closePreview();
         return;
       }
@@ -575,14 +576,6 @@ const Search = (() => {
       + `<span>${multi}${badge}${manual}<span class="sim">${Number(m.similarity).toFixed(1)}</span></span>`;
     meta.appendChild(name);
     meta.appendChild(sub);
-    if (typeof TopicRelations !== 'undefined') {
-      const membership = document.createElement('button');
-      membership.className = 'scene-membership';
-      membership.type = 'button';
-      membership.addEventListener('click', (event) => { event.stopPropagation(); TopicRelations.showMembership(m); });
-      updateMembershipButton(membership, m);
-      meta.appendChild(membership);
-    }
     if (newKeys.has(ArchiveStore.sceneKey(m))) {
       const badgeNew = document.createElement('span');
       badgeNew.className = 'badge-new';
@@ -599,7 +592,7 @@ const Search = (() => {
     const similarBtn = document.createElement('button');
     similarBtn.className = 'similar-btn';
     similarBtn.textContent = '选帧找相似';
-    similarBtn.title = '打开预览，选定画面后找相似或转文字搜索';
+    similarBtn.title = '在右侧预览中选定画面后找相似';
     similarBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       openPreviewAt(pos);
@@ -727,19 +720,23 @@ const Search = (() => {
     if (el.localFilters) {
       el.localFilters.classList.toggle('hidden', lastMatches.length === 0);
       const values = { 'topic-scene-query': archiveFilter.query, 'topic-scene-source': archiveFilter.source,
-        'result-tags': archiveFilter.tags || '', 'result-orientation': archiveFilter.orientation || 'all',
+        'result-tags': archiveFilter.tags || '',
         'result-max-dur': archiveFilter.maxDur ?? '' };
-      Object.entries(values).forEach(([id, value]) => { document.getElementById(id).value = value; });
+      Object.entries(values).forEach(([id, value]) => {
+        const input = document.getElementById(id);
+        if (input) input.value = value;
+      });
       document.getElementById('result-filter-error').textContent = '';
     }
     const hasLocalFilter = archiveFilter.query.trim() || archiveFilter.source !== 'all'
       || archiveFilter.tags?.trim() || (archiveFilter.orientation || 'all') !== 'all' || archiveFilter.maxDur != null;
+    document.getElementById('filter-active-indicator')?.classList.toggle('hidden', !hasLocalFilter && view.minDur <= 0);
     el.resultCount.textContent = view.minDur > 0 || archiveTime.mode !== 'all' || hasLocalFilter
       ? `${displayList.length}/${lastMatches.length} 条`
       : `${lastMatches.length} 条`;
     if (!has) {
       el.emptyState.innerHTML = lastMatches.length > 0 && hasLocalFilter
-        ? '<p>当前组合筛选下没有片段，可清除筛选或调整时间与片段时长。标签及画幅使用 Eagle 素材信息。</p>'
+        ? '<p>当前组合筛选下没有片段，可清除筛选或调整时间与片段时长。标签使用 Eagle 素材信息。</p>'
         : lastMatches.length > 0 && archiveTime.mode !== 'all'
         ? '<p>当前筛选下没有已保存的结果，可切回「不限时间」或调整时长。缺少加入 Eagle 时间的素材不参与时间筛选。</p>'
         : lastMatches.length > 0
@@ -793,10 +790,14 @@ const Search = (() => {
     const box = el.previewTags;
     box.innerHTML = '';
     const item = Bridge.itemForPath(match.video_path);
-    const tags = (item && Array.isArray(item.tags)) ? item.tags.slice(0, 12) : [];
-    box.classList.toggle('hidden', tags.length === 0);
+    const tags = (item && Array.isArray(item.tags)) ? item.tags : [];
+    if (!tags.length) {
+      const empty = document.createElement('span');
+      empty.className = 'hint'; empty.textContent = '暂无标签'; box.appendChild(empty);
+    }
     tags.forEach((tag) => {
-      const chip = document.createElement('span');
+      const chip = document.createElement('button');
+      chip.type = 'button';
       chip.className = 'tag-chip';
       chip.textContent = tag;
       chip.title = `搜索「${tag}」`;
@@ -808,6 +809,61 @@ const Search = (() => {
       });
       box.appendChild(chip);
     });
+  }
+
+  function renderInspectorMembership() {
+    const box = document.getElementById('preview-membership');
+    if (!box) return;
+    box.replaceChildren();
+    if (!activeMatch) return;
+    const topics = topicMembership?.(activeMatch);
+    const library = eagle.library.path;
+    if (!topics || !topics.length) {
+      const empty = document.createElement(topics ? 'span' : 'button');
+      empty.className = 'hint';
+      empty.textContent = topics ? '尚未收录到主题' : topicMembershipStatus;
+      if (!topics) {
+        empty.type = 'button';
+        empty.addEventListener('click', () => TopicRelations.refresh());
+      }
+      box.appendChild(empty);
+      return;
+    }
+    topics.forEach((topic) => {
+      const button = document.createElement('button');
+      button.type = 'button'; button.textContent = topic.name; button.title = topic.name;
+      button.addEventListener('click', () => TopicRelations.openTopic(topic.id, library));
+      box.appendChild(button);
+    });
+  }
+
+  function renderInspectorInfo(match, item) {
+    const rating = document.getElementById('preview-rating');
+    const details = document.getElementById('preview-details');
+    if (!rating || !details) return;
+    const stars = Number(item?.star);
+    const eagleRating = Number.isInteger(stars) && stars >= 0 && stars <= 5
+      ? '★'.repeat(stars) + '☆'.repeat(5 - stars) : '未获取';
+    rating.innerHTML = `<dt>Eagle 评分</dt><dd class="inspector-rating-stars">${esc(eagleRating)}</dd>`
+      + `<dt>${match.manualScore ? '人工评分' : '相似度'}</dt><dd>${esc(match.manualScore?.value ?? Number(match.similarity).toFixed(2))}</dd>`;
+    const formatDate = (value) => {
+      const date = new Date(Number(value));
+      return value != null && Number.isFinite(date.getTime()) ? date.toLocaleString('zh-CN', { hour12: false }) : '未获取';
+    };
+    const size = Number(item?.size);
+    const duration = Number(item?.duration);
+    const rows = [
+      ['尺寸', item?.width > 0 && item?.height > 0 ? `${item.width} × ${item.height}` : '未获取'],
+      ['片段时长', Number.isFinite(match.duration_seconds) ? `${match.duration_seconds.toFixed(2)} 秒` : match.duration_display || '未获取'],
+      ['素材时长', Number.isFinite(duration) && duration > 0 ? `${duration.toFixed(2)} 秒` : '未获取'],
+      ['文件大小', Number.isFinite(size) && size > 0 ? `${(size / 1048576).toFixed(2)} MB` : '未获取'],
+      ['格式', String(item?.ext || match.video_path?.split('.').pop() || '未获取').toUpperCase()],
+      ['帧率', match.fps ? `${match.fps} fps` : '未获取'],
+      ['加入日期', formatDate(item?.importedAt)],
+      ['修改日期', formatDate(item?.lastModified)],
+      ['文件路径', item?.filePath || match.video_path],
+    ];
+    details.innerHTML = rows.map(([label, value]) => `<dt>${esc(label)}</dt><dd>${esc(value)}</dd>`).join('');
   }
 
   function openPreviewAt(pos) {
@@ -828,6 +884,7 @@ const Search = (() => {
 
   function openPreview(match) {
     stopHoverPreview();
+    const changed = activeMatch !== match;
     activeMatch = match;
     document.dispatchEvent(new CustomEvent('preview-change'));
     const loadToken = ++previewLoadToken;
@@ -913,18 +970,24 @@ const Search = (() => {
       : '';
     el.previewInfo.innerHTML =
       `<b>${esc(match.video_name)}</b><br>`
-      + `片段：${esc(fmtTime(match.start))} – ${esc(fmtTime(match.end))}（${esc(match.duration_display)}）<br>`
-      + `${match.manualScore ? '人工评分' : '相似度'}：${Number(match.similarity).toFixed(2)}${hybridInfo}${mqList}`
+      + `片段：${esc(fmtTime(match.start))} – ${esc(fmtTime(match.end))}${hybridInfo}${mqList}`
       + (item ? '' : '<br><span style="color:var(--danger)">素材已不在 Eagle 库中</span>')
       + '<br><span class="hint-inline">←/→ 切换结果，Esc 收起</span>';
     el.btnLocate.disabled = !item;
+    renderInspectorInfo(match, item);
+    renderInspectorMembership();
+    document.getElementById('inspector-empty')?.classList.add('hidden');
+    el.results?.querySelectorAll('.card').forEach((card) => card.classList.toggle('preview-active', cardMatches.get(card) === match));
     el.previewPanel.classList.remove('hidden');
+    if (changed && el.previewPanel.parentElement) el.previewPanel.parentElement.scrollTop = 0;
   }
 
   function closePreview() {
     previewLoadToken += 1;
     activeMatch = null;
     activePos = -1;
+    document.getElementById('inspector-empty')?.classList.remove('hidden');
+    el.results?.querySelectorAll('.preview-active').forEach((card) => card.classList.remove('preview-active'));
     if (el.previewVideo) {
       el.previewVideo.pause();
       el.previewVideo.onloadedmetadata = null;
@@ -1034,20 +1097,10 @@ const Search = (() => {
     };
   }
 
-  function updateMembershipButton(button, match) {
-    const topics = topicMembership?.(match);
-    button.textContent = topics ? topics.length ? `已收录：${topics.map((topic) => topic.name).join('、')}` : '未收录到主题' : topicMembershipStatus;
-    button.title = button.textContent;
-  }
-
   function refreshTopicMembership(find, status = '主题归属…') {
     topicMembership = find;
     topicMembershipStatus = status;
-    el.results?.querySelectorAll('.card').forEach((card) => {
-      const button = card.querySelector('.scene-membership');
-      const match = cardMatches.get(card);
-      if (button && match) updateMembershipButton(button, match);
-    });
+    renderInspectorMembership();
   }
 
   function restoreState(state) {
