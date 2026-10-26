@@ -9,6 +9,7 @@ const Warehouse = (() => {
   let searchBrowsePosition = null;
   let editing = null;
   let editingLibrary = null;
+  let editorCategoryPicker = null;
   let draft = null;
   let savingMatches = [];
   let savingView = null;
@@ -43,8 +44,11 @@ const Warehouse = (() => {
   let selectionAnchor = null;
   let queryTimer;
   let closeContextMenu = () => {};
+  let cancelBoxSelection = () => {};
   const pageSize = 60;
   const viewPreferenceKey = 'eagle-semantic-warehouse-view';
+  const recentCategories = new Map();
+  const categoryPreferenceKey = (library) => `eagle-semantic-recent-categories:${SearchRecipe.normalize(library)}`;
   const timeKey = (entry) => `${SearchRecipe.normalize(eagle.library.path)}:${entry.id}`;
   const localTime = (entry) => localTimes.get(timeKey(entry)) || { mode: 'all' };
   const localFilter = (entry) => localFilters.get(timeKey(entry)) || { query: '', source: 'all' };
@@ -82,6 +86,102 @@ const Warehouse = (() => {
     data.categories.forEach((category) => select.appendChild(new Option(category.name, category.id)));
     select.value = selected;
     if (select.selectedIndex < 0) select.value = all ? '*' : '';
+  }
+
+  function categoryHistory(library) {
+    const key = categoryPreferenceKey(library);
+    if (!recentCategories.has(key)) {
+      let ids = [];
+      try {
+        const saved = JSON.parse(localStorage.getItem(key) || '[]');
+        if (Array.isArray(saved)) ids = [...new Set(saved.filter((id) => typeof id === 'string'))];
+      } catch { /* 偏好不可用时保留会话内顺序。 */ }
+      recentCategories.set(key, ids);
+    }
+    return recentCategories.get(key);
+  }
+
+  function rememberCategory(library, id) {
+    if (!id) return;
+    const ids = [id, ...categoryHistory(library).filter((value) => value !== id)].slice(0, 100);
+    recentCategories.set(categoryPreferenceKey(library), ids);
+    try { localStorage.setItem(categoryPreferenceKey(library), JSON.stringify(ids)); }
+    catch { /* 保存失败时仍保留会话内顺序。 */ }
+  }
+
+  function categoryPicker(selectedId, library) {
+    const element = node('div', 'category-picker');
+    const input = node('input', 'category-picker-input');
+    input.type = 'text'; input.maxLength = 60; input.autocomplete = 'off';
+    input.placeholder = '搜索或输入新分类名称';
+    input.setAttribute('aria-label', '搜索或新建分类');
+    const selected = node('p', 'category-picker-selected');
+    selected.setAttribute('aria-live', 'polite');
+    const options = node('div', 'category-picker-options');
+    const categories = data.categories.slice();
+    let value = selectedId;
+    const choose = (next) => {
+      value = next; input.value = ''; render(); input.focus();
+    };
+    const addOption = (parent, id, name) => {
+      const button = node('button', 'category-picker-option', name);
+      button.type = 'button'; button.title = name;
+      button.dataset.categoryId = id;
+      button.setAttribute('aria-pressed', String(value === id));
+      button.addEventListener('click', () => choose(id));
+      parent.appendChild(button);
+    };
+    const render = () => {
+      const query = input.value.trim();
+      selected.textContent = `已选择：${typeof value === 'object' ? `${value.name}（新分类，确认后创建）`
+        : categories.find((category) => category.id === value)?.name || '未分类'}`;
+      options.replaceChildren();
+      if (query && !categories.some((category) => category.name === query)) {
+        const create = node('button', 'category-picker-create', `＋ 新建「${query}」`);
+        create.type = 'button';
+        create.addEventListener('click', () => choose({ name: query }));
+        options.appendChild(create);
+      }
+      const matches = categories.filter((category) => category.name.toLocaleLowerCase().includes(query.toLocaleLowerCase()));
+      const recent = categoryHistory(library).map((id) => matches.find((category) => category.id === id)).filter(Boolean);
+      const recentIds = new Set(recent.map((category) => category.id));
+      const groups = query ? [['匹配分类', matches]]
+        : [['最近使用', recent], ['其他分类', matches.filter((category) => !recentIds.has(category.id))]];
+      groups.forEach(([label, items]) => {
+        if (!items.length) return;
+        const group = node('div', 'category-picker-group');
+        group.setAttribute('role', 'group'); group.setAttribute('aria-label', label);
+        group.appendChild(node('p', 'category-picker-heading', `${label}（${items.length}）`));
+        const grid = node('div', 'category-picker-grid');
+        items.forEach((category) => addOption(grid, category.id, category.name));
+        group.appendChild(grid); options.appendChild(group);
+      });
+      if (!query) addOption(options, '', '未分类');
+    };
+    const getValue = () => {
+      const query = input.value.trim();
+      return query ? categories.find((category) => category.name === query)?.id || { name: query } : value;
+    };
+    input.addEventListener('input', render);
+    element.addEventListener('keydown', (event) => {
+      if (event.isComposing || event.keyCode === 229) return;
+      if (event.target === input && event.key === 'Enter') {
+        event.preventDefault(); event.stopPropagation();
+        choose(getValue());
+      } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        const buttons = [...options.querySelectorAll('button:not(:disabled)')];
+        if (!buttons.length) return;
+        event.preventDefault();
+        const index = buttons.indexOf(document.activeElement);
+        if (index < 0) buttons[event.key === 'ArrowDown' ? 0 : buttons.length - 1].focus();
+        else if ((index === 0 && event.key === 'ArrowUp') || (index === buttons.length - 1 && event.key === 'ArrowDown')) input.focus();
+        else buttons[index + (event.key === 'ArrowDown' ? 1 : -1)].focus();
+      }
+    });
+    element.append(input, selected, options, node('p', 'hint', '输入新名称后确认即可创建；也可用 ↑ ↓ 选择，Enter 选中。'));
+    render();
+    return { element, getValue, focus: () => input.focus(),
+      setDisabled: (disabled) => element.querySelectorAll('input, button').forEach((control) => { control.disabled = disabled; }) };
   }
 
   function timeControl(saved, onChange) {
@@ -242,6 +342,7 @@ const Warehouse = (() => {
   }
 
   function showSearch({ preserveNavigation = false } = {}) {
+    cancelBoxSelection();
     if (!preserveNavigation) navigationGeneration += 1;
     rememberWarehousePosition();
     hidePositionNotice();
@@ -261,7 +362,7 @@ const Warehouse = (() => {
     searchBrowsePosition = null;
     document.body.dataset.topic = 'false';
     $('warehouse-topic').classList.add('hidden');
-    $('topic-scene-filter').classList.toggle('hidden', !Search.getRawMatches().length);
+    $('topic-scene-filter').classList.remove('hidden');
     $('btn-save-results').textContent = '保存到仓库';
     $('preview-cover-actions').classList.add('hidden');
     syncSceneActions();
@@ -285,6 +386,7 @@ const Warehouse = (() => {
   }
 
   function renderCards(position = null) {
+    cancelBoxSelection();
     const token = ++warehouseRenderToken;
     hidePositionNotice();
     clearTimeout(queryTimer);
@@ -358,12 +460,13 @@ const Warehouse = (() => {
       openButton.setAttribute('aria-pressed', String(selectedEntries.has(entry.id)));
       const cover = node('div', 'warehouse-cover');
       cover.dataset.id = entry.id;
-      cover.append(node('span', 'warehouse-cover-mark', entry.name.slice(0, 2)),
-        node('span', 'warehouse-category-badge', categoryName(entry.categoryId)));
+      cover.append(node('span', 'warehouse-cover-mark', entry.name.slice(0, 2)));
       const body = node('div', 'warehouse-card-body');
       body.title = entry.name;
-      body.append(node('h2', '', entry.name),
-        node('p', 'warehouse-count', `${entry.summary?.videos ?? countVideos(entry.matches)} 个素材 / ${entry.summary?.matches ?? entry.matches.length} 个片段`),
+      const heading = node('div', 'warehouse-card-heading');
+      heading.append(node('h2', '', entry.name), node('span', 'warehouse-category-badge', categoryName(entry.categoryId)));
+      body.append(heading,
+        node('p', 'warehouse-count', `${(entry.summary?.videos ?? countVideos(entry.matches)).toLocaleString('zh-CN')} 个素材 · ${(entry.summary?.matches ?? entry.matches.length).toLocaleString('zh-CN')} 个片段`),
         node('p', 'warehouse-date', `最近更新 ${dateText(entry.updatedAt)}`));
       if (entry.legacy || Object.getOwnPropertyDescriptor(entry, 'recipe')?.value === null) body.append(node('span', 'warehouse-legacy', '旧存档 · 更新前补齐条件'));
       else if (entry.newKeys?.length) body.append(node('span', 'warehouse-added', `本次新增 ${entry.newKeys.length} 个片段`));
@@ -470,25 +573,137 @@ const Warehouse = (() => {
 
   function syncBatchActions() {
     const count = selectedEntries.size;
-    $('warehouse-batch-category').disabled = count === 0;
     $('warehouse-selection-count').textContent = count ? `已选择 ${count} 个主题` : '';
   }
 
-  function showContextMenu(x, y, trigger, action = null) {
+  function initBoxSelection() {
+    const grid = $('warehouse-grid');
+    grid.addEventListener('contextmenu', (event) => {
+      if (event.target.closest('.warehouse-card, button, input, select')) return;
+      event.preventDefault();
+      if (selectedEntries.size) showContextMenu(event.clientX, event.clientY, grid);
+    });
+    grid.addEventListener('pointerdown', (event) => {
+      if (event.button !== 0 || !event.isPrimary || document.body.dataset.page !== 'warehouse'
+          || warehouseLibrary !== eagle.library.path
+          || event.target.closest('.warehouse-card, button, input, select')) return;
+      const bounds = grid.getBoundingClientRect();
+      if (event.clientX >= bounds.left + grid.clientWidth) return; // 保留原生滚动条。
+      cancelBoxSelection();
+      closeContextMenu();
+      event.preventDefault();
+      const original = new Set(selectedEntries);
+      const additive = event.ctrlKey || event.metaKey || event.shiftKey;
+      const anchor = selectionAnchor;
+      const startX = event.clientX - bounds.left + grid.scrollLeft;
+      const startY = event.clientY - bounds.top + grid.scrollTop;
+      let x = event.clientX;
+      let y = event.clientY;
+      let dragging = false;
+      let frame;
+      const box = node('div', 'warehouse-selection-box');
+      box.hidden = true;
+      document.body.appendChild(box);
+      grid.classList.add('selecting');
+      grid.setPointerCapture(event.pointerId);
+      const update = () => {
+        const rect = grid.getBoundingClientRect();
+        const endX = Math.max(0, Math.min(grid.clientWidth, x - rect.left)) + grid.scrollLeft;
+        const endY = Math.max(0, Math.min(grid.clientHeight, y - rect.top)) + grid.scrollTop;
+        if (!dragging && Math.hypot(endX - startX, endY - startY) < 4) return;
+        dragging = true;
+        const left = Math.min(startX, endX);
+        const right = Math.max(startX, endX);
+        const top = Math.min(startY, endY);
+        const bottom = Math.max(startY, endY);
+        const screenLeft = Math.max(rect.left, rect.left + left - grid.scrollLeft);
+        const screenTop = Math.max(rect.top, rect.top + top - grid.scrollTop);
+        box.hidden = false;
+        box.style.left = `${screenLeft}px`;
+        box.style.top = `${screenTop}px`;
+        box.style.width = `${Math.max(0, Math.min(rect.left + grid.clientWidth, rect.left + right - grid.scrollLeft) - screenLeft)}px`;
+        box.style.height = `${Math.max(0, Math.min(rect.top + grid.clientHeight, rect.top + bottom - grid.scrollTop) - screenTop)}px`;
+        selectedEntries.clear();
+        if (additive) original.forEach((id) => selectedEntries.add(id));
+        grid.querySelectorAll('.warehouse-card').forEach((card) => {
+          const cardRect = card.getBoundingClientRect();
+          const cardLeft = cardRect.left - rect.left + grid.scrollLeft;
+          const cardTop = cardRect.top - rect.top + grid.scrollTop;
+          if (cardLeft < right && cardLeft + cardRect.width > left
+              && cardTop < bottom && cardTop + cardRect.height > top) selectedEntries.add(card.dataset.entryId);
+        });
+        selectionAnchor = [...selectedEntries][0] || null;
+        syncBatchActions(); syncSelectionCards();
+      };
+      const finish = (cancelled) => {
+        cancelAnimationFrame(frame);
+        grid.removeEventListener('pointermove', move);
+        grid.removeEventListener('pointerup', up);
+        grid.removeEventListener('pointercancel', cancel);
+        grid.removeEventListener('lostpointercapture', cancel);
+        grid.removeEventListener('scroll', update);
+        document.removeEventListener('keydown', keyboard);
+        window.removeEventListener('blur', cancel);
+        if (grid.hasPointerCapture(event.pointerId)) grid.releasePointerCapture(event.pointerId);
+        box.remove(); grid.classList.remove('selecting');
+        cancelBoxSelection = () => {};
+        if (cancelled || (!dragging && !additive)) {
+          selectedEntries.clear();
+          if (cancelled) original.forEach((id) => selectedEntries.add(id));
+          selectionAnchor = cancelled ? anchor : null;
+          syncBatchActions(); syncSelectionCards();
+        }
+      };
+      const move = (next) => {
+        if (next.pointerId !== event.pointerId) return;
+        x = next.clientX; y = next.clientY; update();
+      };
+      const up = (next) => { if (next.pointerId === event.pointerId) { move(next); finish(false); } };
+      const cancel = () => finish(true);
+      const keyboard = (key) => { if (key.key === 'Escape') { key.preventDefault(); cancel(); } };
+      const scroll = () => {
+        if (document.body.dataset.page !== 'warehouse' || warehouseLibrary !== eagle.library.path) { cancel(); return; }
+        if (dragging) {
+          const rect = grid.getBoundingClientRect();
+          const speed = y < rect.top + 28 ? -Math.min(18, (rect.top + 28 - y) / 2)
+            : y > rect.bottom - 28 ? Math.min(18, (y - rect.bottom + 28) / 2) : 0;
+          if (speed) { grid.scrollTop += speed; update(); }
+        }
+        frame = requestAnimationFrame(scroll);
+      };
+      cancelBoxSelection = cancel;
+      grid.addEventListener('pointermove', move);
+      grid.addEventListener('pointerup', up);
+      grid.addEventListener('pointercancel', cancel);
+      grid.addEventListener('lostpointercapture', cancel);
+      grid.addEventListener('scroll', update);
+      document.addEventListener('keydown', keyboard);
+      window.addEventListener('blur', cancel);
+      frame = requestAnimationFrame(scroll);
+    });
+  }
+
+  function showContextMenu(x, y, trigger) {
     closeContextMenu();
     const menu = document.createElement('div');
-    menu.className = 'warehouse-context-menu' + (action ? ' result-context-menu' : '');
+    menu.className = 'warehouse-context-menu';
     menu.setAttribute('role', 'menu');
     menu.style.cssText = `position: fixed; left: ${x}px; top: ${y}px; z-index: 10000;`;
-    const batchCategory = node('button', '', action?.label || '批量修改分类');
-    batchCategory.type = 'button';
-    batchCategory.setAttribute('role', 'menuitem');
-    batchCategory.disabled = action?.disabled || false;
-    batchCategory.addEventListener('click', () => {
-      closeContextMenu();
-      attempt(action?.run || batchChangeCategory);
+    const actions = [
+      { label: '批量修改分类', run: () => batchEditEntries() },
+      { label: '删除所选主题', run: () => batchEditEntries(true) },
+    ];
+    actions.forEach((item) => {
+      const button = node('button', '', item.label);
+      button.type = 'button';
+      button.setAttribute('role', 'menuitem');
+      button.disabled = item.disabled || false;
+      button.addEventListener('click', () => {
+        closeContextMenu();
+        attempt(item.run);
+      });
+      menu.append(button);
     });
-    menu.append(batchCategory);
     document.body.appendChild(menu);
     const bounds = menu.getBoundingClientRect();
     menu.style.left = `${Math.max(4, Math.min(x, window.innerWidth - bounds.width - 4))}px`;
@@ -504,22 +719,23 @@ const Warehouse = (() => {
     };
     document.addEventListener('pointerdown', outside);
     document.addEventListener('keydown', keyboard);
-    batchCategory.focus();
+    menu.querySelector('button').focus();
   }
 
-  function batchChangeCategory() {
+  function batchEditEntries(deleting = false) {
     checkIdle();
-    if (selectedEntries.size === 0) throw new Error('请先选择要修改的主题');
+    if (warehouseLibrary !== eagle.library.path) throw new Error('素材库已切换，请重新打开仓库');
+    if (selectedEntries.size === 0) throw new Error('请先选择要操作的主题');
+    const verb = deleting ? '删除' : '修改';
     const dialog = document.createElement('dialog');
     dialog.className = 'warehouse-batch-dialog';
-    const title = node('h3', '', `批量修改分类（已选择 ${selectedEntries.size} 个主题）`);
-    const select = node('select');
-    categoryOptions(select, false, '');
+    const title = node('h3', '', `${deleting ? '删除所选主题' : '批量修改分类'}（已选择 ${selectedEntries.size} 个主题）`);
     const archive = store();
     const library = eagle.library.path;
+    const picker = deleting ? null : categoryPicker('', library);
     let requests = [...selectedEntries].map((id) => {
       const entry = data.entries.find((value) => value.id === id);
-      return { id, updatedAt: entry?.updatedAt, revision: entry?.revision };
+      return { id, name: entry?.name || id, updatedAt: entry?.updatedAt, revision: entry?.revision };
     });
     const status = node('div', 'warehouse-batch-status');
     status.setAttribute('aria-live', 'polite');
@@ -534,13 +750,13 @@ const Warehouse = (() => {
     confirm.type = 'button';
     confirm.addEventListener('click', async () => {
       if (pending || conflict) return;
-      pending = true; confirm.disabled = true; cancel.disabled = true; select.disabled = true;
-      lockedCategory ??= select.value;
+      pending = true; confirm.disabled = true; cancel.disabled = true; picker?.setDisabled(true);
+      lockedCategory ??= picker?.getValue();
       let results;
       try {
         checkIdle();
         if (library !== eagle.library.path) throw new Error('素材库已切换，请重新打开并确认');
-        results = (await archive.setCategories(requests, lockedCategory)).results;
+        results = (await (deleting ? archive.removeEntries(requests) : archive.setCategories(requests, lockedCategory))).results;
       } catch (error) {
         results = requests.map(({ id }) => ({ id, ok: false, error: error.message }));
       }
@@ -548,31 +764,49 @@ const Warehouse = (() => {
       const failures = requests.map((request) => resultById.get(request.id)
         || { id: request.id, ok: false, error: '未收到保存结果，请重试' }).filter((result) => !result.ok);
       const count = requests.length - failures.length;
+      const successfulCategory = !deleting && results?.find((result) => result.ok)?.categoryId;
+      if (typeof successfulCategory === 'string') {
+        lockedCategory = successfulCategory;
+        rememberCategory(library, successfulCategory);
+      }
+      if (deleting && library === currentLibrary && results?.some((result) => result.ok && result.id === current?.id)) detachTopic();
+      const requestNames = new Map(requests.map((request) => [request.id, request.name]));
       selectedEntries.clear();
       failures.forEach((result) => selectedEntries.add(result.id));
       const failedIds = new Set(failures.map((result) => result.id));
       requests = requests.filter((request) => failedIds.has(request.id));
-      conflict = failures.some((result) => result.code === 'conflict'
+      conflict = failures.some((result) => result.code === 'conflict' || result.code === 'missing'
         || /冲突|已修改|版本|重新打开|已切换/.test(result.error || ''));
-      status.replaceChildren(node('p', '', `已修改 ${count} 个主题，失败 ${failures.length} 个。`));
+      status.replaceChildren(node('p', '', `已${verb} ${count} 个主题，失败 ${failures.length} 个。`));
       failures.forEach((result) => status.appendChild(node('p', 'error',
-        `${data.entries.find((entry) => entry.id === result.id)?.name || result.id}：${result.error || '保存失败'}`)));
+        `${requestNames.get(result.id)}：${result.error || '保存失败'}`)));
       if (conflict) status.appendChild(node('p', 'error', '有主题或素材库已变化，请关闭对话框、重新打开仓库后再次选择并确认。'));
-      try { data = archive.list(); } catch (error) { status.appendChild(node('p', 'error', error.message)); }
+      if (library === eagle.library.path) {
+        try { data = archive.list(); } catch (error) { status.appendChild(node('p', 'error', error.message)); }
+        categoryOptions($('warehouse-category'), true, $('warehouse-category').value);
+      }
       // 保存后只更新当前卡片的分类；失败项仍然可见并保持选择。
       $('warehouse-grid').querySelectorAll('.warehouse-card').forEach((card) => {
         const entry = data.entries.find((value) => value.id === card.dataset.entryId);
         if (entry) card.querySelector('.warehouse-category-badge').textContent = categoryName(entry.categoryId);
+        else if (deleting) card.remove();
       });
       syncBatchActions(); syncSelectionCards();
       pending = false; cancel.disabled = false;
       confirm.textContent = '重试失败项'; confirm.disabled = conflict;
-      if (!failures.length) { dialog.close(); renderCards(); hooks.toast(`已修改 ${count} 个主题的分类`); }
+      if (!failures.length) {
+        dialog.close(); renderCards();
+        hooks.toast(deleting ? `已删除 ${count} 个主题，可从「备份 / 回收站」恢复` : `已修改 ${count} 个主题的分类`);
+      }
     });
     actions.append(cancel, confirm);
-    dialog.append(title, select, status, actions);
+    dialog.append(title);
+    if (deleting) dialog.append(node('p', 'hint', '所选主题将移入回收站，不删除 Eagle 中的原素材。'));
+    else dialog.append(picker.element);
+    dialog.append(status, actions);
     document.body.appendChild(dialog);
     dialog.showModal();
+    picker?.focus();
     dialog.addEventListener('close', () => dialog.remove());
     dialog.addEventListener('cancel', (event) => { if (pending) event.preventDefault(); });
   }
@@ -692,21 +926,6 @@ const Warehouse = (() => {
       applySceneEdit(result.entry);
       hooks.toast(result.keys.length ? `已恢复 ${result.keys.length} 个片段` : '这些片段已恢复');
     } finally { scenesSaving = false; syncSceneActions(); }
-  }
-
-  function sceneContextMenu(event, match) {
-    if (!current || document.body.dataset.page === 'warehouse') return false;
-    const selected = Search.getSelectedMatches() || [];
-    const key = ArchiveStore.sceneKey(match);
-    const matches = selected.some((value) => ArchiveStore.sceneKey(value) === key) ? selected : [match];
-    const id = current.id;
-    const library = eagle.library.path;
-    showContextMenu(event.clientX, event.clientY, event.currentTarget, {
-      label: matches.length > 1 ? `从主题移除选中 ${matches.length} 个片段` : '从主题移除此片段',
-      disabled: currentLibrary !== library || updating || coverSaving || scenesSaving || Search.isBusy(),
-      run: () => { requireTopic(id, library); removeTopicMatches(matches); },
-    });
-    return true;
   }
 
   function removedMatchesForView() {
@@ -1086,7 +1305,8 @@ const Warehouse = (() => {
   function fillEditor(entry, recipe, view) {
     $('warehouse-editor-error').textContent = '';
     $('entry-name').value = entry?.name || recipe?.query || '未命名';
-    categoryOptions($('entry-category'), false, entry?.categoryId || '');
+    editorCategoryPicker = categoryPicker(entry?.categoryId || '', eagle.library.path);
+    $('entry-category').replaceChildren(editorCategoryPicker.element);
     $('entry-delete').classList.toggle('hidden', !entry);
     $('entry-copy')?.classList.toggle('hidden', !entry);
     $('entry-delete').textContent = '删除主题';
@@ -1107,7 +1327,7 @@ const Warehouse = (() => {
     $('entry-aiMode').value = recipe.config.aiMode || 'balanced';
     SearchRecipe.writeTime(recipe.time, 'entry-time');
     $('entry-scope').value = recipe.scope.mode;
-    $('entry-folders').classList.toggle('hidden', recipe.scope.mode !== 'folders');
+    $('entry-folders').classList.toggle('hidden', recipe.scope.mode === 'all');
     $('entry-replace-source').classList.toggle('hidden', recipe.kind === 'text');
     $('entry-source').textContent = recipe.kind === 'text' ? '文本搜索'
       : `${recipe.kind === 'hybrid' ? '文本 × 视觉混合搜索' : '视觉搜索'} · ${recipe.payload?.video_path || '已保存查询图片'}`;
@@ -1248,6 +1468,7 @@ const Warehouse = (() => {
       if (!currentNavigation(navigation)) return;
       checkIdle();
       editing = null;
+      editingLibrary = eagle.library.path;
       $('warehouse-editor-title').textContent = '保存到仓库';
       $('warehouse-editor-hint').textContent = `保存 ${countVideos(savingMatches)} 个素材 / ${savingMatches.length} 个片段及当前筛选条件。`;
       fillEditor(null, draft, savingView);
@@ -1270,8 +1491,9 @@ const Warehouse = (() => {
     recipe.config.aiMode = $('entry-aiMode').value;
     recipe.time = SearchRecipe.readTime('entry-time');
     const ids = [...$('entry-folders').querySelectorAll('input:checked')].map((input) => input.value);
-    recipe.scope = $('entry-scope').value === 'all' ? { mode: 'all' } : { mode: 'folders', folderIds: ids };
-    if (recipe.scope.mode === 'folders' && !ids.length) throw new Error('请至少选择一个文件夹');
+    const scopeMode = $('entry-scope').value;
+    recipe.scope = scopeMode === 'all' ? { mode: 'all' } : { mode: scopeMode, folderIds: ids };
+    if (scopeMode !== 'all' && !ids.length) throw new Error('请至少选择一个文件夹');
     const view = { minDur: Number($('entry-duration').value), sortBy: $('entry-sort').value, grouped: $('entry-grouped').checked };
     return { recipe, view };
   }
@@ -1304,9 +1526,12 @@ const Warehouse = (() => {
       checkIdle();
       const name = $('entry-name').value.trim();
       if (!name) throw new Error('请输入主题名称');
-      const categoryId = $('entry-category').value;
+      if (editingLibrary !== eagle.library.path) throw new Error('素材库已切换，请重新打开并确认');
+      const categoryId = editorCategoryPicker.getValue();
+      editorCategoryPicker.setDisabled(true);
       if (!editing) {
         const entry = store().add({ name, categoryId, recipe: draft, view: savingView, matches: savingMatches });
+        rememberCategory(editingLibrary, entry.categoryId);
         data = store().list();
         await load(entry);
         hooks.toast(`已保存主题「${name}」`);
@@ -1315,10 +1540,14 @@ const Warehouse = (() => {
         let renamed = { ...editing, name, categoryId, view, metadataUpdatedAt: new Date().toISOString() };
         if (!equivalent(recipe, editing.recipe)) {
           const persisted = await SearchRecipe.persistSource(recipe);
-          if (!await refreshEntry(renamed, persisted, view)) return;
+          const updated = await refreshEntry(renamed, persisted, view);
+          if (!updated) return;
+          rememberCategory(editingLibrary, updated.categoryId);
         } else {
           renamed = store().replace(renamed, editing.updatedAt);
+          rememberCategory(editingLibrary, renamed.categoryId);
           data = store().list();
+          categoryOptions($('warehouse-category'), true, $('warehouse-category').value);
           if (current?.id === renamed.id && document.body.dataset.page !== 'warehouse') await load(renamed, { resetView: true });
           if (document.body.dataset.page === 'warehouse') renderCards();
           hooks.toast('主题信息已保存');
@@ -1327,7 +1556,7 @@ const Warehouse = (() => {
       $('warehouse-editor').close();
     } catch (error) {
       $('warehouse-editor-error').textContent = error.message;
-    } finally { $('entry-submit').disabled = false; }
+    } finally { $('entry-submit').disabled = false; editorCategoryPicker.setDisabled(false); }
   }
 
   function confirmButton(button, action) {
@@ -1517,16 +1746,14 @@ const Warehouse = (() => {
       if (data) renderCards();
     };
     setViewMode(viewMode);
-    const recovery = node('button', '', '备份 / 回收站'); recovery.id = 'warehouse-recovery'; recovery.type = 'button';
-    $('warehouse-categories').parentElement.appendChild(recovery);
+    const recovery = $('warehouse-recovery');
     recovery.addEventListener('click', () => attempt(recoveryDialog));
     $('search-time').addEventListener('change', () => {
       $('search-time-dates').classList.toggle('hidden', $('search-time').value !== 'custom');
       $('time-warning').textContent = '';
     });
     $('entry-time').addEventListener('change', () => $('entry-time-dates').classList.toggle('hidden', $('entry-time').value !== 'custom'));
-    $('entry-scope').addEventListener('change', () => $('entry-folders').classList.toggle('hidden', $('entry-scope').value !== 'folders'));
-    $('warehouse-back').addEventListener('click', showSearch);
+    $('entry-scope').addEventListener('change', () => $('entry-folders').classList.toggle('hidden', $('entry-scope').value === 'all'));
     $('warehouse-query').addEventListener('input', () => {
       forgetWarehousePosition();
       clearTimeout(queryTimer);
@@ -1549,7 +1776,7 @@ const Warehouse = (() => {
       forgetWarehousePosition();
       clearTimeout(queryTimer); setViewMode('list');
     });
-    $('warehouse-batch-category').addEventListener('click', () => attempt(batchChangeCategory));
+    initBoxSelection();
     $('topic-back').addEventListener('click', () => {
       selectedEntries.clear();
       open();
@@ -1559,8 +1786,6 @@ const Warehouse = (() => {
     $('topic-favorite').addEventListener('click', () => attempt(() => { requireTopic(); toggleFavorite(current); }));
     $('topic-update').addEventListener('click', () => attempt(() => refreshEntry(current)));
     $('topic-history')?.addEventListener('click', () => attempt(topicHistory));
-    $('topic-compare').addEventListener('click', () => attempt(() => TopicRelations.showCompare([current?.id])));
-    $('warehouse-compare').addEventListener('click', () => attempt(() => TopicRelations.showCompare([...selectedEntries])));
     $('entry-copy')?.addEventListener('click', () => attempt(copyTopic));
     $('topic-removed').addEventListener('click', () => attempt(showRemovedMatches));
     $('btn-topic-remove').addEventListener('click', () => attempt(() => removeTopicMatches(Search.getSelectedMatches())));
@@ -1571,7 +1796,7 @@ const Warehouse = (() => {
       const maximum = $('result-max-dur');
       try {
         if (!maximum.validity.valid) throw new Error('请输入有效的非负时长上限');
-        const filter = { query: $('topic-scene-query').value, source: $('topic-scene-source').value,
+        const filter = { ...Search.getArchiveFilter(), query: $('topic-scene-query').value, source: $('topic-scene-source').value,
           tags: $('result-tags').value,
           maxDur: maximum.value === '' ? null : Number(maximum.value) };
         Search.setArchiveFilter(filter);
@@ -1590,6 +1815,13 @@ const Warehouse = (() => {
     ['result-max-dur'].forEach((id) => $(id).addEventListener('change', () => {
       clearTimeout(sceneQueryTimer); applySceneFilter();
     }));
+    $('topic-filter-threshold').addEventListener('change', () => attempt(() => {
+      checkIdle(); requireTopic();
+      const input = $('topic-filter-threshold');
+      if (!input.validity.valid) throw new Error('请输入有效的非负阈值');
+      Search.setArchiveFilter({ ...Search.getArchiveFilter(), minScore: input.value === '' ? null : Number(input.value) });
+      localFilters.set(timeKey(current), Search.getArchiveFilter());
+    }));
     $('result-filter-clear').addEventListener('click', () => attempt(() => {
       checkIdle();
       if (current) requireTopic();
@@ -1598,7 +1830,12 @@ const Warehouse = (() => {
       $('view-min-dur').value = 0;
       Search.setArchiveFilter({ query: '', source: 'all' });
       $('result-filter-error').textContent = '';
-      if (current) localFilters.set(timeKey(current), Search.getArchiveFilter());
+      if (current) {
+        localFilters.set(timeKey(current), Search.getArchiveFilter());
+        localTimes.set(timeKey(current), { mode: 'all' });
+        Search.setArchiveTime({ mode: 'all' });
+        syncTopic();
+      }
     }));
     $('browse-position-top').addEventListener('click', () => {
       if (positionTarget?.library === eagle.library.path && positionTarget.page === document.body.dataset.page) positionTarget.root.scrollTop = 0;
@@ -1640,7 +1877,6 @@ const Warehouse = (() => {
       removedSession = null;
       $('topic-removed-list').replaceChildren();
     });
-    Search.setContextMenuHandler(sceneContextMenu);
     document.addEventListener('search-selection', syncSceneActions);
     document.addEventListener('search-busy', syncSceneActions);
     document.addEventListener('search-context', () => closeContextMenu());
@@ -1690,5 +1926,30 @@ const Warehouse = (() => {
     document.addEventListener('search-completed', () => { detachTopic(); showSearch(); });
   }
 
-  return { init, open, saveCurrent, getCurrentName: () => current?.name || '' };
+  function getScopeContext() {
+    requireTopic();
+    return { id: current.id, library: currentLibrary, generation: navigationGeneration,
+      scope: SearchRecipe.clone(Search.getArchiveFilter().scope || { mode: 'all' }) };
+  }
+
+  async function applyScopeFilter(target, mode, ids, shouldApply = () => true) {
+    checkIdle(); requireTopic(target.id, target.library);
+    let scope = { mode: 'all' };
+    if (mode === 'selected') {
+      const folders = await eagle.folder.getSelected();
+      if (!folders?.length) throw new Error('请先在 Eagle 中选中要筛选的文件夹');
+      scope = { mode: 'folders', folderIds: folders.map((folder) => folder.id) };
+    } else if (mode === 'custom' || mode === 'exclude') {
+      scope = { mode: mode === 'custom' ? 'folders' : 'exclude', folderIds: ids };
+    }
+    const resolved = await SearchRecipe.resolveScope(scope, { mode: 'all' });
+    if (!shouldApply()) return;
+    checkIdle(); requireTopic(target.id, target.library);
+    if (target.generation !== navigationGeneration) throw new Error('页面已切换，请重新选择范围');
+    Search.setArchiveFilter({ ...Search.getArchiveFilter(), scope,
+      scopePaths: resolved.paths == null ? null : [...resolved.paths] });
+    localFilters.set(timeKey(current), Search.getArchiveFilter());
+  }
+
+  return { init, open, saveCurrent, getScopeContext, applyScopeFilter, getCurrentName: () => current?.name || '' };
 })();

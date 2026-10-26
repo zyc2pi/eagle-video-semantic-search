@@ -45,3 +45,40 @@ assert.strictEqual(captured.config.threshold, 15);
 assert(!JSON.stringify(captured).includes('never-save-this'));
 assert.strictEqual(captured.scope.folderIds[0], 'parent');
 console.log('search recipe dates, boundary, scope intersection and config isolation tests passed');
+
+async function checkExcludedFolders() {
+  const folders = [
+    { id: 'parent', children: [{ id: 'child', children: [] }] },
+    { id: 'other', children: [] }, { id: 'empty', children: [] },
+  ];
+  const items = [
+    { id: 'a', filePath: 'D:/a.mp4', folders: ['parent'], importedAt: stamps.start },
+    { id: 'b', filePath: 'D:/b.mp4', folders: ['child', 'other'] },
+    { id: 'c', filePath: 'D:/c.mp4', folders: ['other'], importedAt: stamps.outside },
+    { id: 'd', filePath: 'D:/d.mp4', folders: [], importedAt: stamps.start },
+  ].map((item) => ({ ...item, ext: 'mp4' }));
+  context.eagle.folder = { getByIds: async (ids) => [...folders, ...folders[0].children].filter((f) => ids.includes(f.id)) };
+  context.eagle.item = { getAll: async () => items,
+    get: async ({ folders: ids }) => items.filter((item) => ids.every((id) => item.folders.includes(id))) };
+  vm.runInNewContext(`${fs.readFileSync(path.join(__dirname, '../js/eagleBridge.js'), 'utf8')}\nthis.Bridge = Bridge;`, context);
+  const saved = (ids, time = { mode: 'all' }) => recipe.capture('text', '城市', null, {
+    scope: { mode: 'exclude', folderIds: ids }, time, library: context.eagle.library.path,
+  });
+  assert.deepStrictEqual([...(await recipe.resolve(saved(['parent']))).paths], ['d:\\c.mp4', 'd:\\d.mp4'], '排除父目录包含子目录和多归属素材');
+  assert.deepStrictEqual([...(await recipe.resolve(saved(['parent', 'other']))).paths], ['d:\\d.mp4'], '多个目录取排除并集，未分类素材保留');
+  assert.deepStrictEqual([...(await recipe.resolve(saved(['parent'], custom))).paths], ['d:\\d.mp4'], '排除后再与导入日期求交集');
+  assert.strictEqual((await recipe.resolve(saved(['empty']))).paths.size, 4, '空文件夹不排除其他素材');
+  await assert.rejects(recipe.resolve(saved([])), /请选择搜索文件夹/);
+  await assert.rejects(recipe.resolve(saved(['missing'])), /已不存在/);
+  context.Config.get = () => ({ scopeMode: 'exclude', scopeFolderIds: ['parent'], modelName: 'test' });
+  context.document = { getElementById: () => ({ value: 'all' }) };
+  const current = await recipe.currentContext();
+  assert.strictEqual(current.scope.mode, 'exclude');
+  assert.deepStrictEqual([...current.paths], ['d:\\c.mp4', 'd:\\d.mp4']);
+  const snapshot = recipe.capture('visual', '图片', { image_base64: 'fixture' }, current);
+  assert.deepStrictEqual([...(await recipe.resolve(snapshot)).paths], [...current.paths], '保存与重放保持排除条件');
+  items[3].folders = ['other'];
+  assert.strictEqual((await recipe.resolve(saved(['parent', 'other']))).paths.size, 0, '全部排除保持空范围');
+  console.log('folder exclusion, descendants, union, dates, capture and replay tests passed');
+}
+checkExcludedFolders().catch((error) => { console.error(error); process.exitCode = 1; });

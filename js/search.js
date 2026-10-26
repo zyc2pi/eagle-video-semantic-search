@@ -1,7 +1,7 @@
 /* 搜索 + 结果渲染（分批/分组/排序/过滤）+ 悬停自动播放 + 预览键盘导航 + 勾选导出 */
 const Search = (() => {
   const CHUNK_SIZE = 60;        // 每批渲染的卡片数，滚动到底部续加（分组模式按组为粒度）
-  const THUMB_CONCURRENCY = 6;  // 缩略图并发上限（每张图都是服务端一次 ffmpeg 抽帧进程）
+  const THUMB_CONCURRENCY = 6;  // 缩略图并发上限（服务端缓存未命中时需要 ffmpeg 抽帧）
   const PREVIEW_LEAD_IN_FRAMES = 2; // 跳过切点前两帧，避免转场/解码黑帧闪现
 
   let lastMatches = [];
@@ -39,7 +39,7 @@ const Search = (() => {
   }
   let selectedIdx = new Set();  // 勾选的结果下标（相对 lastMatches，视图变化不丢失）
   let selectionHandler = null;  // 勾选数量变化回调，由 plugin.js 注入
-  let contextMenuHandler = null; // 仓库主题可提供片段操作菜单；普通搜索仍以右键切换勾选。
+  let selectionAnchor = null;  // 最近一次普通点击或单项勾选，作为 Shift 范围起点。
 
   // 视图状态（过滤→排序→分组，均不修改 lastMatches 本体）
   const view = { sortBy: 'sim', minDur: 0, grouped: false };
@@ -59,8 +59,60 @@ const Search = (() => {
   /* ---------- 缩略图限流加载 ---------- */
   const ThumbLoader = (() => {
     const queue = [];
+    const cache = new Map();
+    const pending = new Map();
+    let maxEntries = 5000;
+    let maxBytes = 128 * 1024 * 1024;
+    let cacheBytes = 0;
     let active = 0;
     let generation = 0;
+
+    function cachedSource(url) {
+      const entry = cache.get(url);
+      if (!entry) return null;
+      cache.delete(url);
+      cache.set(url, entry);
+      return entry.source;
+    }
+
+    function remember(url, source) {
+      // 保留原始压缩图片字节，不持有离屏 DOM/解码位图；按双字节字符串保守计费。
+      const bytes = (url.length + source.length) * 2;
+      if (!maxEntries || bytes > maxBytes) return;
+      if (cache.has(url)) cacheBytes -= cache.get(url).bytes;
+      cache.delete(url);
+      cache.set(url, { source, bytes });
+      cacheBytes += bytes;
+      trim();
+    }
+
+    function trim() {
+      while (cache.size > maxEntries || cacheBytes > maxBytes) {
+        const oldest = cache.keys().next().value;
+        cacheBytes -= cache.get(oldest).bytes;
+        cache.delete(oldest);
+      }
+    }
+
+    async function readImage(url) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 15000);
+      try {
+        const response = await fetch(url, { signal: controller.signal });
+        if (!response.ok) throw new Error(`预览图请求失败：${response.status}`);
+        const blob = await response.blob();
+        if (!blob.type.startsWith('image/')) throw new Error('预览图响应不是图片');
+        return await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result);
+          reader.onerror = () => reject(reader.error);
+          reader.onabort = () => reject(new Error('预览图读取已取消'));
+          reader.readAsDataURL(blob);
+        });
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
 
     function pump() {
       while (active < THUMB_CONCURRENCY && queue.length) {
@@ -69,22 +121,55 @@ const Search = (() => {
         const { img, url, onError, token } = queue.shift();
         active += 1;
         let settled = false;
+        let source = cachedSource(url);
+        let request = null;
         const done = (event) => {
           if (settled) return;
           settled = true;
           active -= 1;
           img.onload = null;
           img.onerror = null;
+          if (event?.type === 'load' && source) remember(url, source);
+          if (request && pending.get(url) === request) pending.delete(url);
           try { if (event?.type === 'error' && token === generation) onError?.(); } finally { pump(); }
         };
         img.onload = done;
         img.onerror = done;
-        img.src = url;
+        if (source) {
+          img.src = source;
+        } else if (maxEntries && maxBytes && /^https?:\/\//i.test(url)
+            && typeof fetch === 'function' && typeof FileReader !== 'undefined') {
+          request = pending.get(url);
+          if (!request) {
+            request = readImage(url);
+            pending.set(url, request);
+          }
+          request.then((data) => {
+            source = data;
+            img.src = data;
+          }, () => {
+            // 不支持 fetch/CORS 或服务暂时失败时沿用原生图片加载及已有回退。
+            img.src = url;
+          });
+        } else {
+          img.src = url;
+        }
       }
     }
 
     return {
+      configure(cfg) {
+        maxEntries = cfg.thumbnailCacheMaxEntries ?? 5000;
+        maxBytes = (cfg.thumbnailCacheMaxMB ?? 128) * 1024 * 1024;
+        trim();
+      },
       load(img, url, onError) {
+        const source = cachedSource(url);
+        if (source) {
+          // 已确认能解码的数据直接显示，不等待懒加载观察器或网络队列。
+          img.src = source;
+          return;
+        }
         const token = generation;
         const enqueue = () => {
           if (token !== generation) return;
@@ -101,7 +186,7 @@ const Search = (() => {
       clear() {
         generation += 1;
         queue.length = 0;
-        // 已开始请求仍占并发槽位直到完成；只废弃尚未开始和旧失败回退。
+        // 已开始请求仍占并发槽位直到完成；保留缓存及在途共享请求供新页面复用。
         if (typeof LazyLoad !== 'undefined') {
           LazyLoad.clear();
         }
@@ -113,7 +198,7 @@ const Search = (() => {
   const hover = { video: null, box: null, diag: null };
 
   function clearPreviewMediaEvents(video) {
-    for (const name of ['loadedmetadata', 'seeked', 'timeupdate', 'playing', 'waiting', 'pause', 'ended', 'error', 'canplay', 'loadeddata', 'progress']) {
+    for (const name of ['loadedmetadata', 'seeking', 'seeked', 'timeupdate', 'playing', 'waiting', 'pause', 'ended', 'error', 'canplay', 'loadeddata', 'progress']) {
       video[`on${name}`] = null;
     }
   }
@@ -306,6 +391,13 @@ const Search = (() => {
       idxs = idxs.filter((i) => (lastMatches[i].duration_seconds || 0) >= view.minDur);
     }
     const nameQuery = archiveFilter.query.trim().toLocaleLowerCase();
+    if (archiveFilter.minScore != null) {
+      idxs = idxs.filter((i) => Number.isFinite(lastMatches[i].similarity) && lastMatches[i].similarity >= archiveFilter.minScore);
+    }
+    if (archiveFilter.scopePaths != null) {
+      const paths = new Set(archiveFilter.scopePaths);
+      idxs = idxs.filter((i) => paths.has(Bridge.normalizePath(lastMatches[i].video_path)));
+    }
     if (nameQuery) idxs = idxs.filter((i) => String(lastMatches[i].video_name || '').toLocaleLowerCase().includes(nameQuery));
     if (archiveFilter.source !== 'all') {
       idxs = idxs.filter((i) => !!lastMatches[i].manualScore === (archiveFilter.source === 'manual'));
@@ -547,10 +639,28 @@ const Search = (() => {
   }
 
   function setCardSelection(idx, checked, card, pick) {
+    selectionAnchor = idx;
     if (checked) selectedIdx.add(idx);
     else selectedIdx.delete(idx);
     pick.checked = checked;
     card.classList.toggle('selected', checked);
+    notifySelection();
+  }
+
+  function selectRange(idx) {
+    const end = displayList.indexOf(idx);
+    const anchor = displayList.indexOf(selectionAnchor);
+    if (end < 0) return;
+    const start = anchor < 0 ? end : anchor;
+    if (anchor < 0) selectionAnchor = idx;
+    for (let pos = Math.min(start, end); pos <= Math.max(start, end); pos += 1) {
+      selectedIdx.add(displayList[pos]);
+    }
+    el.results.querySelectorAll('.card').forEach((card) => {
+      const checked = selectedIdx.has(Number(card.dataset.resultIndex));
+      card.classList.toggle('selected', checked);
+      card.querySelector('.pick').checked = checked;
+    });
     notifySelection();
   }
 
@@ -561,8 +671,8 @@ const Search = (() => {
     const initiallySelected = selectedIdx.has(idx);
     card.className = 'card' + (item ? '' : ' missing') + (initiallySelected ? ' selected' : '');
     card.dataset.sceneKey = String(ArchiveStore.sceneKey(m));
-    card.title = document.body?.dataset.topic === 'true'
-      ? '左键预览；右键从主题移除片段' : '左键预览；右键选中或取消选择';
+    card.dataset.resultIndex = String(idx);
+    card.title = '左键单选；Ctrl+左键多选；Shift+左键连续多选；右键整理所选；双击预览';
 
     const thumbBox = document.createElement('div');
     thumbBox.className = 'thumb-box';
@@ -583,9 +693,13 @@ const Search = (() => {
     pick.className = 'pick';
     pick.title = '选中此片段';
     pick.checked = initiallySelected;
-    pick.addEventListener('click', (e) => e.stopPropagation());
+    pick.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (e.shiftKey) selectRange(idx);
+    });
     pick.addEventListener('change', () => {
-      setCardSelection(idx, pick.checked, card, pick);
+      // Shift 点击已在 click 中更新整段，避免 change 重置范围起点。
+      if (pick.checked !== selectedIdx.has(idx)) setCardSelection(idx, pick.checked, card, pick);
     });
 
     const meta = document.createElement('div');
@@ -633,12 +747,31 @@ const Search = (() => {
     card.appendChild(pick);
     card.appendChild(similarBtn);
     card.appendChild(meta);
-    card.addEventListener('click', () => openPreviewAt(pos));
+    card.addEventListener('mousedown', (e) => {
+      if (e.button === 0 && e.shiftKey) e.preventDefault();
+    });
+    card.addEventListener('click', (e) => {
+      if (e.shiftKey) {
+        e.preventDefault();
+        selectRange(idx);
+        return;
+      }
+      if (e.ctrlKey || e.metaKey) {
+        setCardSelection(idx, !selectedIdx.has(idx), card, pick);
+      } else {
+        clearSelection();
+        setCardSelection(idx, true, card, pick);
+      }
+    });
+    card.addEventListener('dblclick', (e) => {
+      if (!e.ctrlKey && !e.metaKey && !e.shiftKey && !e.target.closest('button, input')) openPreviewAt(pos);
+    });
     card.addEventListener('contextmenu', (e) => {
       e.preventDefault();
-      e.stopPropagation();
-      if (contextMenuHandler?.(e, m)) return;
-      setCardSelection(idx, !selectedIdx.has(idx), card, pick);
+      if (!selectedIdx.has(idx)) {
+        clearSelection();
+        setCardSelection(idx, true, card, pick);
+      }
     });
     return card;
   }
@@ -719,6 +852,7 @@ const Search = (() => {
   }
 
   function render() {
+    selectionAnchor = null;
     renderGeneration += 1;
     document.dispatchEvent(new CustomEvent('search-context'));
     closePreview();
@@ -749,19 +883,24 @@ const Search = (() => {
     el.emptyState.classList.toggle('hidden', has);
     el.viewBar.classList.toggle('hidden', lastMatches.length === 0);
     if (el.localFilters) {
-      el.localFilters.classList.toggle('hidden', lastMatches.length === 0);
+      el.localFilters.classList.remove('hidden');
       const values = { 'topic-scene-query': archiveFilter.query, 'topic-scene-source': archiveFilter.source,
         'result-tags': archiveFilter.tags || '',
-        'result-max-dur': archiveFilter.maxDur ?? '' };
+        'result-max-dur': archiveFilter.maxDur ?? '', 'topic-filter-threshold': archiveFilter.minScore ?? '' };
       Object.entries(values).forEach(([id, value]) => {
         const input = document.getElementById(id);
         if (input) input.value = value;
       });
       document.getElementById('result-filter-error').textContent = '';
+      const scopeButton = document.getElementById('topic-filter-scope');
+      const scope = archiveFilter.scope || { mode: 'all' };
+      if (scopeButton) scopeButton.textContent = scope.mode === 'all' ? '范围: 整个库'
+        : `范围: ${scope.mode === 'exclude' ? '排除 ' : ''}${scope.folderIds.length} 个文件夹`;
     }
     const hasLocalFilter = archiveFilter.query.trim() || archiveFilter.source !== 'all'
-      || archiveFilter.tags?.trim() || (archiveFilter.orientation || 'all') !== 'all' || archiveFilter.maxDur != null;
-    document.getElementById('filter-active-indicator')?.classList.toggle('hidden', !hasLocalFilter && view.minDur <= 0);
+      || archiveFilter.tags?.trim() || (archiveFilter.orientation || 'all') !== 'all' || archiveFilter.maxDur != null
+      || archiveFilter.minScore != null || archiveFilter.scopePaths != null;
+    document.getElementById('filter-active-indicator')?.classList.toggle('hidden', !hasLocalFilter && view.minDur <= 0 && archiveTime.mode === 'all');
     el.resultCount.textContent = view.minDur > 0 || archiveTime.mode !== 'all' || hasLocalFilter
       ? `${displayList.length}/${lastMatches.length} 条`
       : `${lastMatches.length} 条`;
@@ -1005,14 +1144,14 @@ const Search = (() => {
           if (finished) return;
           if (lastRaf !== null) rafGaps.push(+(time - lastRaf).toFixed(1));
           lastRaf = time;
-          if (now() - t0 < SAMPLE_MS) requestAnimationFrame(onRaf);
+          if (now() - sampleStarted < SAMPLE_MS) requestAnimationFrame(onRaf);
         };
         if (typeof requestAnimationFrame === 'function') requestAnimationFrame(onRaf);
         const onFrame = (time) => {
           if (finished) return;
           if (last !== null) gaps.push(+(time - last).toFixed(1));
           last = time;
-          if (now() - t0 < SAMPLE_MS && typeof video.requestVideoFrameCallback === 'function') {
+          if (now() - sampleStarted < SAMPLE_MS && typeof video.requestVideoFrameCallback === 'function') {
             video.requestVideoFrameCallback(onFrame);
           } else {
             stop();
@@ -1037,7 +1176,7 @@ const Search = (() => {
           }
           finish();
         };
-        sampleTimer = setTimeout(stop, SAMPLE_MS + 1500);
+        sampleTimer = setTimeout(stop, SAMPLE_MS);
         if (video && typeof video.requestVideoFrameCallback === 'function') video.requestVideoFrameCallback(onFrame);
       };
       return {
@@ -1130,6 +1269,7 @@ const Search = (() => {
     let nativeReloaded = false;
     let locateNative = null;
     let lastPlaybackTime = null;
+    let seekPending = false;
     const clearStallTimer = () => {
       if (stallTimer !== null) clearTimeout(stallTimer);
       stallTimer = null;
@@ -1139,6 +1279,7 @@ const Search = (() => {
       if (bufferingTimer !== null) clearTimeout(bufferingTimer);
       bufferingTimer = null;
       pendingPlayback = false;
+      lastPlaybackTime = null;
       attempt += 1;
     };
     const setPreviewState = (state, message) => {
@@ -1162,10 +1303,22 @@ const Search = (() => {
     const watchForStall = () => {
       if (!isCurrent() || stallTimer !== null) return;
       const watchedAttempt = attempt;
-      lastPlaybackTime = video.currentTime;
       const timer = setTimeout(() => {
         if (!isCurrent() || watchedAttempt !== attempt || stallTimer !== timer) return;
         stallTimer = null;
+        // 主线程繁忙时，超时可能先于积压的媒体事件执行；先复核真实状态。
+        if (!pendingPlayback && (video.paused || video.ended)) {
+          cancelPreviewLoad();
+          setPreviewState('ready', '');
+          return;
+        }
+        if (!pendingPlayback && !seekPending && !video.seeking && lastPlaybackTime !== null
+          && video.currentTime > lastPlaybackTime) {
+          lastPlaybackTime = video.currentTime;
+          setPreviewState('ready', '');
+          watchForStall();
+          return;
+        }
         diag.mark('stall-timeout', 'native');
         if (!nativeReloaded && locateNative) {
           // 解码管线可能在接管/seek 后停住，仅重开原文件一次。
@@ -1173,6 +1326,8 @@ const Search = (() => {
           attempt += 1;
           pendingPlayback = true;
           positioned = false;
+          seekPending = false;
+          lastPlaybackTime = null;
           video.pause();
           const reloadAttempt = attempt;
           video.onloadedmetadata = () => {
@@ -1193,7 +1348,6 @@ const Search = (() => {
       // play() 本身会等待浏览器缓冲，并驱动继续读取；额外门槛只会推迟起播。
       pendingPlayback = false;
       video.onloadedmetadata = null;
-      video.onseeked = null;
       video.oncanplay = null; video.onloadeddata = null; video.onprogress = null;
       const playingAttempt = attempt;
       diag.mark('play');
@@ -1213,10 +1367,22 @@ const Search = (() => {
     };
 
     video.oncanplay = playCurrent; video.onloadeddata = playCurrent; video.onprogress = playCurrent;
+    video.onseeking = () => {
+      if (!isCurrent()) return;
+      seekPending = true;
+      lastPlaybackTime = null;
+    };
+    video.onseeked = () => {
+      if (!isCurrent()) return;
+      seekPending = false;
+      lastPlaybackTime = video.currentTime;
+      if (!pendingPlayback && !video.paused) watchForStall();
+    };
     video.onplaying = () => {
       if (!isCurrent()) return;
       diag.mark('playing');
-      if (!pendingPlayback && !video.seeking) {
+      if (!pendingPlayback && !seekPending && !video.seeking) {
+        if (lastPlaybackTime === null) lastPlaybackTime = video.currentTime;
         watchForStall();
         setPreviewState('ready', '');
       }
@@ -1224,6 +1390,7 @@ const Search = (() => {
     video.onwaiting = () => {
       if (isCurrent() && !video.paused) {
         diag.mark('waiting', video.currentTime.toFixed(2));
+        if (!seekPending && !video.seeking && lastPlaybackTime === null) lastPlaybackTime = video.currentTime;
         if (bufferingTimer === null) {
           const noticeAttempt = attempt;
           const timer = setTimeout(() => {
@@ -1245,11 +1412,12 @@ const Search = (() => {
     };
     video.ontimeupdate = () => {
       if (!isCurrent()) return;
-      // playing/play() 成功可能只跟着一帧；按播放速度累计足够进度才算恢复。
-      const minProgress = 0.25 * Math.min(1, video.playbackRate || 1);
-      if (!pendingPlayback && !video.paused && !video.seeking && Math.abs(video.currentTime - lastPlaybackTime) >= minProgress) {
+      // 只用定位后的正向播放进度续期，持续监测后续停帧，不把 seek 跳转计入。
+      if (!pendingPlayback && !seekPending && !video.paused && !video.seeking
+        && lastPlaybackTime !== null && video.currentTime > lastPlaybackTime) {
         lastPlaybackTime = video.currentTime;
         clearStallTimer();
+        watchForStall();
         setPreviewState('ready', '');
       }
       if (video.currentTime >= endSec) video.pause();
@@ -1270,8 +1438,10 @@ const Search = (() => {
         video.onloadedmetadata = null;
         if (Math.abs(video.currentTime - startSec) >= 0.04) {
           diag.mark('seek', `${video.currentTime.toFixed(2)}->${startSec.toFixed(2)}`);
+          seekPending = true;
           video.currentTime = startSec;
         }
+        lastPlaybackTime = video.currentTime;
         // 先发定位再 play；浏览器在定位完成后起播，同时驱动被暂停的预加载。
         positioned = true;
         playCurrent();
@@ -1344,7 +1514,6 @@ const Search = (() => {
     video.pause();
     cancelPreviewLoad();
     video.onloadedmetadata = null;
-    video.onseeked = null;
     video.oncanplay = null; video.onloadeddata = null; video.onprogress = null;
     video.currentTime = CoverFrame.stepTime(video.currentTime, direction, Number(activeMatch.fps) || 25, video.duration);
   }
@@ -1489,6 +1658,7 @@ const Search = (() => {
   }
 
   function clearSelection() {
+    selectionAnchor = null;
     selectedIdx.clear();
     el.results.querySelectorAll('.card.selected').forEach((card) => {
       card.classList.remove('selected');
@@ -1511,8 +1681,8 @@ const Search = (() => {
 
   return {
     bindDom, run, runVisual, runFrameText, runHybrid, setView, findLibraryIndexes, loadResults, captureState, restoreState,
+    configureThumbnailCache: (cfg) => ThumbLoader.configure(cfg),
     setSelectionHandler, replaceResults, captureBrowsePosition, restoreBrowsePosition, refreshTopicMembership,
-    setContextMenuHandler: (fn) => { contextMenuHandler = fn; },
     getSelectedMatches, clearSelection, getAllMatches, getLastQuery, getActiveMatch, openPreviewByKey,
     getRawMatches: () => lastMatches.slice(),
     getRecipe: () => lastRecipe && SearchRecipe.clone(lastRecipe),
@@ -1524,6 +1694,8 @@ const Search = (() => {
           || typeof filter.tags !== 'string' || !['all', 'landscape', 'portrait', 'square', 'unknown'].includes(filter.orientation)
           || (filter.maxDur !== null && (!Number.isFinite(filter.maxDur) || filter.maxDur < 0))) throw new Error('片段查找条件无效');
       if (filter.maxDur !== null && filter.maxDur < view.minDur) throw new Error('片段时长上限不能小于下限');
+      if (filter.minScore != null && (!Number.isFinite(filter.minScore) || filter.minScore < 0)) throw new Error('请输入有效的非负阈值');
+      if (filter.scopePaths != null && (!Array.isArray(filter.scopePaths) || !filter.scopePaths.every((path) => typeof path === 'string'))) throw new Error('文件夹范围无效');
       if (JSON.stringify(archiveFilter) === JSON.stringify(filter)) return;
       archiveFilter = filter;
       render();

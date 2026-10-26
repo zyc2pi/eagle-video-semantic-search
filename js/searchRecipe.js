@@ -97,7 +97,7 @@ const SearchRecipe = (() => {
 
   async function resolveScope(scope, time) {
     let paths = null;
-    if (scope.mode === 'folders') {
+    if (scope.mode === 'folders' || scope.mode === 'exclude') {
       const ids = scope.folderIds || [];
       if (!ids.length) throw new Error('请选择搜索文件夹');
       const folders = await eagle.folder.getByIds(ids);
@@ -107,6 +107,9 @@ const SearchRecipe = (() => {
       paths = await Bridge.pathSetFromFolderIds(ids);
     }
     const items = await Bridge.collectLibraryVideos();
+    if (scope.mode === 'exclude') {
+      paths = new Set(items.map((item) => normalize(item.filePath)).filter((path) => !paths.has(path)));
+    }
     const result = filterItems(items, time, paths);
     if (result.missingDates) {
       // 时间全部不可用时拒绝刷新，避免因旧版 API 缺字段而清空仓库。
@@ -125,8 +128,8 @@ const SearchRecipe = (() => {
       const folders = await eagle.folder.getSelected();
       if (!folders?.length) throw new Error('请先在 Eagle 中选中要搜索的文件夹');
       scope = { mode: 'folders', folderIds: folders.map((f) => f.id), names: folders.map((f) => f.name) };
-    } else if (config.scopeMode === 'custom') {
-      scope = { mode: 'folders', folderIds: [...config.scopeFolderIds] };
+    } else if (config.scopeMode === 'custom' || config.scopeMode === 'exclude') {
+      scope = { mode: config.scopeMode === 'exclude' ? 'exclude' : 'folders', folderIds: [...config.scopeFolderIds] };
     }
     const time = readTime();
     const library = eagle.library.path;
@@ -187,5 +190,5 @@ const SearchRecipe = (() => {
   }
 
   return { options, bounds, filterItems, filterMatches, readTime, writeTime, timeLabel,
-    currentContext, capture, persistSource, resolve, normalize, clone };
+    currentContext, capture, persistSource, resolve, resolveScope, normalize, clone };
 })();

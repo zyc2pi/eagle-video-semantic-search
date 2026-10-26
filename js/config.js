@@ -7,6 +7,8 @@ const Config = (() => {
     projectRoot: 'D:\\Auto-scenes-extraction-1.3.0\\Auto-scenes-extraction-1.3.0',
     port: 5006,
     modelName: 'qihoo360-fg-clip2-base',
+    thumbnailCacheMaxEntries: 5000,
+    thumbnailCacheMaxMB: 128,
     threshold: 11,
     // 视觉检索（以图/以片搜）阈值：图像-图像相似度天然偏高，与文本阈值语义不同
     visualThreshold: 40,
@@ -29,9 +31,9 @@ const Config = (() => {
     indexFrameSelection: 'content_adaptive', // 复用现有向量，自适应数量；仅影响新索引
     indexContentMaxFrames: 12,
     indexFp16: true,             // FP16 推理（仅 NVIDIA GPU 生效）
-    // 搜索范围：all=整个库；selected=跟随 Eagle 当前选中文件夹；custom=指定文件夹列表
+    // 搜索范围：all=整个库；selected=跟随 Eagle 选中；custom=指定；exclude=排除
     scopeMode: 'all',
-    scopeFolderIds: [],          // custom 模式勾选的文件夹 id（搜索时递归展开子文件夹）
+    scopeFolderIds: [],          // custom/exclude 模式勾选的文件夹 id（递归展开子文件夹）
     scopeLibrary: '',            // 勾选时所在的库路径，换库后自动重置为 all
     // 静默自动索引：插件随 Eagle 后台运行时，定时检查新素材并自动增量索引
     autoIndex: false,
@@ -61,6 +63,7 @@ const Config = (() => {
     indexMinSceneLen: [1, 120, true], indexBatchSize: [8, 128, true],
     indexSceneThreshold: [0.5, 0.99], indexLocalmaxOrder: [1, 5, true], dedupThreshold: [0.8, 0.99],
     indexContentMaxFrames: [1, 32, true],
+    thumbnailCacheMaxEntries: [0, 50000, true], thumbnailCacheMaxMB: [0, 1024, true],
   };
 
   function validate(value) {
@@ -75,7 +78,7 @@ const Config = (() => {
     if (typeof value.projectRoot !== 'string' || !value.projectRoot.trim()
         || typeof value.modelName !== 'string' || !value.modelName.trim()) throw new Error('项目路径和模型不能为空');
     if (!['mean', 'max'].includes(value.visualAgg) || !['fast', 'balanced', 'quality'].includes(value.aiMode)
-        || !['all', 'selected', 'custom'].includes(value.scopeMode)
+        || !['all', 'selected', 'custom', 'exclude'].includes(value.scopeMode)
         || !['triplet', 'dinov3_cses', 'content_adaptive'].includes(value.indexFrameSelection)) throw new Error('配置选项无效');
     if (!Array.isArray(value.history) || !value.history.every((v) => typeof v === 'string')
         || !Array.isArray(value.scopeFolderIds) || !value.scopeFolderIds.every((v) => typeof v === 'string')) throw new Error('配置列表格式无效');
