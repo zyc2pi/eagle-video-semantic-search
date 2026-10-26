@@ -6,32 +6,47 @@
   <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
-  <header class="topbar">
-    <div class="title">视频语义搜索</div>
-    <div class="service">
-      <span id="service-dot" class="dot offline"></span>
-      <span id="service-text">正在连接搜索服务…</span>
-    </div>
-    <button id="btn-settings" class="icon-btn" title="设置">⚙</button>
-  </header>
-
   <section class="search-row">
     <div class="query-wrap">
       <input id="query" type="text" placeholder="用自然语言描述画面，如：夜晚的城市街道 / 人物特写（支持 -负向词）" autocomplete="off" autofocus>
       <button id="btn-history" class="history-toggle" title="搜索历史" tabindex="-1">▾</button>
       <div id="history-panel" class="history-panel hidden"></div>
     </div>
-    <div class="threshold">
-      <label for="threshold">阈值</label>
-      <input id="threshold" type="range" min="5" max="35" step="0.5">
-      <span id="threshold-val">11</span>
-    </div>
-    <button id="btn-scope" class="scope-btn" title="设置搜索范围：整个库 / 跟随 Eagle 选中 / 指定多个文件夹（均含子文件夹）">范围: 整个库</button>
     <button id="btn-search" class="primary" disabled>搜索</button>
+    <details class="compact-menu search-options">
+      <summary>搜索选项</summary>
+      <div class="menu-content">
+        <h3>搜索选项</h3>
+        <div class="threshold">
+          <label for="threshold">阈值</label>
+          <input id="threshold" type="range" min="5" max="35" step="0.5">
+          <span id="threshold-val">11</span>
+        </div>
+        <button id="btn-scope" class="scope-btn" title="设置搜索范围（含子文件夹）">范围: 整个库</button>
+        <div class="time-filter" role="group" aria-label="素材加入时间">
+          <label for="search-time">素材加入时间</label>
+          <select id="search-time" aria-label="搜索时间范围">
+            <option value="all">不限时间</option><option value="6">近半年</option>
+            <option value="12">近 1 年</option><option value="24">近 2 年</option>
+            <option value="36">近 3 年</option><option value="48">近 4 年</option>
+            <option value="60">近 5 年</option><option value="custom">自定义日期</option>
+          </select>
+          <span id="search-time-dates" class="date-pair hidden">
+            <input id="search-time-start" type="date" aria-label="开始日期"><span>至</span>
+            <input id="search-time-end" type="date" aria-label="结束日期">
+          </span>
+          <span id="time-warning" class="hint" role="status"></span>
+        </div>
+      </div>
+    </details>
   </section>
 
   <section class="toolbar">
     <div class="index-actions">
+      <div id="service-status" class="service-status" role="status" title="加载搜索服务…" aria-label="加载搜索服务…">
+        <span id="service-dot" class="dot starting" aria-hidden="true"></span>
+        <span id="service-text">加载搜索服务…</span>
+      </div>
       <div id="index-mode-picker" class="index-mode-picker">
         <div class="index-split-button">
           <button id="btn-index-primary" type="button" disabled>索引整个库</button>
@@ -63,21 +78,9 @@
       <button id="btn-stop-index">停止</button>
     </div>
     <div class="spacer"></div>
-    <button id="btn-organize-undo" type="button" title="撤销最近一次收录或改分（Ctrl+Z）" disabled>撤销整理</button>
     <button id="btn-archives" title="打开主题仓库，查看保存结果与更新时间">搜索仓库</button>
-    <div class="time-filter" role="group" aria-label="素材加入时间">
-      <select id="search-time" aria-label="搜索时间范围">
-        <option value="all">不限时间</option><option value="6">近半年</option>
-        <option value="12">近 1 年</option><option value="24">近 2 年</option>
-        <option value="36">近 3 年</option><option value="48">近 4 年</option>
-        <option value="60">近 5 年</option><option value="custom">自定义日期</option>
-      </select>
-      <span id="search-time-dates" class="date-pair hidden">
-        <input id="search-time-start" type="date" aria-label="开始日期"><span>至</span>
-        <input id="search-time-end" type="date" aria-label="结束日期">
-      </span>
-      <span id="time-warning" class="hint" role="status"></span>
-    </div>
+    <button id="topic-search" type="button">新搜索</button>
+    <button id="btn-settings" class="icon-btn" type="button" title="设置" aria-label="设置">⚙</button>
   </section>
 
   <section id="warehouse-page" class="warehouse-page hidden" aria-label="搜索仓库">
@@ -105,40 +108,59 @@
     <div id="warehouse-grid" class="warehouse-grid"></div>
   </section>
 
+  <div class="result-workspace" data-preview-layout="sidebar">
+  <div class="results-pane">
   <section id="warehouse-topic" class="warehouse-topic hidden">
     <button id="topic-back" type="button">← 仓库</button>
     <div class="topic-heading"><h2 id="topic-name"></h2><p id="topic-meta" class="hint"></p></div>
     <button id="topic-favorite" type="button" aria-pressed="false" title="设为常用主题">☆</button>
     <div id="topic-time-filter"></div>
-    <button id="topic-edit" type="button">编辑条件</button>
     <button id="topic-update" type="button" class="primary" title="按已保存的搜索条件重新搜索并替换结果">更新结果</button>
-    <button id="topic-review" type="button" title="逐个审阅当前筛选下的片段，进度自动保存">快速审片</button>
-    <button id="topic-history" type="button" title="查看备份中的此主题版本，仅恢复当前主题">主题历史</button>
-    <button id="topic-removed" type="button">已移除 (0)</button>
-    <button id="topic-search" type="button">新搜索</button>
-    <button id="topic-reset-cover" type="button" class="hidden">恢复默认封面</button>
+    <details class="compact-menu topic-options">
+      <summary>主题管理</summary>
+      <div class="menu-content">
+        <h3>主题管理</h3>
+        <button id="topic-edit" type="button">编辑条件</button>
+        <button id="topic-history" type="button" title="查看备份中的此主题版本，仅恢复当前主题">主题历史</button>
+        <button id="topic-removed" type="button">已移除 (0)</button>
+        <button id="topic-compare" type="button">比较主题</button>
+        <button id="topic-reset-cover" type="button" class="hidden">恢复默认封面</button>
+      </div>
+    </details>
   </section>
 
+  <section id="view-bar" class="view-bar hidden">
+    <details id="result-filter-menu" class="compact-menu">
+      <summary>筛选<span id="filter-active-indicator" class="menu-indicator hidden" aria-label="已启用筛选"></span></summary>
+      <div class="menu-content">
   <section id="topic-scene-filter" class="topic-scene-filter hidden" aria-label="结果内组合筛选">
-    <span class="local-filter-label">结果内筛选</span>
+    <h3>结果内筛选</h3>
+    <label for="topic-scene-query">视频名称</label>
     <input id="topic-scene-query" type="search" placeholder="视频名包含…" aria-label="查找主题中的视频名">
+    <label for="result-tags">素材标签</label>
     <input id="result-tags" type="search" placeholder="标签，逗号分隔（全部满足）" aria-label="筛选素材标签" title="完整标签名，多个标签用中英文逗号分隔，全部满足">
-    <select id="result-orientation" aria-label="按画幅筛选">
-      <option value="all">全部画幅</option><option value="landscape">横屏</option>
-      <option value="portrait">竖屏</option><option value="square">方形</option><option value="unknown">画幅未知</option>
-    </select>
     <label>片段 ≤ <input id="result-max-dur" type="number" min="0" step="0.5" placeholder="不限" aria-label="片段时长上限"> 秒</label>
     <select id="topic-scene-source" aria-label="按人工评分筛选片段">
       <option value="all">全部片段</option>
       <option value="manual">人工评分</option>
       <option value="auto">未人工评分</option>
     </select>
-    <button id="result-filter-clear" type="button" class="mini-btn">清除筛选</button>
-    <button id="topic-compare" type="button" class="mini-btn">比较主题</button>
+    <label>片段 ≥ <input id="view-min-dur" type="number" min="0" max="600" step="0.5" value="0" title="只显示不短于此秒数的场景"> 秒</label>
+    <button id="result-filter-clear" type="button">清除筛选</button>
     <span id="result-filter-error" class="form-error" role="status"></span>
   </section>
-
-  <section id="view-bar" class="view-bar hidden">
+      </div>
+    </details>
+    <details class="compact-menu">
+      <summary>显示</summary>
+      <div class="menu-content">
+        <h3>显示选项</h3>
+        <label>预览方式
+          <select id="preview-layout" aria-label="预览方式">
+            <option value="sidebar">右侧素材详情</option>
+            <option value="top">顶部预览（点击展开）</option>
+          </select>
+        </label>
     <label>排序
       <select id="view-sort">
         <option value="sim">相似度</option>
@@ -146,67 +168,25 @@
         <option value="name">视频名</option>
       </select>
     </label>
-    <label>时长 ≥
-      <input id="view-min-dur" type="number" min="0" max="600" step="0.5" value="0" title="只显示不短于此秒数的场景"> 秒
-    </label>
     <label class="scope-toggle"><input id="view-grouped" type="checkbox"> 按视频分组</label>
+      </div>
+    </details>
     <button id="btn-save-results" class="mini-btn" title="保存当前筛选后的全部结果及搜索条件">保存到仓库</button>
+    <button id="btn-organize-undo" type="button" class="mini-btn hidden" title="撤销最近一次收录或改分（Ctrl+Z）" disabled>撤销整理</button>
     <span id="selection-count" class="hint" aria-live="polite"></span>
+    <details class="compact-menu">
+      <summary>整理所选</summary>
+      <div class="menu-content">
+        <h3>整理所选片段</h3>
     <button id="btn-topic-add" type="button" class="mini-btn" disabled>添加到主题</button>
     <button id="btn-topic-remove" type="button" class="mini-btn hidden" disabled>从主题移除</button>
     <button id="btn-topic-score" type="button" class="mini-btn hidden" disabled>调整评分</button>
     <button id="btn-clear-selection" class="mini-btn" disabled>取消全部选择</button>
     <button id="btn-selection-tag" class="mini-btn" disabled>添加标签</button>
     <button id="btn-selection-folder" class="mini-btn" disabled>添加到新文件夹</button>
+      </div>
+    </details>
     <span id="result-count" class="result-count"></span>
-  </section>
-
-  <section id="preview-panel" class="preview-panel hidden">
-    <video id="preview-video" controls preload="metadata"></video>
-    <section id="topic-review-panel" class="topic-review-panel hidden" aria-label="快速审片">
-      <p id="topic-review-scene" class="hint"></p>
-      <div class="topic-review-heading">
-        <strong id="topic-review-progress" aria-live="polite"></strong>
-        <span id="topic-review-state" class="hint"></span>
-        <button id="topic-review-exit" type="button">退出审片 · Esc</button>
-      </div>
-      <div class="topic-review-actions">
-        <button id="topic-review-prev" type="button" title="上一个片段（←）">← 上一个</button>
-        <button id="topic-review-keep" type="button" class="primary" title="标记已审阅，不改分数（K）">保留 · K</button>
-        <button id="topic-review-remove" type="button" title="从当前主题移除，更新时继续排除（X）">移除 · X</button>
-        <button id="topic-review-next" type="button" title="跳到下一个未审阅片段，不标记当前片段（N / →）">跳过 · N</button>
-        <button id="topic-review-reset" type="button">设为未审阅</button>
-      </div>
-      <form id="topic-review-score-form" class="topic-review-actions" novalidate>
-        <label for="topic-review-score">人工评分</label>
-        <input id="topic-review-score" type="number" min="0" step="0.1" placeholder="输入分数" aria-label="审片评分">
-        <button id="topic-review-score-save" type="submit">评分并继续 · Enter</button>
-        <span class="hint">S 填分 · ↑↓ 调整 0.1 · Ctrl + ↑↓ 调整 1</span>
-      </form>
-      <p id="topic-review-status" class="hint" role="status"></p>
-    </section>
-    <div class="preview-side">
-      <div id="preview-info"></div>
-      <div id="preview-feedback" class="preview-feedback"></div>
-      <div id="preview-timeline" class="preview-timeline" title="此视频的全部命中场景，点击跳转"></div>
-      <div id="preview-tags" class="preview-tags"></div>
-      <div class="preview-frame-actions">
-        <button id="btn-cover-prev-frame" type="button" title="暂停并回退一帧">上一帧</button>
-        <button id="btn-cover-next-frame" type="button" title="暂停并前进一帧">下一帧</button>
-      </div>
-      <div class="preview-actions">
-        <button id="btn-locate">在 Eagle 中定位</button>
-        <button id="btn-prepare-clip" type="button">准备片段</button>
-        <button id="btn-drag-clip" type="button" disabled title="准备完成后，按住此按钮拖到 PR / AE">拖出片段</button>
-        <button id="btn-clip-directory" type="button" title="选择长期保存目录；生成文件不会自动清理">片段目录</button>
-        <button id="btn-frame-visual" type="button">以当前帧找相似</button>
-        <button id="btn-frame-text" type="button">当前帧转文字搜索</button>
-        <div id="preview-cover-actions" class="preview-cover-actions hidden">
-          <button id="btn-set-topic-cover" type="button" class="primary">当前帧设为封面</button>
-        </div>
-        <button id="btn-close-preview">收起预览</button>
-      </div>
-    </div>
   </section>
 
   <div id="frame-query-reference" class="frame-query-reference hidden">
@@ -218,6 +198,42 @@
     <button id="topic-removal-undo" type="button" class="mini-btn">撤销</button>
   </div>
   <main id="results" class="results"></main>
+  <div id="empty-state" class="empty-state">
+    <p>先对素材库建索引，然后输入描述开始搜索。</p>
+    <p class="hint">也可以：直接 Ctrl+V 粘贴一张图片以图搜视频。</p>
+    <p class="hint">首次建索引需要加载模型并逐个视频抽帧，耗时与视频数量成正比；之后为增量更新，可随时停止。</p>
+  </div>
+  </div>
+  <div id="inspector-resizer" class="inspector-resizer" role="separator" tabindex="0" aria-label="调整素材详情宽度" aria-orientation="vertical" aria-controls="inspector" aria-valuemin="220" aria-valuemax="640" aria-valuenow="288"></div>
+  <aside id="inspector" class="inspector" aria-label="素材详情">
+    <header class="inspector-heading"><span>素材详情</span><span class="hint">← / → 切换</span></header>
+    <div id="inspector-empty" class="inspector-empty"><span class="inspector-placeholder">▧</span><p>选择一个片段</p><p class="hint">在这里预览画面、查看主题和素材信息</p></div>
+  <section id="preview-panel" class="preview-panel hidden" aria-label="当前片段详情">
+    <video id="preview-video" controls preload="metadata"></video>
+    <div class="preview-side">
+      <div id="preview-info"></div>
+      <div id="preview-feedback" class="preview-feedback"></div>
+      <div id="preview-timeline" class="preview-timeline" title="此视频的全部命中场景，点击跳转"></div>
+      <div class="preview-frame-actions">
+        <button id="btn-cover-prev-frame" type="button" title="暂停并回退一帧">上一帧</button>
+        <button id="btn-cover-next-frame" type="button" title="暂停并前进一帧">下一帧</button>
+      </div>
+      <div class="preview-actions">
+        <button id="btn-locate">在 Eagle 中定位</button>
+        <button id="btn-frame-visual" type="button">以当前帧找相似</button>
+        <div id="preview-cover-actions" class="preview-cover-actions hidden">
+          <button id="btn-set-topic-cover" type="button" class="primary">当前帧设为封面</button>
+        </div>
+        <button id="btn-close-preview">收起预览</button>
+      </div>
+      <section class="inspector-section"><h3>所属主题</h3><div id="preview-membership" class="inspector-chips" aria-live="polite"></div></section>
+      <section class="inspector-section inspector-tags-section"><h3>标签</h3><div id="preview-tags" class="preview-tags"></div></section>
+      <section class="inspector-section"><h3>评分</h3><dl id="preview-rating" class="inspector-info"></dl></section>
+      <section class="inspector-section"><h3>基本信息</h3><dl id="preview-details" class="inspector-info"></dl></section>
+    </div>
+  </section>
+  </aside>
+  </div>
   <aside id="browse-position-notice" class="browse-position-notice hidden" role="status" aria-live="polite">
     <span id="browse-position-message">已回到上次浏览位置</span>
     <button id="browse-position-resume" type="button" class="hidden">回到上次浏览位置</button>
@@ -299,28 +315,6 @@
     <p id="topic-removed-status" role="status" class="hint"></p>
     <div class="dialog-actions"><button id="topic-removed-close" type="button">关闭</button></div>
   </dialog>
-  <div id="empty-state" class="empty-state">
-    <p>先对素材库建索引，然后输入描述开始搜索。</p>
-    <p class="hint">也可以：直接 Ctrl+V 粘贴一张图片以图搜视频。</p>
-    <p class="hint">首次建索引需要加载模型并逐个视频抽帧，耗时与视频数量成正比；之后为增量更新，可随时停止。</p>
-  </div>
-
-  <dialog id="frame-text-dialog" aria-labelledby="frame-text-title">
-    <form id="frame-text-form" class="settings-form">
-      <h3 id="frame-text-title">当前帧转文字搜索</h3>
-      <img id="frame-text-image" class="frame-text-image" alt="生成文字使用的固定画面">
-      <span id="frame-text-source" class="hint"></span>
-      <p id="frame-text-status" role="status"></p>
-      <div id="frame-text-prompts" class="frame-text-prompts"></div>
-      <label>搜索文字（可修改）<input id="frame-text-query" type="text" maxlength="500" autocomplete="off"></label>
-      <div class="dialog-actions">
-        <button id="frame-text-retry" type="button">重新生成</button>
-        <button id="frame-text-cancel" type="button">关闭</button>
-        <button id="frame-text-submit" type="submit" class="primary" disabled>文字搜索</button>
-      </div>
-    </form>
-  </dialog>
-
   <dialog id="organize-dialog" aria-labelledby="organize-title">
     <form id="organize-form" class="settings-form">
       <h3 id="organize-title">添加标签</h3>
@@ -583,7 +577,6 @@
   <script src="js/frameSearch.js"></script>
   <script src="js/folderTree.js"></script>
   <script src="js/manualAdd.js"></script>
-  <script src="js/topicReview.js"></script>
   <script src="js/topicRelations.js"></script>
   <script src="js/warehouse.js"></script>
   <script src="js/plugin.js"></script>

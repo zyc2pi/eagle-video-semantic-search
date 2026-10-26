@@ -134,6 +134,7 @@ const Warehouse = (() => {
   function syncUndoActions() {
     const button = $('btn-organize-undo');
     if (!button) return;
+    button.classList.toggle('hidden', !current || currentLibrary !== eagle.library.path || document.body.dataset.topic !== 'true');
     const pending = updating || coverSaving || scenesSaving || Search.isBusy();
     const next = undoManager?.peek();
     button.disabled = pending || !undoManager?.canUndo();
@@ -215,8 +216,7 @@ const Warehouse = (() => {
     if (!current || currentLibrary !== eagle.library.path || document.body.dataset.page === 'warehouse') return;
     const filter = Search.getArchiveFilter();
     localFilters.set(timeKey(current), filter);
-    const reviewPosition = typeof TopicReview !== 'undefined' ? TopicReview.getBrowsePosition() : null;
-    topicPositions.set(timeKey(current), { view: Search.getView(), position: reviewPosition || Search.captureBrowsePosition() });
+    topicPositions.set(timeKey(current), { view: Search.getView(), position: Search.captureBrowsePosition() });
   }
   function rememberWarehousePosition() {
     if (document.body.dataset.page !== 'warehouse' || warehouseLibrary !== eagle.library.path) return;
@@ -252,7 +252,6 @@ const Warehouse = (() => {
     if (typeof TopicRelations !== 'undefined') TopicRelations.refresh();
   }
   function detachTopic(resetTime = true) {
-    if (typeof TopicReview !== 'undefined') TopicReview.stop(false);
     navigationGeneration += 1;
     clearTimeout(sceneQueryTimer);
     clearRemovalUi();
@@ -628,7 +627,6 @@ const Warehouse = (() => {
     $('btn-topic-score').classList.toggle('hidden', !hasTopic);
     $('btn-topic-score').disabled = !hasTopic || saving || !(Search.getSelectedMatches() || []).length;
     $('topic-removed').disabled = saving;
-    if ($('topic-review')) $('topic-review').disabled = !hasTopic || saving || !Search.getAllMatches().length;
     if ($('topic-history')) $('topic-history').disabled = !hasTopic || saving;
     $('topic-removal-undo').disabled = saving;
     if (!current) return;
@@ -1510,30 +1508,6 @@ const Warehouse = (() => {
         catch { hooks.toast('整理已保存，界面刷新失败，请重新打开主题', true); }
       },
     });
-    if (typeof TopicReview !== 'undefined') TopicReview.init({
-      checkIdle, toast: hooks.toast,
-      getContext: () => current && document.body.dataset.topic === 'true'
-        && document.body.dataset.page !== 'warehouse' ? { entry: current, library: currentLibrary } : null,
-      commit: (action, match, score, context) => {
-        requireTopic(context.entry.id, context.library);
-        if (action === 'remove') { removeTopicMatches([match]); return; }
-        scenesSaving = true;
-        syncSceneActions();
-        try {
-          const entry = current;
-          const archive = store();
-          const result = action === 'score'
-            ? archive.addMatches(entry.id, [{ match, score, scoreMode: 'custom' }], entry.updatedAt,
-              entry.revision || 0, { markReviewed: true })
-            : archive.setReviewed(entry.id, [ArchiveStore.sceneKey(match)], action !== 'reset',
-              entry.updatedAt, entry.revision || 0);
-          if (result.undoToken) undoManager?.record({ entry: result.entry, undoToken: result.undoToken,
-            undoBytes: result.undoBytes, beforeRevision: entry.revision || 0, library: currentLibrary,
-            targetId: entry.id, targetName: entry.name, label: '审片评分' });
-          applySceneEdit(result.entry);
-        } finally { scenesSaving = false; syncSceneActions(); }
-      },
-    });
     try { if (localStorage.getItem(viewPreferenceKey) === 'list') viewMode = 'list'; }
     catch { /* 偏好不可用时保留会话状态。 */ }
     const setViewMode = (value) => {
@@ -1598,7 +1572,7 @@ const Warehouse = (() => {
       try {
         if (!maximum.validity.valid) throw new Error('请输入有效的非负时长上限');
         const filter = { query: $('topic-scene-query').value, source: $('topic-scene-source').value,
-          tags: $('result-tags').value, orientation: $('result-orientation').value,
+          tags: $('result-tags').value,
           maxDur: maximum.value === '' ? null : Number(maximum.value) };
         Search.setArchiveFilter(filter);
         if (current) localFilters.set(timeKey(current), Search.getArchiveFilter());
@@ -1613,7 +1587,7 @@ const Warehouse = (() => {
     $('result-tags').addEventListener('input', () => {
       clearTimeout(sceneQueryTimer); sceneQueryTimer = setTimeout(applySceneFilter, 120);
     });
-    ['result-orientation', 'result-max-dur'].forEach((id) => $(id).addEventListener('change', () => {
+    ['result-max-dur'].forEach((id) => $(id).addEventListener('change', () => {
       clearTimeout(sceneQueryTimer); applySceneFilter();
     }));
     $('result-filter-clear').addEventListener('click', () => attempt(() => {

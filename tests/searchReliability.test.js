@@ -18,7 +18,7 @@ const deferred = [];
 const context = {
   console, AbortController, setTimeout, clearTimeout,
   CustomEvent: class {},
-  document: { body: { dataset: { page: 'search' } }, dispatchEvent() {}, createElement: () => new Element() },
+  document: { body: { dataset: { page: 'search' } }, getElementById: () => null, dispatchEvent() {}, createElement: () => new Element() },
   Config: { get: () => ({ modelName: 'model' }) },
   eagle: { library: { path: 'library' } },
   Bridge: {
