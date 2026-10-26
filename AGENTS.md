@@ -38,6 +38,15 @@
 
 ## 任务记录
 
+### TASK-20261027-014 — 发布本轮插件改动到 GitHub
+
+- 状态：ready-for-human
+- 目标：按用户要求把当前插件源码、测试与开发记录提交到既有 master 并推送 origin，保留历史。
+- 范围：提交 TASK-20261027-001～013 的全部改动（18 个已跟踪文件）及 `tests/ui.test.js` 的过时断言修正；本地截图（未跟踪的 UUID PNG）、`config.json`、`service.log`、`saves/`、`warehouse/` 与打包产物继续排除。不涉及共享后端仓库。
+- 发布前核对：fetch 后 HEAD 与 origin/master 均为 c2be0a4，无落后或待推送历史；diff 凭据模式扫描（sk-/ghp_/私钥/api key/password）无命中。
+- 验证：32 个单元测试文件全部通过；`ui.test.js` 原断言 `video.poster = Api.previewUrl` 自 TASK-20261026-013 起已失效（现改为复用已加载场景缩略图、已解码同源播放器移除 poster），改为断言 `matchThumbnails.get(match)` 与 `if (poster) video.poster = poster;`，未改产品行为。改动脚本 `node --check` 通过。
+- 边界：本机只装了 `@playwright/mcp`，没有 `playwright` 库，`tests/warehouse.smoke.js` 未执行；发布不代表 Eagle 宿主内框选、右键菜单、分类选择器等交互已完成真机验收，仍需重载插件确认。
+
 ### TASK-20261027-013 — 合并搜索选项与筛选
 
 - 状态：ready-for-human
