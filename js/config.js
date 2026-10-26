@@ -6,7 +6,6 @@ const Config = (() => {
   const DEFAULTS = {
     projectRoot: 'D:\\Auto-scenes-extraction-1.3.0\\Auto-scenes-extraction-1.3.0',
     port: 5006,
-    editClipDirectory: '', // 用户选择的长期片段目录，不自动清理
     modelName: 'qihoo360-fg-clip2-base',
     threshold: 11,
     // 视觉检索（以图/以片搜）阈值：图像-图像相似度天然偏高，与文本阈值语义不同
@@ -84,7 +83,6 @@ const Config = (() => {
       if (typeof fallback === 'boolean' && typeof value[key] !== 'boolean') throw new Error(`设置 ${key} 必须为开关`);
     }
     if (typeof value.deepseekKey !== 'string') throw new Error('密钥字段格式无效');
-    if (typeof value.editClipDirectory !== 'string') throw new Error('片段目录格式无效');
     return value;
   }
 

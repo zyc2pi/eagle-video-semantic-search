@@ -1185,6 +1185,79 @@
     applyWidth();
   }
 
+  function initPreviewResize() {
+    const workspace = document.querySelector('.result-workspace');
+    const panel = $('preview-panel');
+    const resizer = $('preview-resizer');
+    const preferenceKey = 'eagle-semantic-preview-height';
+    let preferredHeight = null;
+    let drag = null;
+    let frame = null;
+    try {
+      const saved = Number(localStorage.getItem(preferenceKey));
+      if (Number.isFinite(saved) && saved >= 120 && saved <= 2000) preferredHeight = saved;
+    } catch { /* 偏好不可用时保留会话高度。 */ }
+    const bounds = () => {
+      const fixed = ['warehouse-topic', 'view-bar', 'frame-query-reference', 'topic-removal-notice']
+        .reduce((height, id) => height + $(id).getBoundingClientRect().height, 0);
+      const max = Math.max(120, workspace.clientHeight - fixed - 206);
+      return { min: Math.min(140, max), max };
+    };
+    const applyHeight = () => {
+      if (workspace.dataset.previewLayout !== 'top' || !workspace.clientWidth || panel.classList.contains('hidden')) return;
+      const { min, max } = bounds();
+      workspace.dataset.previewSized = String(preferredHeight !== null);
+      workspace.style.setProperty('--preview-max-height', `${preferredHeight === null ? Math.min(300, max) : max}px`);
+      if (preferredHeight === null) workspace.style.removeProperty('--preview-height');
+      else workspace.style.setProperty('--preview-height', `${Math.round(Math.max(min, Math.min(max, preferredHeight)))}px`);
+      resizer.setAttribute('aria-valuemin', String(min)); resizer.setAttribute('aria-valuemax', String(max));
+      resizer.setAttribute('aria-valuenow', String(Math.round(panel.getBoundingClientRect().height)));
+    };
+    const schedule = () => {
+      if (frame !== null) cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => { frame = null; applyHeight(); });
+    };
+    const save = () => {
+      try { localStorage.setItem(preferenceKey, String(preferredHeight)); } catch { /* 保留会话高度。 */ }
+    };
+    const finish = (event) => {
+      if (!drag || (event.pointerId != null && event.pointerId !== drag.id)) return;
+      const id = drag.id; drag = null;
+      document.body.classList.remove('resizing-preview');
+      if (resizer.hasPointerCapture(id)) resizer.releasePointerCapture(id);
+      save();
+    };
+    resizer.addEventListener('pointerdown', (event) => {
+      if (event.button !== 0 || !event.isPrimary) return;
+      event.preventDefault();
+      drag = { id: event.pointerId, y: event.clientY, height: panel.getBoundingClientRect().height };
+      preferredHeight = drag.height;
+      resizer.setPointerCapture(event.pointerId);
+      document.body.classList.add('resizing-preview');
+    });
+    resizer.addEventListener('pointermove', (event) => {
+      if (!drag || event.pointerId !== drag.id) return;
+      const { min, max } = bounds();
+      preferredHeight = Math.max(min, Math.min(max, drag.height + event.clientY - drag.y));
+      applyHeight();
+    });
+    ['pointerup', 'pointercancel', 'lostpointercapture'].forEach((name) => resizer.addEventListener(name, finish));
+    window.addEventListener('blur', finish);
+    resizer.addEventListener('keydown', (event) => {
+      if (!['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return;
+      event.preventDefault(); event.stopPropagation();
+      const { min, max } = bounds();
+      preferredHeight = event.key === 'Home' ? min : event.key === 'End' ? max
+        : Math.max(min, Math.min(max, panel.getBoundingClientRect().height + (event.key === 'ArrowDown' ? 1 : -1) * (event.shiftKey ? 40 : 10)));
+      applyHeight(); save();
+    });
+    const observer = new ResizeObserver(schedule);
+    observer.observe(workspace); observer.observe(panel);
+    document.addEventListener('preview-change', (event) => { finish(event); schedule(); });
+    document.addEventListener('preview-layout-change', (event) => { finish(event); schedule(); });
+    schedule();
+  }
+
   function wireEvents() {
     const menus = [...document.querySelectorAll('.compact-menu')];
     menus.forEach((menu) => {
@@ -1305,6 +1378,7 @@
     Warehouse.init({ toast, canSearch: () => serviceOnline && !Indexer.isRunning() });
     initPreviewLayout();
     initInspectorResize();
+    initPreviewResize();
     wireEvents();
     FrameSearch.init({ toast,
       canSearch: () => serviceOnline && !Indexer.isRunning(),
