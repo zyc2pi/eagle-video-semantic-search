@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="730" viewBox="0 0 1200 730" role="img" aria-labelledby="title desc">
+  <title id="title">Eagle 视频语义搜索整体架构</title>
+  <desc id="desc">Eagle 通过插件 API 向原生 JavaScript 插件提供素材信息，插件通过本机 HTTP API 调用 Python Flask 服务。后端使用 FG-CLIP2 或 CLIP、PyTorch 和 Lance 完成检索。主题数据独立保存在插件目录；DeepSeek 查询增强为可选外部服务。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto-start-reverse"><path d="M0 0 8 4 0 8Z" fill="#677b88"/></marker>
+    <style>
+      text { font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif; }
+      .title { font-size: 34px; font-weight: 700; fill: #19333f; }
+      .subtitle { font-size: 19px; fill: #566f7b; }
+      .heading { font-size: 25px; font-weight: 700; fill: #19333f; }
+      .body { font-size: 19px; fill: #415e6c; }
+      .label { font-size: 16px; font-weight: 600; letter-spacing: 1px; fill: #647d89; }
+      .small { font-size: 17px; fill: #566f7b; }
+      .line { fill: none; stroke: #677b88; stroke-width: 2; marker-end: url(#arrow); }
+    </style>
+  </defs>
+  <rect width="1200" height="730" rx="20" fill="#f4f7f8"/>
+  <rect x="40" y="37" width="5" height="70" rx="2" fill="#087f8c"/>
+  <text x="62" y="68" class="title">一个插件，连接素材与本地检索</text>
+  <text x="62" y="101" class="subtitle">Eagle 管素材 · 插件管交互 · Python 服务管模型与索引</text>
+  <rect x="971" y="44" width="189" height="38" rx="19" fill="#e1efed"/>
+  <text x="1065" y="69" text-anchor="middle" font-size="17" font-weight="600" fill="#087268">LOCAL FIRST</text>
+
+  <rect x="40" y="150" width="326" height="348" rx="16" fill="#fff" stroke="#d4e0e5"/>
+  <rect x="40" y="150" width="326" height="6" rx="3" fill="#087f8c"/>
+  <text x="64" y="194" class="label">01 / 素材宿主</text>
+  <text x="64" y="234" class="heading">Eagle 素材库</text>
+  <text x="64" y="274" class="body">视频原文件与缩略图</text>
+  <text x="64" y="308" class="body">文件夹、标签、素材信息</text>
+  <line x1="64" y1="337" x2="342" y2="337" stroke="#e0e8ec"/>
+  <text x="64" y="371" class="body">插件 API</text>
+  <text x="64" y="404" class="small">读取素材 / 定位 / 标签与归属</text>
+  <rect x="64" y="432" width="278" height="42" rx="8" fill="#edf6f5"/>
+  <text x="203" y="459" text-anchor="middle" font-size="18" fill="#087268">预览与拖出使用原视频</text>
+
+  <path d="M372 318H401" class="line"/>
+  <rect x="412" y="150" width="354" height="348" rx="16" fill="#fff" stroke="#d4e0e5"/>
+  <rect x="412" y="150" width="354" height="6" rx="3" fill="#5766bd"/>
+  <text x="436" y="194" class="label">02 / 插件进程</text>
+  <text x="436" y="234" class="heading">界面与本地管理</text>
+  <text x="436" y="274" class="body">HTML / CSS / JavaScript</text>
+  <text x="436" y="308" class="body">Electron + Node.js</text>
+  <line x1="436" y1="337" x2="742" y2="337" stroke="#e0e8ec"/>
+  <text x="436" y="371" class="body">搜索 · 筛选 · 预览 · 整理</text>
+  <text x="436" y="404" class="small">主题仓库 / 缓存 / 索引任务监视</text>
+  <rect x="436" y="432" width="306" height="42" rx="8" fill="#f0f1fb"/>
+  <text x="589" y="459" text-anchor="middle" font-size="18" fill="#4b58a5">原生前端，无构建步骤</text>
+
+  <path d="M772 318H801" class="line"/>
+  <rect x="812" y="150" width="348" height="348" rx="16" fill="#fff" stroke="#d4e0e5"/>
+  <rect x="812" y="150" width="348" height="6" rx="3" fill="#b17b31"/>
+  <text x="836" y="194" class="label">03 / 独立本地服务</text>
+  <text x="836" y="234" class="heading">Python + Flask</text>
+  <text x="836" y="274" class="body">PyTorch / Transformers</text>
+  <text x="836" y="308" class="body">FG-CLIP2 / CLIP 编码</text>
+  <line x1="836" y1="337" x2="1136" y2="337" stroke="#e0e8ec"/>
+  <text x="836" y="371" class="body">FFmpeg / FFprobe 视频处理</text>
+  <text x="836" y="404" class="small">Lance 场景向量 / 相似度检索</text>
+  <rect x="836" y="432" width="300" height="42" rx="8" fill="#faf3e7"/>
+  <text x="986" y="459" text-anchor="middle" font-size="18" fill="#946327">127.0.0.1:5006 · REST API</text>
+
+  <path d="M589 504V551" class="line"/>
+  <rect x="40" y="564" width="726" height="124" rx="14" fill="#eaf0f7" stroke="#d5deeb"/>
+  <text x="64" y="600" font-size="21" font-weight="700" fill="#324e73">插件本地数据</text>
+  <text x="64" y="634" class="body">JSON 主题清单 + SHA-256 资源 · 按 Eagle 素材库隔离</text>
+  <text x="64" y="665" class="small">原子替换 / 版本校验 / 备份与回收站 / 后台仓库包导入导出</text>
+  <path d="M986 504V551" class="line" stroke-dasharray="6 5"/>
+  <rect x="812" y="564" width="348" height="124" rx="14" fill="#fffaf0" stroke="#cab786" stroke-dasharray="6 5"/>
+  <text x="836" y="600" font-size="21" font-weight="700" fill="#856025">可选外部服务</text>
+  <text x="836" y="634" class="body">DeepSeek API · 查询增强</text>
+  <text x="836" y="665" class="small">仅开启时调用，需要网络与密钥</text>
+  <text x="40" y="530" class="small">实线：本地调用 / 存储　　虚线：可选外部请求</text>
+</svg>
