@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="680" viewBox="0 0 1200 680" role="img" aria-labelledby="title desc">
+  <title id="title">从视频建索引到查询、预览和主题整理</title>
+  <desc id="desc">建索引时，从 Eagle 视频采样并划分场景、选择代表帧、使用 FG-CLIP2 或 CLIP 生成向量，保存至 Lance。查询文字或图片使用同一模型编码，按范围比较索引中的场景向量，过滤并排序，最后预览原视频、定位、保存主题或拖出完整原文件。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 8 4 0 8Z" fill="#677b88"/></marker>
+    <style>
+      text { font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif; }
+      .title { font-size: 34px; font-weight: 700; fill: #19333f; }
+      .subtitle { font-size: 19px; fill: #566f7b; }
+      .head { font-size: 22px; font-weight: 700; fill: #19333f; }
+      .body { font-size: 18px; fill: #415e6c; }
+      .small { font-size: 17px; fill: #566f7b; }
+      .line { fill: none; stroke: #677b88; stroke-width: 2; marker-end: url(#arrow); }
+    </style>
+  </defs>
+  <rect width="1200" height="680" rx="20" fill="#f4f7f8"/>
+  <rect x="40" y="37" width="5" height="70" rx="2" fill="#087f8c"/>
+  <text x="62" y="68" class="title">先理解场景，再用文字或图片找到它</text>
+  <text x="62" y="101" class="subtitle">索引保存场景向量与原始时间范围，查询返回可直接预览的命中片段</text>
+
+  <text x="40" y="155" font-size="18" font-weight="700" fill="#087268">01 / 建立索引</text>
+  <text x="215" y="155" class="small">增量处理新视频；不生成新的剪辑视频</text>
+  <rect x="40" y="178" width="242" height="124" rx="12" fill="#fff" stroke="#cfdfe2"/>
+  <text x="60" y="213" class="head">Eagle 原视频</text>
+  <text x="60" y="246" class="body">读取路径与视频信息</text>
+  <text x="60" y="276" class="small">FFprobe / FFmpeg 采样</text>
+  <path d="M290 240H322" class="line"/>
+  <rect x="332" y="178" width="242" height="124" rx="12" fill="#fff" stroke="#cfdfe2"/>
+  <text x="352" y="213" class="head">场景与代表帧</text>
+  <text x="352" y="246" class="body">划分镜头 / 保留边界</text>
+  <text x="352" y="276" class="small">默认：内容自适应选帧</text>
+  <path d="M582 240H614" class="line"/>
+  <rect x="624" y="178" width="242" height="124" rx="12" fill="#fff" stroke="#cfdfe2"/>
+  <text x="644" y="213" class="head">视觉编码</text>
+  <text x="644" y="246" class="body">FG-CLIP2 / CLIP</text>
+  <text x="644" y="276" class="small">代表帧 → 特征向量</text>
+  <path d="M874 240H906" class="line"/>
+  <rect x="916" y="178" width="244" height="124" rx="12" fill="#e5f1ee" stroke="#9dbdb5"/>
+  <text x="936" y="213" class="head">Lance 索引</text>
+  <text x="936" y="246" class="body">场景信息 + FP16 向量</text>
+  <text x="936" y="276" class="small">按素材库 / 检索模型隔离</text>
+
+  <text x="40" y="356" font-size="18" font-weight="700" fill="#4b58a5">02 / 执行查询</text>
+  <text x="215" y="356" class="small">使用与目标索引相同的嵌入模型</text>
+  <rect x="40" y="380" width="242" height="124" rx="12" fill="#fff" stroke="#d5d9ec"/>
+  <text x="60" y="415" class="head">文字 / 图片 / 当前帧</text>
+  <text x="60" y="448" class="body">中文或英文描述</text>
+  <text x="60" y="478" class="small">剪贴板图片 / 固定预览画面</text>
+  <path d="M290 442H322" class="line"/>
+  <rect x="332" y="380" width="242" height="124" rx="12" fill="#fff" stroke="#d5d9ec"/>
+  <text x="352" y="415" class="head">查询编码</text>
+  <text x="352" y="448" class="body">文本 / 图像 → 向量</text>
+  <text x="352" y="478" class="small">与视频画面处于同一空间</text>
+  <path d="M582 442H614" class="line"/>
+  <rect x="624" y="380" width="242" height="124" rx="12" fill="#fff" stroke="#d5d9ec"/>
+  <text x="644" y="415" class="head">范围内相似度检索</text>
+  <text x="644" y="448" class="body">比较场景代表帧向量</text>
+  <text x="644" y="478" class="small">文件夹范围 / 导入时间</text>
+  <path d="M1038 310V330H745V369" class="line"/>
+  <rect x="919" y="316" width="100" height="28" rx="5" fill="#f4f7f8"/>
+  <text x="969" y="336" text-anchor="middle" font-size="16" fill="#566f7b">读取索引</text>
+  <path d="M874 442H906" class="line"/>
+  <rect x="916" y="380" width="244" height="124" rx="12" fill="#eeeffb" stroke="#b8c0e3"/>
+  <text x="936" y="415" class="head">场景结果</text>
+  <text x="936" y="448" class="body">阈值过滤 / 相似度排序</text>
+  <text x="936" y="478" class="small">视频路径 + 起止时间 + 分数</text>
+
+  <path d="M1038 512V549" class="line"/>
+  <rect x="40" y="562" width="1120" height="80" rx="12" fill="#193e4c"/>
+  <text x="64" y="595" font-size="18" font-weight="700" fill="#9fddd3">03 / 使用与积累</text>
+  <text x="64" y="623" font-size="17" fill="#cfdee5">保留原文件</text>
+  <line x1="243" y1="580" x2="243" y2="624" stroke="#4d6975"/>
+  <text x="270" y="610" font-size="20" fill="#fff">原视频预览 / Eagle 定位</text>
+  <text x="589" y="610" font-size="20" fill="#fff">保存主题 / 人工整理</text>
+  <text x="881" y="610" font-size="20" fill="#fff">拖出完整原视频</text>
+</svg>
