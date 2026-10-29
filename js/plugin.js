@@ -1402,6 +1402,9 @@
       content.style.maxHeight = `${Math.max(100, window.innerHeight - top - 12)}px`;
     };
     window.addEventListener('resize', positionFilterMenu);
+    const mainWorkspace = document.querySelector('.main-workspace');
+    new ResizeObserver(positionFilterMenu).observe(mainWorkspace);
+    mainWorkspace.addEventListener('scroll', positionFilterMenu, { passive: true });
     const selectionMenu = $('result-selection-menu');
     const selectionContent = selectionMenu.querySelector('.menu-content');
     const resetContextMenu = () => {

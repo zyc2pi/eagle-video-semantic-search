@@ -127,6 +127,8 @@ const WarehouseNavigation = (() => {
   function initResize() {
     const resizer = $('library-resizer');
     const sidebar = $('library-sidebar');
+    const workspace = document.querySelector('.main-workspace');
+    const updateLayout = () => workspace.classList.toggle('narrow-workspace', workspace.clientWidth <= 640);
     const key = 'eagle-semantic-library-width';
     let preferred = 240;
     let drag = null;
@@ -172,6 +174,7 @@ const WarehouseNavigation = (() => {
       apply(); persist();
     });
     new ResizeObserver(apply).observe(document.body); apply();
+    new ResizeObserver(updateLayout).observe(workspace); updateLayout();
   }
 
   function init(callbacks) {
