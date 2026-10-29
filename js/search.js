@@ -10,6 +10,7 @@ const Search = (() => {
   let newKeys = new Set();
   let archiveTime = { mode: 'all' };
   let archiveFilter = { query: '', source: 'all' };
+  let sessionScope = { library: '', paths: null };
   const filterDefaults = { query: '', source: 'all', tags: '', orientation: 'all', maxDur: null };
   let topicMembership = null;
   let topicMembershipStatus = '主题归属…';
@@ -394,8 +395,8 @@ const Search = (() => {
     if (archiveFilter.minScore != null) {
       idxs = idxs.filter((i) => Number.isFinite(lastMatches[i].similarity) && lastMatches[i].similarity >= archiveFilter.minScore);
     }
-    if (archiveFilter.scopePaths != null) {
-      const paths = new Set(archiveFilter.scopePaths);
+    if (sessionScope.library === eagle.library.path && sessionScope.paths != null) {
+      const paths = sessionScope.paths;
       idxs = idxs.filter((i) => paths.has(Bridge.normalizePath(lastMatches[i].video_path)));
     }
     if (nameQuery) idxs = idxs.filter((i) => String(lastMatches[i].video_name || '').toLocaleLowerCase().includes(nameQuery));
@@ -892,14 +893,10 @@ const Search = (() => {
         if (input) input.value = value;
       });
       document.getElementById('result-filter-error').textContent = '';
-      const scopeButton = document.getElementById('topic-filter-scope');
-      const scope = archiveFilter.scope || { mode: 'all' };
-      if (scopeButton) scopeButton.textContent = scope.mode === 'all' ? '范围: 整个库'
-        : `范围: ${scope.mode === 'exclude' ? '排除 ' : ''}${scope.folderIds.length} 个文件夹`;
     }
     const hasLocalFilter = archiveFilter.query.trim() || archiveFilter.source !== 'all'
       || archiveFilter.tags?.trim() || (archiveFilter.orientation || 'all') !== 'all' || archiveFilter.maxDur != null
-      || archiveFilter.minScore != null || archiveFilter.scopePaths != null;
+      || archiveFilter.minScore != null || (sessionScope.library === eagle.library.path && sessionScope.paths != null);
     document.getElementById('filter-active-indicator')?.classList.toggle('hidden', !hasLocalFilter && view.minDur <= 0 && archiveTime.mode === 'all');
     el.resultCount.textContent = view.minDur > 0 || archiveTime.mode !== 'all' || hasLocalFilter
       ? `${displayList.length}/${lastMatches.length} 条`
@@ -1688,6 +1685,10 @@ const Search = (() => {
     getRecipe: () => lastRecipe && SearchRecipe.clone(lastRecipe),
     getView: () => ({ ...view }),
     getArchiveFilter: () => ({ ...archiveFilter }),
+    setScopeFilter(paths, library) {
+      sessionScope = { library, paths: paths == null ? null : new Set(paths) };
+      render();
+    },
     setArchiveFilter(filter) {
       filter = { ...filterDefaults, ...filter };
       if (!['all', 'manual', 'auto'].includes(filter.source) || typeof filter.query !== 'string'

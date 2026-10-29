@@ -77,6 +77,11 @@ async function checkExcludedFolders() {
   assert.deepStrictEqual([...current.paths], ['d:\\c.mp4', 'd:\\d.mp4']);
   const snapshot = recipe.capture('visual', '图片', { image_base64: 'fixture' }, current);
   assert.deepStrictEqual([...(await recipe.resolve(snapshot)).paths], [...current.paths], '保存与重放保持排除条件');
+  const included = { mode: 'folders', folderIds: ['parent'], excludeFolderIds: ['child'] };
+  const resolved = await recipe.resolveScope(included, { mode: 'all' });
+  assert.deepStrictEqual([...resolved.paths], ['d:\\a.mp4'], '指定目录内右键排除子目录，不扩大搜索范围');
+  assert.strictEqual((await recipe.resolveScope({ ...included, excludeFolderIds: ['parent'] }, { mode: 'all' })).paths.size, 0);
+  await assert.rejects(recipe.resolveScope({ ...included, excludeFolderIds: ['missing'] }, { mode: 'all' }), /已不存在/);
   items[3].folders = ['other'];
   assert.strictEqual((await recipe.resolve(saved(['parent', 'other']))).paths.size, 0, '全部排除保持空范围');
   console.log('folder exclusion, descendants, union, dates, capture and replay tests passed');

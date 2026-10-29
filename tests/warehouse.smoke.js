@@ -78,6 +78,7 @@ async function main() {
         { id: 'c', name: '新加入夜景', filePath: 'D:/fixture/c.mp4', ext: 'mp4', importedAt: now, duration: 100, folders: ['child'] },
       ];
       const folders = [{ id: 'parent', name: '风景', children: [{ id: 'child', name: '夜景', children: [] }] }];
+      window.__folders = folders;
       window.__createdFolders = [];
       window.__saves = [];
       window.__items.forEach((item) => {
@@ -102,7 +103,7 @@ async function main() {
         },
         onPluginCreate: (callback) => { window.__create = callback; },
         onPluginShow: (callback) => { window.__show = callback; },
-        onThemeChanged: () => {}, onLibraryChanged: () => {},
+        onThemeChanged: (callback) => { window.__themeChanged = callback; }, onLibraryChanged: () => {},
       };
       window.Service = { ensure: async (callback) => {
         window.__serviceCallback = callback;
@@ -166,6 +167,165 @@ async function main() {
       window.__delayService = delay;
       window.__create({ path: '/fixture-plugin' }); await window.__show();
     }, !!process.env.WAREHOUSE_LAYOUT_ONLY);
+    if (process.env.WAREHOUSE_SESSION_SCOPE_ONLY) {
+      const card = (id) => page.locator(`#results .card:has(img[alt="${({ a: '城市街道', b: '旧素材', c: '新加入夜景' })[id]}"])`).first();
+      const visiblePaths = () => page.evaluate(() => [...new Set(Search.getAllMatches().map((m) => m.video_path))].sort());
+      const compact = () => page.evaluate(async () => {
+        const matches = [...new Map(Search.getRawMatches().map((m) => [m.video_path, m])).values()];
+        await Search.loadResults(matches, Search.getLastQuery(), Search.getRecipe());
+      });
+      const search = async (query) => {
+        await page.locator('#query').fill(query); await page.locator('#btn-search').click();
+        await page.waitForFunction(() => !Search.isBusy()); await compact();
+      };
+      const range = async (mode) => {
+        await revealControl(page, '#btn-scope'); await page.locator('#btn-scope').click();
+        await page.locator(`input[name="scope-mode"][value="${mode}"]`).check();
+        if (mode === 'custom') await page.locator('#folder-tree input').first().check();
+        await page.locator('#btn-scope-apply').click();
+        await page.waitForFunction(() => !document.getElementById('scope-dialog').open);
+      };
+      await page.evaluate(() => { window.__round = 1; __items[0].folders = ['parent', 'child']; });
+      await search('会话范围');
+      await revealControl(page, '#btn-save-results'); await page.locator('#btn-save-results').click();
+      await page.locator('#entry-name').fill('完整主题'); await page.locator('#entry-submit').click();
+      await page.waitForFunction(() => !document.getElementById('warehouse-editor').open);
+      await page.locator('#topic-search').click(); await compact();
+      await card('a').click(); await card('b').click({ modifiers: ['Control'] });
+      await card('b').click({ button: 'right' });
+      assert(await page.locator('#btn-selection-exclude-folder').isDisabled(), '多个素材不执行单素材排除');
+      await page.keyboard.press('Escape');
+      await card('a').click();
+      const before = await page.evaluate(() => ({ files: JSON.stringify([...__files]), requests: __requests.length }));
+      await card('a').click({ button: 'right' }); await page.locator('#btn-selection-exclude-folder').click();
+      await page.waitForFunction(() => Config.get().scopeMode === 'exclude');
+      assert.deepStrictEqual(await page.evaluate(() => Config.get().scopeFolderIds), ['child'], '父子归属取子目录');
+      assert.deepStrictEqual(await visiblePaths(), ['D:/fixture/b.mp4'], '立即筛去同一最小目录的所有素材');
+      assert.deepStrictEqual(await page.evaluate(() => ({ files: JSON.stringify([...__files]), requests: __requests.length })), before);
+      await page.locator('#btn-archives').click(); await page.locator('.warehouse-card-open').click();
+      assert.deepStrictEqual(await visiblePaths(), ['D:/fixture/b.mp4'], '主题沿用全局范围');
+      assert((await page.locator('#topic-filter-scope').textContent()).includes('排除 1'));
+      await page.locator('#topic-search').click();
+      await search('后续搜索');
+      assert.deepStrictEqual(await page.evaluate(() => __requests.at(-1).body.allowed_video_paths), ['d:\\fixture\\b.mp4']);
+      await card('b').click({ button: 'right' }); await page.locator('#btn-selection-exclude-folder').click();
+      await page.waitForFunction(() => Config.get().scopeFolderIds.length === 2);
+      assert.deepStrictEqual(await visiblePaths(), [], '排除累加且空范围不回退整库');
+      await page.evaluate(() => window.__show());
+      assert.strictEqual(await page.evaluate(() => Config.get().scopeMode), 'all', '关闭后重新打开恢复整库');
+      await search('重新打开');
+      assert.deepStrictEqual(await visiblePaths(), ['D:/fixture/a.mp4', 'D:/fixture/b.mp4', 'D:/fixture/c.mp4']);
+      await range('custom');
+      await card('a').click({ button: 'right' }); await page.locator('#btn-selection-exclude-folder').click();
+      await page.waitForFunction(() => Config.get().scopeExcludeFolderIds.length === 1);
+      assert.strictEqual(await page.evaluate(() => Config.get().scopeMode), 'custom');
+      assert.deepStrictEqual(await visiblePaths(), ['D:/fixture/b.mp4'], '保留指定父目录并减去子目录');
+      await search('包含减排除');
+      assert.deepStrictEqual(await page.evaluate(() => __requests.at(-1).body.allowed_video_paths), ['d:\\fixture\\b.mp4']);
+      assert.deepStrictEqual(await page.evaluate(() => Search.getRecipe().scope.excludeFolderIds), ['child']);
+      await range('all'); await search('多归属');
+      await page.evaluate(() => { __folders.push({ id: 'other', name: '其他分类', children: [] }); __items[1].folders = ['parent', 'other']; });
+      await card('b').click({ button: 'right' }); await page.locator('#btn-selection-exclude-folder').click();
+      await page.locator('#exclude-folder-dialog').waitFor();
+      assert.deepStrictEqual(await page.locator('.exclude-folder-options button').allTextContents(), ['风景', '其他分类']);
+      await page.keyboard.press('Escape');
+      assert.strictEqual(await page.evaluate(() => Config.get().scopeMode), 'all', '取消选择不改范围');
+      await page.waitForFunction(() => !document.getElementById('btn-selection-exclude-folder').disabled);
+      await card('b').click({ button: 'right' }); await page.locator('#btn-selection-exclude-folder').click();
+      await page.locator('.exclude-folder-options button').last().click();
+      await page.waitForFunction(() => Config.get().scopeMode === 'exclude');
+      assert.deepStrictEqual(await page.evaluate(() => Config.get().scopeFolderIds), ['other']);
+      await range('all');
+      await page.evaluate(() => { __items[1].folders = []; });
+      await card('b').click({ button: 'right' }); await page.locator('#btn-selection-exclude-folder').click();
+      await page.waitForFunction(() => document.querySelector('.toast')?.textContent.includes('未归入文件夹'));
+      assert.strictEqual(await page.evaluate(() => Config.get().scopeMode), 'all');
+      await page.evaluate(() => {
+        window.__originalInfo = eagle.library.info;
+        eagle.library.info = () => new Promise((resolve) => { window.__releaseFolders = () => resolve({ folders: __folders }); });
+      });
+      await card('a').click({ button: 'right' }); await page.locator('#btn-selection-exclude-folder').click();
+      await page.waitForFunction(() => !!window.__releaseFolders);
+      await page.locator('#btn-archives').click();
+      await page.evaluate(() => { window.__releaseFolders(); eagle.library.info = window.__originalInfo; });
+      await page.waitForFunction(() => !document.getElementById('btn-selection-exclude-folder').disabled);
+      assert.strictEqual(await page.evaluate(() => Config.get().scopeMode), 'all', '迟到读取不能改导航后的范围');
+      await page.locator('.warehouse-card-open').click();
+      await page.setViewportSize({ width: 360, height: 720 });
+      await card('a').click({ button: 'right' });
+      const box = await page.locator('.result-context-menu').boundingBox();
+      assert(box.x >= 0 && box.x + box.width <= 360 && box.y >= 0 && box.y + box.height <= 720);
+      await page.screenshot({ path: path.join(os.tmpdir(), 'eagle-session-scope-menu.png') });
+      assert.deepStrictEqual(errors, []);
+      console.log('session scope, smallest folders, accumulation, include intersection, navigation, reopen and menu layout passed');
+      return;
+    }
+    if (process.env.WAREHOUSE_THEME_ONLY) {
+      const theme = () => page.evaluate(() => document.documentElement.dataset.theme);
+      const setHostTheme = (dark) => page.evaluate((dark) => {
+        eagle.app.isDarkColors = () => dark;
+        window.__themeChanged();
+      }, dark);
+      const saveTheme = async (value) => {
+        await page.locator('#btn-settings').click();
+        await page.locator('#cfg-theme').selectOption(value);
+        await page.locator('#btn-save-settings').click();
+      };
+      assert.strictEqual(await theme(), 'dark', '旧配置默认跟随 Eagle');
+      await setHostTheme(false);
+      assert.strictEqual(await theme(), 'light');
+      await page.locator('#query').fill('城市夜景');
+      await page.locator('#btn-search').click();
+      await page.waitForFunction(() => Search.getRawMatches().length > 0 && !Search.isBusy());
+      const before = await page.evaluate(() => {
+        window.__themeCard = document.querySelector('#results .card');
+        return { requests: window.__requests.length, matches: Search.getRawMatches().length };
+      });
+      await saveTheme('dark');
+      assert.strictEqual(await theme(), 'dark');
+      assert.strictEqual(await page.evaluate(() => getComputedStyle(document.body).backgroundColor), 'rgb(56, 57, 59)');
+      assert.strictEqual(await page.evaluate(() => getComputedStyle(document.documentElement).colorScheme), 'dark');
+      await setHostTheme(false);
+      assert.strictEqual(await theme(), 'dark', '手动夜间模式不被 Eagle 主题覆盖');
+      await page.screenshot({ path: path.join(os.tmpdir(), 'eagle-night-results.png') });
+      await page.locator('#btn-settings').click();
+      assert.strictEqual(await page.locator('#cfg-theme').inputValue(), 'dark');
+      await page.screenshot({ path: path.join(os.tmpdir(), 'eagle-night-settings.png') });
+      await page.locator('#cfg-theme').selectOption('light');
+      await page.locator('#btn-cancel-settings').click();
+      assert.strictEqual(await theme(), 'dark', '取消不改变外观');
+      await page.locator('#btn-settings').click();
+      await page.locator('#cfg-theme').selectOption('light');
+      await page.evaluate(() => { window.__writeFail = true; });
+      await page.locator('#btn-save-settings').click();
+      assert.strictEqual(await theme(), 'dark', '写失败不改变外观');
+      assert.strictEqual(await page.evaluate(() => Config.get().theme), 'dark');
+      assert((await page.locator('#settings-error').textContent()).includes('保存配置失败'));
+      await page.evaluate(() => { window.__writeFail = false; });
+      await page.locator('#btn-save-settings').click();
+      await setHostTheme(true);
+      assert.strictEqual(await theme(), 'light', '手动浅色模式不被 Eagle 主题覆盖');
+      assert.strictEqual(await page.evaluate(() => getComputedStyle(document.documentElement).colorScheme), 'light');
+      await saveTheme('auto');
+      assert.strictEqual(await theme(), 'dark');
+      await setHostTheme(false);
+      assert.strictEqual(await theme(), 'light', '跟随模式响应 Eagle 主题事件');
+      await saveTheme('dark');
+      assert.deepStrictEqual(await page.evaluate(() => ({ requests: window.__requests.length, matches: Search.getRawMatches().length })), before);
+      assert(await page.evaluate(() => window.__themeCard === document.querySelector('#results .card')), '切换外观不重建结果');
+      await page.evaluate(() => Config.init('/fixture-plugin'));
+      await setHostTheme(false);
+      assert.strictEqual(await theme(), 'dark', '重新读取配置保留夜间模式');
+      await page.setViewportSize({ width: 480, height: 720 });
+      await page.locator('#btn-settings').click();
+      assert.strictEqual(await page.locator('#cfg-theme').inputValue(), 'dark');
+      const bounds = await page.locator('#cfg-theme').boundingBox();
+      assert(bounds.x >= 0 && bounds.x + bounds.width <= 480);
+      await page.screenshot({ path: path.join(os.tmpdir(), 'eagle-night-settings-narrow.png') });
+      assert.deepStrictEqual(errors, []);
+      console.log('night theme save, reload, host changes, cancel, write failure and layout smoke passed');
+      return;
+    }
     if (process.env.WAREHOUSE_FILTER_ONLY) {
       assert.strictEqual(await page.locator('.search-options').count(), 0);
       assert(await page.locator('#result-filter-menu summary').isVisible(), '未搜索时也能设置范围');
@@ -305,7 +465,7 @@ async function main() {
       await page.locator('#results .card').nth(2).click({ button: 'right' });
       assert.strictEqual(await page.evaluate(() => Search.getSelectedMatches().length), 6, '右键已选片段保留多选');
       assert.deepStrictEqual(await page.locator('.result-context-menu button:visible').allTextContents(),
-        ['添加到主题', '取消全部选择', '添加标签', '添加到新文件夹']);
+        ['添加到主题', '取消全部选择', '添加标签', '添加到新文件夹', '排除此素材所在的最小子文件夹']);
       await page.locator('#btn-selection-tag').click();
       assert((await page.locator('#organize-summary').textContent()).includes('1 个素材'), '菜单复用原有整理处理');
       await page.locator('#organize-cancel').click();
@@ -1530,7 +1690,7 @@ async function runRemovalSmoke(page) {
   await closeCompactMenus(page);
   await page.locator('#results .card').nth(1).click({ button: 'right' });
   assert.deepStrictEqual(await page.locator('.result-context-menu button:visible').allTextContents(),
-    ['添加到主题', '从主题移除', '调整评分', '取消全部选择', '添加标签', '添加到新文件夹']);
+    ['添加到主题', '从主题移除', '调整评分', '取消全部选择', '添加标签', '添加到新文件夹', '排除此素材所在的最小子文件夹']);
   assert.strictEqual((await persisted()).matches.length, 5, '右键不移除片段');
   assert.strictEqual(await page.evaluate(() => Search.getSelectedMatches().length), 2, '主题右键保留多选');
   await closeCompactMenus(page);
@@ -1567,6 +1727,7 @@ async function runRemovalSmoke(page) {
   await page.locator('#view-min-dur').fill('5');
   await revealControl(page, '#view-min-dur');
   await page.locator('#view-min-dur').dispatchEvent('change');
+  await closeCompactMenus(page);
   await revealControl(page, '#topic-removed');
   await page.locator('#topic-removed').click();
   await page.locator('#topic-removed-query').fill('不存在的视频');

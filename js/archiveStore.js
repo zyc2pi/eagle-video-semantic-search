@@ -11,6 +11,36 @@ const ArchiveStore = (() => {
   // Imports/JSON cannot manufacture a token or expose its retained scene diff.
   const undoTransactions = new WeakMap();
 
+  // 旧分类没有 parentId，仍作为根文件夹；异常归属放回根部，避免整支不可见。
+  function categoryTree(categories) {
+    const byId = new Map(categories.map((category) => [category.id,
+      { ...category, parentId: category.parentId || '', children: [], ids: new Set([category.id]) }]));
+    for (const category of byId.values()) {
+      const visited = new Set([category.id]);
+      let parent = category.parentId;
+      while (parent) {
+        if (!byId.has(parent) || visited.has(parent)) { category.parentId = ''; break; }
+        visited.add(parent); parent = byId.get(parent).parentId;
+      }
+    }
+    const roots = [];
+    for (const category of byId.values()) {
+      if (category.parentId) byId.get(category.parentId).children.push(category);
+      else roots.push(category);
+    }
+    const items = [];
+    const visit = (category, path, depth) => {
+      category.path = [...path, category.name].join(' / '); category.depth = depth;
+      items.push(category);
+      for (const child of category.children) {
+        visit(child, [...path, category.name], depth + 1);
+        child.ids.forEach((id) => category.ids.add(id));
+      }
+    };
+    roots.forEach((category) => visit(category, [], 0));
+    return { roots, byId, items };
+  }
+
   function retainedBytes(value) {
     // Conservative JSON-shaped heap estimate, not a process RSS guarantee.
     let bytes = 0;
@@ -468,7 +498,7 @@ const ArchiveStore = (() => {
       if (selection && typeof selection === 'object') {
         const name = typeof selection.name === 'string' ? selection.name.trim() : '';
         if (!name || name.length > 60) throw new Error('分类名称须为 1～60 个字符');
-        const existing = data.categories.find((category) => category.name === name);
+        const existing = data.categories.find((category) => category.name === name && !category.parentId);
         if (existing) return existing.id;
         const category = { id: crypto.randomUUID(), name };
         data.categories.push(category);
@@ -827,23 +857,40 @@ const ArchiveStore = (() => {
       return clone(entry);
     }
 
-    function category(action, id, name = '') {
+    function category(action, id, name = '', parentId) {
       const data = read();
+      const found = data.categories.find((c) => c.id === id);
+      if (!['add', 'rename', 'remove'].includes(action)) throw new Error('分类操作无效');
+      if (action !== 'add' && !found) throw new Error('分类已不存在');
       if (action !== 'remove') {
         name = name.trim();
-        if (!name) throw new Error('请输入分类名称');
-        if (data.categories.some((c) => c.name === name && c.id !== id)) throw new Error('分类名称已存在');
+        if (!name || name.length > 60) throw new Error('分类名称须为 1～60 个字符');
+        parentId = parentId === undefined ? found?.parentId || '' : parentId;
+        const tree = categoryTree(data.categories);
+        if (parentId && !tree.byId.has(parentId)) throw new Error('上级分类已不存在');
+        if (action === 'rename' && tree.byId.get(id).ids.has(parentId)) throw new Error('不能移到自身或子分类中');
+        if (data.categories.some((c) => c.name === name && (c.parentId || '') === parentId && c.id !== id)) {
+          throw new Error('同一文件夹下的分类名称已存在');
+        }
       }
-      if (action === 'add') data.categories.push({ id: crypto.randomUUID(), name });
+      if (action === 'add') data.categories.push({ id: crypto.randomUUID(), name, parentId });
       else if (action === 'rename') {
-        const found = data.categories.find((c) => c.id === id);
-        if (!found) throw new Error('分类已不存在');
-        found.name = name;
-        data.entries.forEach((entry) => { if (entry.categoryId === id) entry.revision = (entry.revision || 0) + 1; });
+        const affected = categoryTree(data.categories).byId.get(id).ids;
+        found.name = name; found.parentId = parentId;
+        data.entries.forEach((entry) => { if (affected.has(entry.categoryId)) entry.revision = (entry.revision || 0) + 1; });
       } else if (action === 'remove') {
+        // 只删除当前文件夹；子文件夹提升一级，主题继续遵循原有未分类语义。
+        const siblings = data.categories.filter((c) => (c.parentId || '') === (found.parentId || '') && c.id !== id);
+        const children = data.categories.filter((c) => c.parentId === id);
+        if (children.some((child) => siblings.some((sibling) => sibling.name === child.name))) {
+          throw new Error('子分类提升后有同名文件夹，请先重命名或调整上级');
+        }
+        const affected = categoryTree(data.categories).byId.get(id).ids;
+        children.forEach((child) => { child.parentId = found.parentId || ''; });
         data.categories = data.categories.filter((c) => c.id !== id);
         data.entries.forEach((entry) => {
-          if (entry.categoryId === id) { entry.categoryId = ''; entry.revision = (entry.revision || 0) + 1; }
+          if (affected.has(entry.categoryId)) entry.revision = (entry.revision || 0) + 1;
+          if (entry.categoryId === id) entry.categoryId = '';
         });
       }
       write(data);
@@ -1124,5 +1171,5 @@ const ArchiveStore = (() => {
 
     return { list, add, copyEntry, replace, remove, removeEntries, removeMatches, restoreMatches, addMatches, undoMatches, setReviewed, setFavorite, category, setCategory, setCategories, setCover, restore, backups, restoreBackup, entryHistory, readEntryBackup, restoreEntryBackup, exportBundle, importBundle, exportBundleAsync, importBundleAsync, setRetention, hydrateEntry, recoverLock };
   }
-  return { open, sceneKey, sceneLookup, updatedEntry, entryChanges };
+  return { open, sceneKey, sceneLookup, updatedEntry, entryChanges, categoryTree };
 })();

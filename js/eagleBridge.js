@@ -281,6 +281,28 @@ const Bridge = (() => {
     return { ids: [...ids], missing: missing.size };
   }
 
+  // 多归属时只返回各分支中实际归属的最深层目录，不猜测文件夹顺序。
+  async function smallestItemFolders(itemId) {
+    const item = await eagle.item.getById(itemId);
+    if (!item || item.isDeleted) throw new Error('素材已不在当前库中');
+    const memberships = new Set(item.folders || []);
+    if (!memberships.size) throw new Error('此素材未归入文件夹，无法排除所在文件夹');
+    const roots = await getFolderTree();
+    const folders = [];
+    const visited = new Set();
+    const walk = (folder, ancestors, names) => {
+      if (!folder || visited.has(folder.id)) return;
+      visited.add(folder.id);
+      const path = [...names, folder.name || '(未命名)'];
+      if (memberships.has(folder.id)) folders.push({ id: folder.id, path: path.join(' / '), ancestors });
+      (folder.children || []).forEach((child) => walk(child, [...ancestors, folder.id], path));
+    };
+    roots.forEach((folder) => walk(folder, [], []));
+    if ([...memberships].some((id) => !visited.has(id))) throw new Error('素材所属文件夹已失效，请刷新素材后重试');
+    return folders.filter((folder) => !folders.some((other) => other.ancestors.includes(folder.id)))
+      .map(({ id, path }) => ({ id, path }));
+  }
+
   async function organizeItems(ids, kind, name, libraryPath, existingFolderId = null) {
     name = String(name || '').trim();
     if (!name) throw new Error('请输入名称');
@@ -402,6 +424,7 @@ const Bridge = (() => {
     refreshPathMap,
     itemForPath,
     selectionTargets,
+    smallestItemFolders,
     organizeItems,
     locateInEagle,
     isWebPlayable,

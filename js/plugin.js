@@ -27,9 +27,10 @@
   }
 
   function applyTheme() {
-    const dark = typeof eagle.app.isDarkColors === 'function'
-      ? eagle.app.isDarkColors()
-      : true;
+    const theme = Config.get().theme || 'auto';
+    const dark = theme === 'dark' || (theme === 'auto' && (
+      typeof eagle.app.isDarkColors === 'function' ? eagle.app.isDarkColors() : true
+    ));
     document.documentElement.dataset.theme = dark ? 'dark' : 'light';
   }
 
@@ -185,24 +186,71 @@
   let scopeDialogExpanded = new Set(); // 对话框每次打开时默认全部折叠
   let scopeFolderRoots = [];
   let scopeDialogTarget = null;
+  let scopeOperation = 0;
+  let scopeContextGeneration = 0;
+  let excludingFolder = false;
 
   function updateScopeButton() {
     const cfg = Config.get();
-    const btn = $('btn-scope');
-    if (cfg.scopeMode === 'selected') btn.textContent = '范围: 跟随 Eagle 选中';
-    else if (cfg.scopeMode === 'custom') btn.textContent = `范围: ${cfg.scopeFolderIds.length} 个文件夹`;
-    else if (cfg.scopeMode === 'exclude') btn.textContent = `范围: 排除 ${cfg.scopeFolderIds.length} 个文件夹`;
-    else btn.textContent = '范围: 整个库';
-    btn.classList.toggle('scoped', cfg.scopeMode !== 'all');
+    let label = '范围: 整个库';
+    if (cfg.scopeMode === 'selected') label = '范围: 跟随 Eagle 选中';
+    else if (cfg.scopeMode === 'custom') label = `范围: ${cfg.scopeFolderIds.length} 个文件夹`;
+    else if (cfg.scopeMode === 'exclude') label = `范围: 排除 ${cfg.scopeFolderIds.length} 个文件夹`;
+    if (cfg.scopeExcludeFolderIds.length) label += `，另排除 ${cfg.scopeExcludeFolderIds.length} 个`;
+    for (const id of ['btn-scope', 'topic-filter-scope']) {
+      $(id).textContent = label;
+      $(id).classList.toggle('scoped', cfg.scopeMode !== 'all');
+    }
   }
 
-  /* 换库后自定义文件夹 id 失效，自动回退为整库 */
+  function resetSearchScope() {
+    scopeOperation += 1;
+    Config.setScope();
+    Search.setScopeFilter(null, eagle.library.path);
+    updateScopeButton();
+  }
+
+  /* 换库后文件夹 id 失效，自动回退为整库 */
   function resetScopeIfLibraryChanged() {
     const cfg = Config.get();
-    if (['custom', 'exclude'].includes(cfg.scopeMode) && cfg.scopeLibrary
-        && cfg.scopeLibrary !== eagle.library.path) {
-      Config.save({ scopeMode: 'all', scopeFolderIds: [], scopeLibrary: '' });
+    if (cfg.scopeLibrary && cfg.scopeLibrary !== eagle.library.path) resetSearchScope();
+  }
+
+  function scopeContext() {
+    return { library: eagle.library.path, generation: scopeContextGeneration, page: document.body.dataset.page,
+      topic: document.body.dataset.topic === 'true' ? Warehouse.getScopeContext() : null };
+  }
+
+  function isScopeContextCurrent(target) {
+    if (target.library !== eagle.library.path || target.generation !== scopeContextGeneration
+        || target.page !== document.body.dataset.page || Search.isBusy()) return false;
+    if (target.topic) {
+      try {
+        const current = Warehouse.getScopeContext();
+        return current.id === target.topic.id && current.generation === target.topic.generation;
+      } catch { return false; }
     }
+    return document.body.dataset.topic !== 'true';
+  }
+
+  async function applySessionScope(config, target, shouldApply = () => true) {
+    const operation = ++scopeOperation;
+    let scope = { mode: 'all' };
+    if (config.scopeMode === 'selected') {
+      const folders = await eagle.folder.getSelected();
+      if (!folders?.length) throw new Error('请先在 Eagle 中选中要搜索的文件夹');
+      scope = { mode: 'folders', folderIds: folders.map((folder) => folder.id) };
+    } else if (['custom', 'exclude'].includes(config.scopeMode)) {
+      scope = { mode: config.scopeMode === 'custom' ? 'folders' : 'exclude', folderIds: config.scopeFolderIds };
+    }
+    if (config.scopeExcludeFolderIds?.length) scope.excludeFolderIds = config.scopeExcludeFolderIds;
+    const resolved = await SearchRecipe.resolveScope(scope, { mode: 'all' });
+    if (operation !== scopeOperation || !shouldApply()) return false;
+    if (!isScopeContextCurrent(target)) throw new Error('页面或素材库已切换，请重新选择范围');
+    Config.setScope({ ...config, scopeLibrary: target.library });
+    Search.setScopeFilter(resolved.paths, target.library);
+    updateScopeButton();
+    return true;
   }
 
   function renderFolderRows(rows, container) {
@@ -259,11 +307,11 @@
     renderFolderRows(rows, container);
   }
 
-  async function openScopeDialog(forTopic = false) {
-    scopeDialogTarget = forTopic ? Warehouse.getScopeContext() : null;
-    const scope = scopeDialogTarget?.scope;
-    const cfg = scope ? { scopeMode: scope.mode === 'folders' ? 'custom' : scope.mode,
-      scopeFolderIds: scope.folderIds || [] } : Config.get();
+  async function openScopeDialog() {
+    if (Search.isBusy()) return;
+    resetScopeIfLibraryChanged();
+    const target = scopeDialogTarget = scopeContext();
+    const cfg = Config.get();
     scopeDialogChecked = new Set(cfg.scopeFolderIds || []);
     scopeDialogExpanded = new Set();
     scopeFolderRoots = [];
@@ -273,8 +321,11 @@
     const tree = $('folder-tree');
     tree.innerHTML = '<p class="hint">读取文件夹列表…</p>';
     $('scope-dialog').showModal();
+    $('scope-extra-exclusions').textContent = cfg.scopeExcludeFolderIds.length
+      ? `当前指定范围内另排除了 ${cfg.scopeExcludeFolderIds.length} 个文件夹；点击应用将以本次选择替换完整范围。` : '';
     try {
       const roots = await Bridge.getFolderTree();
+      if (!$('scope-dialog').open || target !== scopeDialogTarget || !isScopeContextCurrent(target)) return;
       scopeFolderRoots = roots;
       const rows = ScopeFolderTree.flattenVisible(roots, scopeDialogExpanded);
       console.log(`[Scope] 顶层 ${roots.length} 个，初始显示 ${rows.length} 个文件夹`);
@@ -303,9 +354,8 @@
     const shouldApply = () => $('scope-dialog').open && scopeDialogTarget === target;
     $('btn-scope-apply').disabled = true;
     try {
-      if (target) await Warehouse.applyScopeFilter(target, mode, ids, shouldApply);
-      else Config.save({ scopeMode: mode, scopeFolderIds: ids, scopeLibrary: eagle.library.path });
-      if (!shouldApply()) return;
+      const applied = await applySessionScope({ scopeMode: mode, scopeFolderIds: ids }, target, shouldApply);
+      if (!applied || !shouldApply()) return;
       $('scope-dialog').close();
       updateScopeButton();
     } catch (error) { toast(error.message, true); }
@@ -314,7 +364,12 @@
 
   /* 按当前范围设置返回路径集合；整库返回 null（不过滤） */
   async function resolveSearchScope() {
+    resetScopeIfLibraryChanged();
+    const operation = scopeOperation;
+    const target = scopeContext();
     const context = await SearchRecipe.currentContext();
+    if (operation !== scopeOperation || !isScopeContextCurrent(target)) throw new Error('搜索范围或页面已改变，请重新搜索');
+    Search.setScopeFilter(context.scopePaths, context.library);
     $('time-warning').textContent = context.missingDates
       ? `${context.missingDates} 个素材缺少导入时间，已排除` : '';
     return context;
@@ -864,6 +919,7 @@
     $('cfg-project-root').value = cfg.projectRoot;
     $('cfg-port').value = cfg.port;
     $('cfg-model').value = cfg.modelName;
+    $('cfg-theme').value = cfg.theme || 'auto';
     $('cfg-thumb-cache-count').value = cfg.thumbnailCacheMaxEntries ?? 5000;
     $('cfg-thumb-cache-mb').value = cfg.thumbnailCacheMaxMB ?? 128;
     $('cfg-visual-threshold').value = cfg.visualThreshold;
@@ -943,6 +999,7 @@
       projectRoot: $('cfg-project-root').value.trim(),
       port: $('cfg-port').value === '' ? NaN : Number($('cfg-port').value),
       modelName,
+      theme: $('cfg-theme').value,
       thumbnailCacheMaxEntries: Number($('cfg-thumb-cache-count').value),
       thumbnailCacheMaxMB: Number($('cfg-thumb-cache-mb').value),
       visualThreshold: $('cfg-visual-threshold').value === '' ? NaN : Number($('cfg-visual-threshold').value),
@@ -969,6 +1026,7 @@
       autoIndex: $('cfg-auto-index').checked,
       ...(modelName !== prevModel ? { threshold: modelName.includes('fg-clip2') ? 11 : 21 } : {}),
     }, { recover });
+    applyTheme();
     Search.configureThumbnailCache(Config.get());
     applyAutoIndexSetting();
     if (modelName !== prevModel) {
@@ -1000,6 +1058,59 @@
     for (const id of ['btn-selection-tag', 'btn-selection-folder']) {
       $(id).disabled = organizing || Search.isBusy() || targets.ids.length === 0;
     }
+    $('btn-selection-exclude-folder').disabled = organizing || excludingFolder || Search.isBusy()
+      || targets.ids.length !== 1 || targets.missing > 0;
+  }
+
+  async function excludeSelectedFolder() {
+    if ($('btn-selection-exclude-folder').disabled) return;
+    const target = scopeContext();
+    const itemId = Bridge.selectionTargets(Search.getSelectedMatches()).ids[0];
+    const stillSelected = () => {
+      const selection = Bridge.selectionTargets(Search.getSelectedMatches());
+      return isScopeContextCurrent(target) && selection.ids.length === 1 && selection.ids[0] === itemId && !selection.missing;
+    };
+    excludingFolder = true;
+    updateSelectionActions();
+    let dialog;
+    try {
+      const folders = await Bridge.smallestItemFolders(itemId);
+      if (!stillSelected()) return;
+      let folder = folders[0];
+      if (folders.length > 1) {
+        folder = await new Promise((resolve) => {
+          dialog = document.createElement('dialog');
+          dialog.className = 'warehouse-batch-dialog';
+          dialog.id = 'exclude-folder-dialog';
+          const heading = document.createElement('h3');
+          heading.textContent = '素材属于多个最小文件夹，请选择要排除的一个';
+          dialog.appendChild(heading);
+          const list = document.createElement('div');
+          list.className = 'exclude-folder-options';
+          folders.forEach((candidate) => {
+            const button = document.createElement('button');
+            button.type = 'button'; button.textContent = candidate.path;
+            button.addEventListener('click', () => { resolve(candidate); dialog.close(); });
+            list.appendChild(button);
+          });
+          dialog.appendChild(list);
+          const cancel = document.createElement('button');
+          cancel.textContent = '取消'; cancel.type = 'button';
+          cancel.addEventListener('click', () => dialog.close());
+          dialog.addEventListener('close', () => resolve(null), { once: true });
+          dialog.appendChild(cancel); document.body.appendChild(dialog); dialog.showModal();
+        });
+      }
+      if (!folder || !stillSelected()) return;
+      const config = Config.get();
+      const next = { scopeMode: config.scopeMode, scopeFolderIds: [...config.scopeFolderIds],
+        scopeExcludeFolderIds: [...config.scopeExcludeFolderIds] };
+      if (next.scopeMode === 'all') next.scopeMode = 'exclude';
+      const ids = next.scopeMode === 'exclude' ? next.scopeFolderIds : next.scopeExcludeFolderIds;
+      if (!ids.includes(folder.id)) ids.push(folder.id);
+      if (await applySessionScope(next, target, stillSelected)) toast(`本次打开已排除「${folder.path}」及其子文件夹`);
+    } catch (error) { toast(error.message, true); }
+    finally { dialog?.remove(); excludingFolder = false; updateSelectionActions(); }
   }
 
   function openOrganize(kind) {
@@ -1320,7 +1431,8 @@
     });
     window.addEventListener('resize', closeContextMenu);
     window.addEventListener('blur', closeContextMenu);
-    document.addEventListener('search-context', closeContextMenu);
+    document.addEventListener('search-context', () => { scopeContextGeneration += 1; closeContextMenu(); });
+    document.addEventListener('search-scope-clear', resetSearchScope);
     document.addEventListener('search-busy', closeContextMenu);
     menus.forEach((menu) => {
       menu.addEventListener('toggle', () => {
@@ -1347,6 +1459,7 @@
     document.addEventListener('search-busy', updateSelectionActions);
     $('btn-selection-tag').addEventListener('click', () => openOrganize('tag'));
     $('btn-selection-folder').addEventListener('click', () => openOrganize('folder'));
+    $('btn-selection-exclude-folder').addEventListener('click', excludeSelectedFolder);
     $('organize-form').addEventListener('submit', submitOrganize);
     $('organize-cancel').addEventListener('click', () => $('organize-dialog').close());
     $('organize-dialog').addEventListener('cancel', (event) => { if (organizing) event.preventDefault(); });
@@ -1480,6 +1593,9 @@
   });
 
   eagle.onPluginShow(() => {
+    WarehouseNavigation.save();
+    resetSearchScope();
+    WarehouseNavigation.show();
     if (!serviceOnline) {
       setServiceStatus('starting', '加载搜索服务…');
       Service.ensure(setServiceStatus);
