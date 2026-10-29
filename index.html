@@ -6,6 +6,18 @@
   <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
+  <aside id="library-sidebar" class="library-sidebar" aria-label="主题仓库导航">
+    <header class="library-sidebar-heading"><strong>搜索仓库</strong></header>
+    <button id="library-new-search" class="library-nav-row" type="button"><span aria-hidden="true">＋</span>新搜索</button>
+    <input id="library-query" type="search" placeholder="查找分类或主题…" aria-label="查找分类或主题">
+    <nav id="library-tree" class="library-tree" aria-label="分类与主题"></nav>
+    <footer class="library-sidebar-footer">
+      <button id="library-categories" type="button">管理分类</button>
+      <button id="library-recovery" type="button" title="备份 / 回收站">备份 / 回收站</button>
+    </footer>
+  </aside>
+  <div id="library-resizer" class="library-resizer" role="separator" tabindex="0" aria-label="调整仓库导航宽度" aria-orientation="vertical" aria-controls="library-sidebar"></div>
+  <div class="main-workspace">
   <section class="search-row">
     <div class="query-wrap">
       <input id="query" type="text" placeholder="用自然语言描述画面，如：夜晚的城市街道 / 人物特写（支持 -负向词）" autocomplete="off" autofocus>
@@ -52,7 +64,7 @@
       <button id="btn-stop-index">停止</button>
     </div>
     <div class="spacer"></div>
-    <button id="btn-archives" title="打开主题仓库，查看保存结果与更新时间">搜索仓库</button>
+    <button id="btn-archives" title="查看全部主题与批量整理">全部主题</button>
     <button id="topic-search" type="button">新搜索</button>
     <details id="result-filter-menu" class="compact-menu">
       <summary>筛选<span id="filter-active-indicator" class="menu-indicator hidden" aria-label="已启用筛选"></span></summary>
@@ -184,6 +196,7 @@
     <button id="btn-clear-selection" class="mini-btn" disabled>取消全部选择</button>
     <button id="btn-selection-tag" class="mini-btn" disabled>添加标签</button>
     <button id="btn-selection-folder" class="mini-btn" disabled>添加到新文件夹</button>
+    <button id="btn-selection-exclude-folder" type="button" class="mini-btn" disabled title="仅限一个素材；本次打开内共用，不修改 Eagle 文件夹或主题">排除此素材所在的最小子文件夹</button>
       </div>
     </details>
     <span id="result-count" class="result-count"></span>
@@ -241,6 +254,7 @@
     <button id="browse-position-top" type="button">回到顶部</button>
   </aside>
 
+  </div>
   <dialog id="manual-add-dialog" aria-labelledby="manual-add-title">
     <form id="manual-add-form" novalidate>
       <div class="manual-add-heading"><h2 id="manual-add-title">添加片段到主题</h2><span id="manual-add-progress" class="hint"></span></div>
@@ -333,11 +347,13 @@
   <dialog id="scope-dialog">
     <div class="settings-form">
       <h3>搜索范围</h3>
+      <p class="hint">本次打开内全局共用；重新打开后恢复整个库。</p>
       <label class="check-row"><input type="radio" name="scope-mode" value="all"> 整个库</label>
       <label class="check-row"><input type="radio" name="scope-mode" value="selected"> 跟随 Eagle 当前选中的文件夹（含子文件夹）</label>
       <label class="check-row"><input type="radio" name="scope-mode" value="custom"> 指定以下文件夹（含子文件夹，可多选）：</label>
       <label class="check-row"><input type="radio" name="scope-mode" value="exclude"> 排除以下文件夹（含子文件夹，可多选）：</label>
       <div id="folder-tree" class="folder-tree"></div>
+      <p id="scope-extra-exclusions" class="hint"></p>
       <p class="hint">包含或排除均作用于所有子文件夹；素材属于任一排除文件夹即不参与搜索。三种搜索方式（文本/以图/以片）都遵循此范围。</p>
       <div class="dialog-actions">
         <button id="btn-scope-apply" class="primary" type="button">应用</button>
@@ -402,6 +418,7 @@
         </div>
         <label>文件夹范围<select id="entry-scope"><option value="all">整个库</option><option value="folders">指定文件夹（含子文件夹，可多选）</option><option value="exclude">排除文件夹（含子文件夹，可多选）</option></select></label>
         <div id="entry-folders" class="entry-folders hidden"></div>
+        <p id="entry-extra-exclusions" class="hint"></p>
         <details class="entry-advanced"><summary>更多搜索参数</summary>
           <label>索引模型<input id="entry-model" required></label>
           <div class="field-pair">
@@ -434,8 +451,9 @@
 
   <dialog id="warehouse-category-dialog">
     <form id="warehouse-category-form" class="settings-form">
-      <h3>管理分类</h3><p class="hint">删除分类后，其中的主题移到“未分类”。</p>
+      <h3>管理分类</h3><p class="hint">分类像文件夹一样可多层嵌套。修改名称或上级后点击保存；删除时，直属主题移到“未分类”，子文件夹提升一级。</p>
       <div id="category-list"></div>
+      <label>新分类的上级文件夹<select id="category-parent"><option value="">根目录</option></select></label>
       <label>新分类名称<input id="category-name" maxlength="60" required></label>
       <p id="category-error" class="form-error" role="alert"></p>
       <div class="dialog-actions"><button id="category-close" type="button">关闭</button><button class="primary" type="submit">新建分类</button></div>
@@ -445,6 +463,14 @@
   <dialog id="settings-dialog">
     <form id="settings-form" class="settings-form">
       <h3>设置</h3>
+      <label>外观
+        <select id="cfg-theme">
+          <option value="auto">跟随 Eagle</option>
+          <option value="dark">夜间模式</option>
+          <option value="light">浅色模式</option>
+        </select>
+      </label>
+      <p class="hint">夜间模式使用深灰背景与柔和文字，保存后立即生效。</p>
       <label>Auto-scenes-extraction 项目路径
         <input id="cfg-project-root" type="text" spellcheck="false">
       </label>
@@ -592,6 +618,7 @@
   <script src="js/folderTree.js"></script>
   <script src="js/manualAdd.js"></script>
   <script src="js/topicRelations.js"></script>
+  <script src="js/warehouseNavigation.js"></script>
   <script src="js/warehouse.js"></script>
   <script src="js/plugin.js"></script>
 </body>

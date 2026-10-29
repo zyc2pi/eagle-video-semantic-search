@@ -110,6 +110,16 @@ const SearchRecipe = (() => {
     if (scope.mode === 'exclude') {
       paths = new Set(items.map((item) => normalize(item.filePath)).filter((path) => !paths.has(path)));
     }
+    if (scope.excludeFolderIds?.length) {
+      const ids = scope.excludeFolderIds;
+      const folders = await eagle.folder.getByIds(ids);
+      if (ids.some((id) => !(folders || []).some((folder) => folder.id === id))) {
+        throw new Error('排除的文件夹已不存在，请重新选择搜索范围');
+      }
+      const excluded = await Bridge.pathSetFromFolderIds(ids);
+      paths = new Set(items.map((item) => normalize(item.filePath))
+        .filter((path) => (paths == null || paths.has(path)) && !excluded.has(path)));
+    }
     const result = filterItems(items, time, paths);
     if (result.missingDates) {
       // 时间全部不可用时拒绝刷新，避免因旧版 API 缺字段而清空仓库。
@@ -118,11 +128,12 @@ const SearchRecipe = (() => {
         throw new Error('当前素材无法读取 Eagle 导入时间，请检查 Eagle 版本或改用“不限时间”');
       }
     }
-    return result;
+    return { ...result, scopePaths: paths };
   }
 
   async function currentContext() {
     const config = { ...Config.get() };
+    const library = eagle.library.path;
     let scope = { mode: 'all' };
     if (config.scopeMode === 'selected') {
       const folders = await eagle.folder.getSelected();
@@ -131,9 +142,10 @@ const SearchRecipe = (() => {
     } else if (config.scopeMode === 'custom' || config.scopeMode === 'exclude') {
       scope = { mode: config.scopeMode === 'exclude' ? 'exclude' : 'folders', folderIds: [...config.scopeFolderIds] };
     }
+    if (config.scopeExcludeFolderIds?.length) scope.excludeFolderIds = [...config.scopeExcludeFolderIds];
     const time = readTime();
-    const library = eagle.library.path;
     const resolved = await resolveScope(scope, time);
+    if (library !== eagle.library.path) throw new Error('素材库已切换，请重新搜索');
     return { ...resolved, scope, time, library, config: options(config) };
   }
 

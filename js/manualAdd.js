@@ -218,8 +218,9 @@ const ManualAdd = (() => {
     const chosen = $('manual-add-target').value;
     $('manual-add-target').replaceChildren(new Option('选择已有主题…', ''));
     const targets = session.entries.slice().sort((a, b) => Number(!!b.favorite) - Number(!!a.favorite));
+    const categories = ArchiveStore.categoryTree(session.categories).byId;
     for (const entry of targets) {
-      const category = session.categories.find((value) => value.id === entry.categoryId)?.name || '未分类';
+      const category = categories.get(entry.categoryId)?.path || '未分类';
       if (entry.id !== chosen && !`${entry.name} ${category}`.toLowerCase().includes(query)) continue;
       const count = entry.summary?.matches ?? entry.matches.length;
       $('manual-add-target').append(new Option(`${entry.favorite ? '★ ' : ''}${entry.name} · ${category} · ${count} 个片段`, entry.id));

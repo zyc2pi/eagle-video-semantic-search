@@ -7,6 +7,7 @@ const Config = (() => {
     projectRoot: 'D:\\Auto-scenes-extraction-1.3.0\\Auto-scenes-extraction-1.3.0',
     port: 5006,
     modelName: 'qihoo360-fg-clip2-base',
+    theme: 'auto',             // auto=跟随 Eagle，dark=夜间，light=浅色
     thumbnailCacheMaxEntries: 5000,
     thumbnailCacheMaxMB: 128,
     threshold: 11,
@@ -31,10 +32,11 @@ const Config = (() => {
     indexFrameSelection: 'content_adaptive', // 复用现有向量，自适应数量；仅影响新索引
     indexContentMaxFrames: 12,
     indexFp16: true,             // FP16 推理（仅 NVIDIA GPU 生效）
-    // 搜索范围：all=整个库；selected=跟随 Eagle 选中；custom=指定；exclude=排除
+    // 搜索范围只在本次打开中共用，不写入配置；重新打开恢复整库。
     scopeMode: 'all',
     scopeFolderIds: [],          // custom/exclude 模式勾选的文件夹 id（递归展开子文件夹）
     scopeLibrary: '',            // 勾选时所在的库路径，换库后自动重置为 all
+    scopeExcludeFolderIds: [],   // 指定/跟随范围内额外排除的文件夹
     // 静默自动索引：插件随 Eagle 后台运行时，定时检查新素材并自动增量索引
     autoIndex: false,
     // 最近一次已确认的索引结果，仅用于计算“本轮新跳过/失败”并提示一次。
@@ -56,6 +58,7 @@ const Config = (() => {
   let current = { ...DEFAULTS };
   let loadError = '';
   let errorHandler = null;
+  const SCOPE_DEFAULTS = { scopeMode: 'all', scopeFolderIds: [], scopeLibrary: '', scopeExcludeFolderIds: [] };
   const NUMBER_RULES = {
     port: [1, 65535, true], threshold: [0, 120], visualThreshold: [0, 120],
     visualMargin: [1, 60], visualSceneFrames: [1, 16, true], visualVideoFrames: [1, 32, true],
@@ -78,10 +81,12 @@ const Config = (() => {
     if (typeof value.projectRoot !== 'string' || !value.projectRoot.trim()
         || typeof value.modelName !== 'string' || !value.modelName.trim()) throw new Error('项目路径和模型不能为空');
     if (!['mean', 'max'].includes(value.visualAgg) || !['fast', 'balanced', 'quality'].includes(value.aiMode)
+        || !['auto', 'dark', 'light'].includes(value.theme)
         || !['all', 'selected', 'custom', 'exclude'].includes(value.scopeMode)
         || !['triplet', 'dinov3_cses', 'content_adaptive'].includes(value.indexFrameSelection)) throw new Error('配置选项无效');
     if (!Array.isArray(value.history) || !value.history.every((v) => typeof v === 'string')
-        || !Array.isArray(value.scopeFolderIds) || !value.scopeFolderIds.every((v) => typeof v === 'string')) throw new Error('配置列表格式无效');
+        || !Array.isArray(value.scopeFolderIds) || !value.scopeFolderIds.every((v) => typeof v === 'string')
+        || !Array.isArray(value.scopeExcludeFolderIds) || !value.scopeExcludeFolderIds.every((v) => typeof v === 'string')) throw new Error('配置列表格式无效');
     for (const [key, fallback] of Object.entries(DEFAULTS)) {
       if (typeof fallback === 'boolean' && typeof value[key] !== 'boolean') throw new Error(`设置 ${key} 必须为开关`);
     }
@@ -98,7 +103,7 @@ const Config = (() => {
       if (fs.existsSync(configPath)) {
         const saved = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
         if (!saved || typeof saved !== 'object' || Array.isArray(saved)) throw new Error('配置格式无效');
-        current = validate({ ...DEFAULTS, ...saved });
+        current = validate({ ...DEFAULTS, ...saved, ...SCOPE_DEFAULTS });
       }
     } catch (e) {
       loadError = '配置无法读取或格式无效，正在使用默认值；原文件已保留。请修复原文件后重载插件，当前禁止覆盖保存。';
@@ -121,7 +126,9 @@ const Config = (() => {
         fs.copyFileSync(configPath, `${configPath}.invalid-${require('crypto').randomUUID()}.bak`, fs.constants.COPYFILE_EXCL);
       }
       temporary = `${configPath}.${require('crypto').randomUUID()}.tmp`;
-      fs.writeFileSync(temporary, JSON.stringify(next, null, 2), { encoding: 'utf8', flag: 'wx' });
+      const persisted = { ...next };
+      Object.keys(SCOPE_DEFAULTS).forEach((key) => delete persisted[key]);
+      fs.writeFileSync(temporary, JSON.stringify(persisted, null, 2), { encoding: 'utf8', flag: 'wx' });
       fs.renameSync(temporary, configPath);
       current = next;
       loadError = '';
@@ -145,6 +152,11 @@ const Config = (() => {
     return pluginDir;
   }
 
-  return { init, get, save, validate, baseUrl, pluginPath, DEFAULTS,
+  function setScope(partial = {}) {
+    const scope = { ...SCOPE_DEFAULTS, ...partial };
+    current = validate({ ...current, ...Object.fromEntries(Object.keys(SCOPE_DEFAULTS).map((key) => [key, scope[key]])) });
+  }
+
+  return { init, get, save, setScope, validate, baseUrl, pluginPath, DEFAULTS,
     getLoadError: () => loadError, onError: (handler) => { errorHandler = handler; } };
 })();

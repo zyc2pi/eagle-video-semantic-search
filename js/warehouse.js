@@ -10,6 +10,7 @@ const Warehouse = (() => {
   let editing = null;
   let editingLibrary = null;
   let editorCategoryPicker = null;
+  let categoryLibrary = null;
   let draft = null;
   let savingMatches = [];
   let savingView = null;
@@ -28,6 +29,7 @@ const Warehouse = (() => {
   let renderedEntryCount = 0;
   let warehouseRenderToken = 0;
   let navigationGeneration = 0;
+  let restoringBrowseGeneration = -1;
   const beginNavigation = () => ({ generation: ++navigationGeneration, library: eagle.library.path });
   const currentNavigation = (navigation) => navigation.generation === navigationGeneration
     && navigation.library === eagle.library.path;
@@ -78,12 +80,12 @@ const Warehouse = (() => {
   function countVideos(matches) {
     return new Set(matches.map((m) => m.eagleItemId || SearchRecipe.normalize(m.video_path))).size;
   }
-  function categoryName(id) { return data.categories.find((c) => c.id === id)?.name || '未分类'; }
+  function categoryName(id) { return ArchiveStore.categoryTree(data.categories).byId.get(id)?.path || '未分类'; }
   function categoryOptions(select, all = false, selected = '') {
     select.replaceChildren();
     if (all) select.appendChild(new Option('全部分类', '*'));
     select.appendChild(new Option('未分类', ''));
-    data.categories.forEach((category) => select.appendChild(new Option(category.name, category.id)));
+    ArchiveStore.categoryTree(data.categories).items.forEach((category) => select.appendChild(new Option(category.path, category.id)));
     select.value = selected;
     if (select.selectedIndex < 0) select.value = all ? '*' : '';
   }
@@ -118,7 +120,7 @@ const Warehouse = (() => {
     const selected = node('p', 'category-picker-selected');
     selected.setAttribute('aria-live', 'polite');
     const options = node('div', 'category-picker-options');
-    const categories = data.categories.slice();
+    const categories = ArchiveStore.categoryTree(data.categories).items.map((category) => ({ ...category, name: category.path }));
     let value = selectedId;
     const choose = (next) => {
       value = next; input.value = ''; render(); input.focus();
@@ -229,6 +231,7 @@ const Warehouse = (() => {
   }
   async function attempt(action) {
     try { await action(); } catch (error) { hooks.toast(error.message, true, 6500); }
+    finally { WarehouseNavigation.refresh(); }
   }
 
   function syncUndoActions() {
@@ -313,10 +316,13 @@ const Warehouse = (() => {
   }
   function rememberTopicPosition() {
     clearTimeout(sceneQueryTimer);
+    if (restoringBrowseGeneration !== -1) return;
     if (!current || currentLibrary !== eagle.library.path || document.body.dataset.page === 'warehouse') return;
     const filter = Search.getArchiveFilter();
     localFilters.set(timeKey(current), filter);
-    topicPositions.set(timeKey(current), { view: Search.getView(), position: Search.captureBrowsePosition() });
+    const { query, source, tags, orientation, maxDur, minScore } = filter;
+    topicPositions.set(timeKey(current), { view: Search.getView(), position: Search.captureBrowsePosition(),
+      filter: { query, source, tags, orientation, maxDur, minScore }, time: localTime(current) });
   }
   function rememberWarehousePosition() {
     if (document.body.dataset.page !== 'warehouse' || warehouseLibrary !== eagle.library.path) return;
@@ -350,6 +356,7 @@ const Warehouse = (() => {
     clearTimeout(queryTimer);
     document.body.dataset.page = 'search';
     $('warehouse-page').classList.add('hidden');
+    WarehouseNavigation.refresh();
     if (typeof TopicRelations !== 'undefined') TopicRelations.refresh();
   }
   function detachTopic(resetTime = true) {
@@ -386,6 +393,7 @@ const Warehouse = (() => {
   }
 
   function renderCards(position = null) {
+    WarehouseNavigation.refresh();
     cancelBoxSelection();
     const token = ++warehouseRenderToken;
     hidePositionNotice();
@@ -399,8 +407,9 @@ const Warehouse = (() => {
     grid.className = `warehouse-grid ${viewMode === 'list' ? 'list-view' : ''}`;
     const query = $('warehouse-query').value.trim().toLocaleLowerCase();
     const category = $('warehouse-category').value;
+    const categoryIds = ArchiveStore.categoryTree(data.categories).byId.get(category)?.ids || new Set([category]);
     const entries = data.entries.filter((entry) => entry.name.toLocaleLowerCase().includes(query)
-      && (category === '*' || entry.categoryId === category) && (!favoritesOnly || entry.favorite === true))
+      && (category === '*' || categoryIds.has(entry.categoryId || '')) && (!favoritesOnly || entry.favorite === true))
       .sort((a, b) => Number(b.favorite === true) - Number(a.favorite === true)
         || String(b.updatedAt).localeCompare(String(a.updatedAt)));
     visibleEntryIds = entries.map((entry) => entry.id);
@@ -811,7 +820,7 @@ const Warehouse = (() => {
     dialog.addEventListener('cancel', (event) => { if (pending) event.preventDefault(); });
   }
 
-  async function open() {
+  async function open(options = {}) {
     await attempt(async () => {
       checkIdle();
       const navigation = beginNavigation();
@@ -819,7 +828,7 @@ const Warehouse = (() => {
       rememberWarehousePosition();
       if (!current && document.body.dataset.page !== 'warehouse') searchBrowsePosition = Search.captureBrowsePosition();
       const library = eagle.library.path;
-      const position = warehousePositions.get(SearchRecipe.normalize(library));
+      const position = options.category !== undefined ? null : warehousePositions.get(SearchRecipe.normalize(library));
       try { data = store().list(); }
       catch (error) { recoveryDialog(); throw error; }
       const pathMap = await Bridge.refreshPathMap();
@@ -831,6 +840,11 @@ const Warehouse = (() => {
       categoryOptions($('warehouse-category'), true, position?.category ?? (warehouseLibrary === library ? $('warehouse-category').value || '*' : '*'));
       if (position) viewMode = position.viewMode;
       favoritesOnly = position?.favoritesOnly ?? (warehouseLibrary === library ? favoritesOnly : false);
+      if (options.category !== undefined) {
+        $('warehouse-query').value = '';
+        $('warehouse-category').value = options.category;
+        favoritesOnly = options.favoritesOnly === true;
+      }
       warehouseLibrary = library;
       syncViewButtons();
       document.body.dataset.page = 'warehouse';
@@ -1067,45 +1081,45 @@ const Warehouse = (() => {
 
   async function load(entry, { resetView = false } = {}) {
     checkIdle();
-    const openingTopic = document.body.dataset.page === 'warehouse' || current?.id !== entry.id;
     const navigation = beginNavigation();
     rememberTopicPosition();
-    const library = eagle.library.path;
-    await store().hydrateEntry(entry);
-    if (!currentNavigation(navigation)) return false;
-    checkIdle();
-    if (!current && !searchSession) {
-      const state = Search.captureState();
-      state.position = searchBrowsePosition || state.position;
-      searchSession = { state, queryInput: $('query').value };
-    }
-    if (current?.id !== entry.id) clearRemovalUi();
-    const browse = topicPositions.get(timeKey(entry));
-    const result = await Search.loadResults(entry.matches, entry.recipe?.query || entry.query || entry.name,
-      entry.recipe, !resetView && browse?.view || entry.view, entry.newKeys || [], localTime(entry), localFilter(entry),
-      { shouldApply: () => currentNavigation(navigation) });
-    if (result === null || !currentNavigation(navigation)) return false;
-    current = entry;
-    currentLibrary = library;
-    $('query').value = entry.recipe?.query || entry.query || '';
-    const view = Search.getView();
-    $('view-sort').value = view.sortBy;
-    $('view-min-dur').value = view.minDur;
-    $('view-grouped').checked = view.grouped;
-    showSearch({ preserveNavigation: true });
-    syncTopic();
-    if (openingTopic) {
-      await Search.restoreBrowsePosition(browse?.position, { scroll: false });
-      if (currentNavigation(navigation) && browse?.position?.scrollTop > 0) {
-        showPositionNotice($('results'), { position: browse.position, navigation, id: entry.id });
+    restoringBrowseGeneration = navigation.generation;
+    try {
+      const library = eagle.library.path;
+      await store().hydrateEntry(entry);
+      if (!currentNavigation(navigation)) return false;
+      checkIdle();
+      if (!current && !searchSession) {
+        const state = Search.captureState();
+        state.position = searchBrowsePosition || state.position;
+        searchSession = { state, queryInput: $('query').value };
       }
-    } else await restoreTopicPosition(browse?.position);
-    if (!currentNavigation(navigation)) return false;
-    if (removedSession?.id === entry.id) {
-      removedSession.records = entry.removedMatches || [];
-      renderRemovedMatches();
+      if (current?.id !== entry.id) clearRemovalUi();
+      const browse = topicPositions.get(timeKey(entry));
+      const result = await Search.loadResults(entry.matches, entry.recipe?.query || entry.query || entry.name,
+        entry.recipe, !resetView && browse?.view || entry.view, entry.newKeys || [], localTime(entry), localFilter(entry),
+        { shouldApply: () => currentNavigation(navigation) });
+      if (result === null || !currentNavigation(navigation)) return false;
+      current = entry;
+      currentLibrary = library;
+      $('query').value = entry.recipe?.query || entry.query || '';
+      const view = Search.getView();
+      $('view-sort').value = view.sortBy;
+      $('view-min-dur').value = view.minDur;
+      $('view-grouped').checked = view.grouped;
+      showSearch({ preserveNavigation: true });
+      syncTopic();
+      await restoreTopicPosition(browse?.position);
+      if (!currentNavigation(navigation)) return false;
+      if (removedSession?.id === entry.id) {
+        removedSession.records = entry.removedMatches || [];
+        renderRemovedMatches();
+      }
+      return true;
+    } finally {
+      if (restoringBrowseGeneration === navigation.generation) restoringBrowseGeneration = -1;
+      WarehouseNavigation.refresh();
     }
-    return true;
   }
 
   function previewChanges(previous, candidate, { rawMatches, restore = false, note = '', commit }) {
@@ -1328,6 +1342,8 @@ const Warehouse = (() => {
     SearchRecipe.writeTime(recipe.time, 'entry-time');
     $('entry-scope').value = recipe.scope.mode;
     $('entry-folders').classList.toggle('hidden', recipe.scope.mode === 'all');
+    $('entry-extra-exclusions').textContent = recipe.scope.excludeFolderIds?.length
+      ? `此条件另排除了 ${recipe.scope.excludeFolderIds.length} 个文件夹；改为“整个库”可清除这些排除。` : '';
     $('entry-replace-source').classList.toggle('hidden', recipe.kind === 'text');
     $('entry-source').textContent = recipe.kind === 'text' ? '文本搜索'
       : `${recipe.kind === 'hybrid' ? '文本 × 视觉混合搜索' : '视觉搜索'} · ${recipe.payload?.video_path || '已保存查询图片'}`;
@@ -1492,7 +1508,9 @@ const Warehouse = (() => {
     recipe.time = SearchRecipe.readTime('entry-time');
     const ids = [...$('entry-folders').querySelectorAll('input:checked')].map((input) => input.value);
     const scopeMode = $('entry-scope').value;
+    const extra = recipe.scope.excludeFolderIds;
     recipe.scope = scopeMode === 'all' ? { mode: 'all' } : { mode: scopeMode, folderIds: ids };
+    if (scopeMode !== 'all' && extra?.length) recipe.scope.excludeFolderIds = extra;
     if (scopeMode !== 'all' && !ids.length) throw new Error('请至少选择一个文件夹');
     const view = { minDur: Number($('entry-duration').value), sortBy: $('entry-sort').value, grouped: $('entry-grouped').checked };
     return { recipe, view };
@@ -1505,6 +1523,7 @@ const Warehouse = (() => {
       if (copy?.scope) {
         delete copy.scope.names;
         if (copy.scope.folderIds) copy.scope.folderIds.sort();
+        if (copy.scope.excludeFolderIds) copy.scope.excludeFolderIds.sort();
       }
       return copy;
     };
@@ -1556,7 +1575,10 @@ const Warehouse = (() => {
       $('warehouse-editor').close();
     } catch (error) {
       $('warehouse-editor-error').textContent = error.message;
-    } finally { $('entry-submit').disabled = false; editorCategoryPicker.setDisabled(false); }
+    } finally {
+      $('entry-submit').disabled = false; editorCategoryPicker.setDisabled(false);
+      WarehouseNavigation.refresh();
+    }
   }
 
   function confirmButton(button, action) {
@@ -1569,17 +1591,32 @@ const Warehouse = (() => {
 
   function renderCategories() {
     data = store().list();
+    WarehouseNavigation.refresh();
+    const hierarchy = ArchiveStore.categoryTree(data.categories);
+    const fillParents = (select, selected, excluded = new Set()) => {
+      select.replaceChildren(new Option('根目录', ''));
+      hierarchy.items.filter((category) => !excluded.has(category.id))
+        .forEach((category) => select.appendChild(new Option(category.path, category.id)));
+      select.value = selected;
+      if (select.selectedIndex < 0) select.value = '';
+    };
+    fillParents($('category-parent'), $('category-parent').value);
     $('category-list').replaceChildren();
-    data.categories.forEach((category) => {
+    hierarchy.items.forEach((category) => {
       const row = node('div', 'category-row');
+      row.style.marginLeft = `${Math.min(category.depth, 6) * 12}px`;
       const input = node('input');
       input.value = category.name; input.maxLength = 60;
       input.setAttribute('aria-label', '分类名称');
-      const rename = node('button', '', '重命名'); rename.type = 'button';
+      const parent = node('select'); parent.setAttribute('aria-label', `${category.path}的上级文件夹`);
+      fillParents(parent, category.parentId, category.ids);
+      const rename = node('button', '', '保存'); rename.type = 'button';
       const remove = node('button', '', '删除'); remove.type = 'button';
       const change = (action) => {
         try {
-          store().category(action, category.id, input.value);
+          if (categoryLibrary !== eagle.library.path) throw new Error('素材库已切换，请重新打开管理分类');
+          store().category(action, category.id, input.value, parent.value);
+          $('category-error').textContent = '';
           renderCategories();
           categoryOptions($('warehouse-category'), true, $('warehouse-category').value);
           renderCards();
@@ -1587,7 +1624,7 @@ const Warehouse = (() => {
       };
       rename.addEventListener('click', () => change('rename'));
       remove.addEventListener('click', () => confirmButton(remove, () => change('remove')));
-      row.append(input, rename, remove);
+      row.append(input, rename, remove, parent);
       $('category-list').appendChild(row);
     });
   }
@@ -1702,6 +1739,56 @@ const Warehouse = (() => {
 
   function init(callbacks) {
     hooks = callbacks;
+    WarehouseNavigation.init({
+      attempt, toast: hooks.toast, snapshot: () => store().list(),
+      active: () => ({ page: document.body.dataset.page, topicId: current?.id,
+        category: $('warehouse-category').value, favoritesOnly }),
+      newSearch: returnToSearch,
+      openCollection: (category, favorites) => open({ category, favoritesOnly: favorites }),
+      openTopic: (id) => {
+        checkIdle();
+        data = store().list();
+        const entry = data.entries.find((value) => value.id === id);
+        if (!entry) throw new Error('主题已不存在，请选择其他主题');
+        return load(entry);
+      },
+      capture: () => {
+        if (restoringBrowseGeneration === navigationGeneration) return null;
+        rememberTopicPosition(); rememberWarehousePosition();
+        const page = document.body.dataset.page === 'warehouse' ? 'warehouse' : current ? 'topic' : 'search';
+        if (page === 'search') searchBrowsePosition = Search.captureBrowsePosition();
+        return { page, topicId: current?.id,
+          browse: current ? topicPositions.get(timeKey(current)) : null,
+          warehouse: warehousePositions.get(SearchRecipe.normalize(eagle.library.path)) };
+      },
+      resume: async () => {
+        if (current && currentLibrary === eagle.library.path && document.body.dataset.page !== 'warehouse') {
+          await restoreTopicPosition(topicPositions.get(timeKey(current))?.position);
+        } else if (!current && document.body.dataset.page !== 'warehouse') {
+          await restoreTopicPosition(searchBrowsePosition);
+        }
+      },
+      restore: async (saved) => {
+        const libraryKey = SearchRecipe.normalize(eagle.library.path);
+        if (saved?.warehouse && typeof saved.warehouse === 'object') warehousePositions.set(libraryKey, saved.warehouse);
+        if (saved?.page === 'topic' && typeof saved.topicId === 'string') {
+          data = store().list();
+          const entry = data.entries.find((value) => value.id === saved.topicId);
+          if (entry) {
+            if (saved.browse && typeof saved.browse === 'object') {
+              topicPositions.set(timeKey(entry), saved.browse);
+              if (saved.browse.filter && typeof saved.browse.filter === 'object') localFilters.set(timeKey(entry), saved.browse.filter);
+              if (saved.browse.time && typeof saved.browse.time === 'object') localTimes.set(timeKey(entry), saved.browse.time);
+            }
+            await load(entry);
+            return;
+          }
+          hooks.toast('上次浏览的主题已移除，已返回全部主题');
+        }
+        if (saved?.page === 'search') { showSearch(); return; }
+        await open();
+      },
+    });
     if (typeof TopicRelations !== 'undefined') TopicRelations.init({
       checkIdle, toast: hooks.toast,
       openEntry: async (id) => {
@@ -1829,6 +1916,7 @@ const Warehouse = (() => {
       Search.setView({ minDur: 0 });
       $('view-min-dur').value = 0;
       Search.setArchiveFilter({ query: '', source: 'all' });
+      document.dispatchEvent(new CustomEvent('search-scope-clear'));
       $('result-filter-error').textContent = '';
       if (current) {
         localFilters.set(timeKey(current), Search.getArchiveFilter());
@@ -1912,13 +2000,15 @@ const Warehouse = (() => {
       $('entry-source').textContent = `新查询来源：${item.name}`;
     }));
     $('warehouse-categories').addEventListener('click', () => attempt(() => {
-      checkIdle(); $('category-error').textContent = ''; renderCategories(); $('warehouse-category-dialog').showModal();
+      checkIdle(); categoryLibrary = eagle.library.path;
+      $('category-error').textContent = ''; renderCategories(); $('warehouse-category-dialog').showModal();
     }));
     $('category-close').addEventListener('click', () => $('warehouse-category-dialog').close());
     $('warehouse-category-form').addEventListener('submit', (event) => {
       event.preventDefault();
       try {
-        store().category('add', '', $('category-name').value);
+        if (categoryLibrary !== eagle.library.path) throw new Error('素材库已切换，请重新打开管理分类');
+        store().category('add', '', $('category-name').value, $('category-parent').value);
         $('category-name').value = ''; $('category-error').textContent = '';
         renderCategories(); categoryOptions($('warehouse-category'), true, $('warehouse-category').value); renderCards();
       } catch (error) { $('category-error').textContent = error.message; }
@@ -1928,28 +2018,8 @@ const Warehouse = (() => {
 
   function getScopeContext() {
     requireTopic();
-    return { id: current.id, library: currentLibrary, generation: navigationGeneration,
-      scope: SearchRecipe.clone(Search.getArchiveFilter().scope || { mode: 'all' }) };
+    return { id: current.id, library: currentLibrary, generation: navigationGeneration };
   }
 
-  async function applyScopeFilter(target, mode, ids, shouldApply = () => true) {
-    checkIdle(); requireTopic(target.id, target.library);
-    let scope = { mode: 'all' };
-    if (mode === 'selected') {
-      const folders = await eagle.folder.getSelected();
-      if (!folders?.length) throw new Error('请先在 Eagle 中选中要筛选的文件夹');
-      scope = { mode: 'folders', folderIds: folders.map((folder) => folder.id) };
-    } else if (mode === 'custom' || mode === 'exclude') {
-      scope = { mode: mode === 'custom' ? 'folders' : 'exclude', folderIds: ids };
-    }
-    const resolved = await SearchRecipe.resolveScope(scope, { mode: 'all' });
-    if (!shouldApply()) return;
-    checkIdle(); requireTopic(target.id, target.library);
-    if (target.generation !== navigationGeneration) throw new Error('页面已切换，请重新选择范围');
-    Search.setArchiveFilter({ ...Search.getArchiveFilter(), scope,
-      scopePaths: resolved.paths == null ? null : [...resolved.paths] });
-    localFilters.set(timeKey(current), Search.getArchiveFilter());
-  }
-
-  return { init, open, saveCurrent, getScopeContext, applyScopeFilter, getCurrentName: () => current?.name || '' };
+  return { init, open, saveCurrent, getScopeContext, getCurrentName: () => current?.name || '' };
 })();
