@@ -42,7 +42,7 @@ body {
 
 .hidden { display: none !important; }
 
-.main-workspace { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; overflow-x: auto; overflow-y: hidden; container-type: inline-size; }
+.main-workspace { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; overflow-x: auto; overflow-y: hidden; }
 .main-workspace > .search-row, .main-workspace > .toolbar, .main-workspace > .warehouse-page,
 .main-workspace > .result-workspace { min-width: 360px; }
 .library-sidebar { display: flex; flex-direction: column; flex: 0 0 var(--library-width, 240px); width: var(--library-width, 240px); min-width: 0; background: var(--bg-panel); }
@@ -69,13 +69,12 @@ body {
 .library-resizer:hover::before, .library-resizer:focus-visible::before, .resizing-library .library-resizer::before { width: 2px; background: var(--accent); }
 .resizing-library { cursor: col-resize; user-select: none; }
 .resizing-library video { pointer-events: none; }
-@container (max-width: 640px) {
-  .main-workspace .warehouse-topic { flex-wrap: wrap; }
-  .main-workspace .warehouse-grid { grid-template-columns: minmax(0, 1fr); }
-  .main-workspace .warehouse-grid.list-view .warehouse-card { grid-template-columns: minmax(0, 1fr); gap: 10px; }
-  .main-workspace .warehouse-grid.list-view .warehouse-card-actions { border-top: 1px solid var(--border); padding-top: 8px; }
-  .main-workspace .warehouse-grid.list-view .warehouse-favorite { margin-right: auto; }
-}
+/* 用实际工作区宽度切换布局，避免尺寸容器改变后代 fixed 菜单的定位参照。 */
+.main-workspace.narrow-workspace .warehouse-topic { flex-wrap: wrap; }
+.main-workspace.narrow-workspace .warehouse-grid { grid-template-columns: minmax(0, 1fr); }
+.main-workspace.narrow-workspace .warehouse-grid.list-view .warehouse-card { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+.main-workspace.narrow-workspace .warehouse-grid.list-view .warehouse-card-actions { border-top: 1px solid var(--border); padding-top: 8px; }
+.main-workspace.narrow-workspace .warehouse-grid.list-view .warehouse-favorite { margin-right: auto; }
 @media (max-width: 700px) {
   .main-workspace > .search-row, .main-workspace > .toolbar { padding-left: 10px; padding-right: 10px; }
   .main-workspace .warehouse-page { padding-left: 10px; padding-right: 10px; }
@@ -943,6 +942,7 @@ body.quick-review .topic-review-panel { flex-shrink: 0; }
 .empty-state .hint { font-size: 12px; opacity: 0.8; max-width: 420px; }
 
 dialog {
+  margin: auto;
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--bg-panel);
@@ -951,6 +951,12 @@ dialog {
   padding: 0;
 }
 dialog::backdrop { background: rgba(0, 0, 0, 0.4); }
+#scope-dialog, #settings-dialog {
+  width: min(640px, calc(100vw - 32px));
+  min-width: 0;
+  max-height: calc(100vh - 32px);
+  overflow: auto;
+}
 .settings-form { display: flex; flex-direction: column; gap: 12px; padding: 18px; }
 .settings-form h3 { margin-bottom: 4px; }
 .settings-form label { display: flex; flex-direction: column; gap: 5px; color: var(--text-dim); }
