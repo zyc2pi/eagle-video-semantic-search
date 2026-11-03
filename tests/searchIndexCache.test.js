@@ -12,7 +12,9 @@ const context = {
   eagle: { library: { path: 'library' } },
   Bridge: { resolveLibraryIdentity: async () => ({ id: 'id', index_name: 'library' }),
     refreshPathMap: async () => new Map(), normalizePath: (value) => value },
-  SearchRecipe: { normalize: (value) => value },
+  SearchRecipe: { normalize: (value) => value,
+    options: vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../js/searchRecipe.js'), 'utf8')
+      + '\nSearchRecipe.options;') },
   Api: {
     listIndexes: async () => [{ name: 'library_model.lance', model: 'model', path: 'same-index', revision }],
     search: async (_query, indexes) => {

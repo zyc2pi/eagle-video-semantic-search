@@ -16,6 +16,7 @@ const context = {
   document, console, clearTimeout,
   eagle: { library: { path: 'D:/navigation.library' } },
   Config: { pluginPath: () => '/fixture' },
+  WarehouseNavigation: { refresh() {} },
   ArchiveStore: { open: () => ({ hydrateEntry: (entry) => pending.get(entry.id)?.promise || Promise.resolve() }) },
   SearchRecipe: { normalize: (value) => value.toLowerCase(), clone: (value) => JSON.parse(JSON.stringify(value)) },
   Search: {
@@ -43,7 +44,11 @@ const seam = `
   restoreTopicPosition = async () => {};
   this.inspect = { load, returnToSearch, showSearch, detachTopic, current: () => current };
 `;
-vm.runInNewContext(source.slice(0, returnAt) + seam + source.slice(returnAt), context);
+vm.createContext(context);
+for (const name of ['dom', 'warehouseCategories', 'warehouseCards', 'warehouseUpdates', 'warehouseEditor', 'warehouseRecovery']) {
+  vm.runInContext(fs.readFileSync(path.join(__dirname, `../js/${name}.js`), 'utf8'), context);
+}
+vm.runInContext(source.slice(0, returnAt) + seam + source.slice(returnAt), context);
 const topic = (id) => ({ id, matches: [], view: {}, recipe: { query: id }, newKeys: [] });
 function delay(id) {
   let release;

@@ -47,8 +47,6 @@ const Config = (() => {
     aiEnhance: false,   // AI 查询增强总开关：双语改写（需配置 DeepSeek key）
     aiExpand: false,    // AI 语义扩展：额外生成同义/场景变体查询（最多 8 条，多路合并）
     aiMode: 'balanced', // AI 查询增强档位 fast/balanced/quality（变体数量与质量权衡）
-    dedup: false,       // 跨视频去重
-    dedupThreshold: 0.95, // 去重相似度阈值：越低合并越激进
     miniRerank: false,  // MiniCPM 二阶段精搜（慢，占显存大）
     history: [],        // 最近搜索词
   };
@@ -64,13 +62,16 @@ const Config = (() => {
     visualMargin: [1, 60], visualSceneFrames: [1, 16, true], visualVideoFrames: [1, 32, true],
     indexSampleInterval: [1, 30, true], indexResolution: [128, 512, true],
     indexMinSceneLen: [1, 120, true], indexBatchSize: [8, 128, true],
-    indexSceneThreshold: [0.5, 0.99], indexLocalmaxOrder: [1, 5, true], dedupThreshold: [0.8, 0.99],
+    indexSceneThreshold: [0.5, 0.99], indexLocalmaxOrder: [1, 5, true],
     indexContentMaxFrames: [1, 32, true],
     thumbnailCacheMaxEntries: [0, 50000, true], thumbnailCacheMaxMB: [0, 1024, true],
   };
 
   function validate(value) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('配置格式无效');
+    // 兼容旧配置：搜索已移除跨视频去重，不再读取或保存这两个字段。
+    delete value.dedup;
+    delete value.dedupThreshold;
     for (const [key, [min, max, integer]] of Object.entries(NUMBER_RULES)) {
       const n = value[key];
       if (!Number.isFinite(n) || n < min || n > max || (integer && !Number.isInteger(n))) {

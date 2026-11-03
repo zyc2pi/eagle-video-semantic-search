@@ -51,6 +51,8 @@ const context = {
   console, document: { getElementById: $, createElement: (tag) => new Element(tag), addEventListener() {} },
   Option: class extends Element { constructor(text, value) { super('option'); this.textContent = text; this.value = value; } },
   ArchiveStore: { open: () => archive, sceneKey: (m) => `${m.eagleItemId}-${m.start_frame}`,
+    categoryTree: vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../js/archiveStore.js'), 'utf8')
+      + '\nArchiveStore.categoryTree;', { require }),
     sceneLookup: vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../js/archiveStore.js'), 'utf8')
       + '\nArchiveStore.sceneLookup;', { require }) },
   Config: { pluginPath: () => 'fixture' }, eagle: { library: { path: 'library' } },

@@ -8,7 +8,18 @@ const WarehouseNavigation = (() => {
   let timer;
   let collapsed = new Set();
   const storageKey = () => `eagle-semantic-navigation:${SearchRecipe.normalize(library)}`;
+  const foldersKey = () => `eagle-semantic-library-folders:${SearchRecipe.normalize(library)}`;
   const folderIcon = '▱';
+
+  function restoreFolders() {
+    collapsed = new Set();
+    try {
+      // 兼容原先随浏览位置保存的折叠记录。
+      const ids = JSON.parse(localStorage.getItem(foldersKey()) || 'null')
+        ?? JSON.parse(localStorage.getItem(storageKey()) || 'null')?.collapsed;
+      if (Array.isArray(ids)) collapsed = new Set(ids.filter((id) => typeof id === 'string'));
+    } catch { /* 无有效历史时沿用默认展开。 */ }
+  }
 
   function save() {
     clearTimeout(timer);
@@ -59,10 +70,13 @@ const WarehouseNavigation = (() => {
     const state = hooks.active();
     const query = $('library-query').value.trim().toLocaleLowerCase();
     const fragment = document.createDocumentFragment();
-    fragment.append(row('全部主题', '▦', () => hooks.openCollection('*', false),
-      state.page === 'warehouse' && state.category === '*' && !state.favoritesOnly, snapshot.entries.length));
-    fragment.append(row('常用主题', '☆', () => hooks.openCollection('*', true),
-      state.page === 'warehouse' && state.favoritesOnly, snapshot.entries.filter((entry) => entry.favorite).length));
+    const all = row('全部主题', '▦', () => hooks.openCollection('*', false),
+      state.page === 'warehouse' && state.category === '*' && !state.favoritesOnly, snapshot.entries.length);
+    all.id = 'btn-archives'; all.dataset.navId = 'all';
+    const favorites = row('常用主题', '☆', () => hooks.openCollection('*', true),
+      state.page === 'warehouse' && state.favoritesOnly, snapshot.entries.filter((entry) => entry.favorite).length);
+    favorites.dataset.navId = 'favorites';
+    fragment.append(all, favorites);
     const categories = ArchiveStore.categoryTree(snapshot.categories);
     const entriesByCategory = new Map();
     for (const entry of snapshot.entries) {
@@ -87,7 +101,11 @@ const WarehouseNavigation = (() => {
       disclosure.setAttribute('aria-label', `${expanded ? '收起' : '展开'}${category.name}`);
       disclosure.setAttribute('aria-expanded', String(expanded));
       disclosure.addEventListener('click', () => {
+        if (library !== eagle.library.path) return;
         if (expanded) collapsed.add(category.id); else collapsed.delete(category.id);
+        // 折叠偏好独立保存，不等待浏览恢复完成或延迟保存计时器。
+        try { localStorage.setItem(foldersKey(), JSON.stringify([...collapsed])); }
+        catch { /* 存储不可用时继续保留当前会话。 */ }
         refresh(); scheduleSave();
       });
       const count = [...category.ids].reduce((total, id) => total + (entriesByCategory.get(id)?.length || 0), 0);
@@ -102,6 +120,7 @@ const WarehouseNavigation = (() => {
         const topic = row(entry.name, entry.favorite ? '★' : '▫', () => hooks.openTopic(entry.id),
           state.page !== 'warehouse' && state.topicId === entry.id);
         topic.classList.add('library-topic'); topic.dataset.navId = `topic:${entry.id}`;
+        topic.dataset.favorite = String(!!entry.favorite);
         content.append(topic);
       }
       if (expanded) group.append(content);
@@ -120,7 +139,7 @@ const WarehouseNavigation = (() => {
     tree.replaceChildren(fragment); tree.scrollTop = scroll;
     if (focusId) [...tree.querySelectorAll('[data-nav-id]')]
       .find((item) => item.dataset.navId === focusId)?.focus({ preventScroll: true });
-    $('library-new-search').setAttribute('aria-current', state.page !== 'warehouse' && !state.topicId ? 'page' : 'false');
+    $('topic-search').setAttribute('aria-current', state.page !== 'warehouse' && !state.topicId ? 'page' : 'false');
     scheduleSave();
   }
 
@@ -179,11 +198,10 @@ const WarehouseNavigation = (() => {
 
   function init(callbacks) {
     hooks = callbacks; library = eagle.library.path;
+    restoreFolders();
     initResize();
-    $('library-new-search').addEventListener('click', () => hooks.attempt(hooks.newSearch));
+    // 「新搜索」「管理分类」「备份 / 回收站」常驻侧栏，点击事件由 Warehouse 统一绑定。
     $('library-query').addEventListener('input', refresh);
-    $('library-categories').addEventListener('click', () => $('warehouse-categories').click());
-    $('library-recovery').addEventListener('click', () => $('warehouse-recovery').click());
     ['library-tree', 'warehouse-grid', 'results'].forEach((id) => $(id).addEventListener('scroll', scheduleSave, { passive: true }));
     document.addEventListener('search-context', scheduleSave);
     window.addEventListener('pagehide', save);
@@ -195,7 +213,8 @@ const WarehouseNavigation = (() => {
 
   async function show() {
     if (library !== eagle.library.path) {
-      library = eagle.library.path; started = false; collapsed = new Set();
+      library = eagle.library.path; started = false;
+      restoreFolders();
       $('library-query').value = '';
     }
     if (restoring) return;
@@ -209,7 +228,6 @@ const WarehouseNavigation = (() => {
     started = true; restoring = true;
     let saved;
     try { saved = JSON.parse(localStorage.getItem(storageKey()) || 'null'); } catch { /* 无有效历史时打开全部主题。 */ }
-    if (Array.isArray(saved?.collapsed)) collapsed = new Set(saved.collapsed.filter((id) => typeof id === 'string'));
     if (typeof saved?.sidebarQuery === 'string') $('library-query').value = saved.sidebarQuery;
     refresh();
     $('library-tree').scrollTop = Math.max(0, Number(saved?.sidebarScroll) || 0);

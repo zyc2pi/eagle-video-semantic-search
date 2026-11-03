@@ -8,12 +8,17 @@ const plugin = fs.readFileSync(path.join(root, 'js', 'plugin.js'), 'utf8');
 const search = fs.readFileSync(path.join(root, 'js', 'search.js'), 'utf8');
 const css = fs.readFileSync(path.join(root, 'css', 'style.css'), 'utf8');
 
-const toolbar = html.match(/<section class="toolbar">([\s\S]*?)<\/section>/)?.[1] || '';
+const navigation = fs.readFileSync(path.join(root, 'js', 'warehouseNavigation.js'), 'utf8');
+const sidebar = html.match(/<aside id="library-sidebar"[\s\S]*?<\/aside>/)?.[0] || '';
 const viewBar = html.match(/<section id="view-bar"[\s\S]*?<\/section>/)?.[0] || '';
 const modes = [...html.matchAll(/data-index-mode="([^"]+)"/g)].map((match) => match[1]);
 
-assert(toolbar.includes('id="btn-archives"'), '存档入口必须位于初始可见的工具栏');
-assert(!viewBar.includes('id="btn-archives"'), '存档入口不能继续放在搜索后才显示的视图栏');
+assert(navigation.includes("all.id = 'btn-archives'"), '全部主题入口必须位于常驻的左侧仓库栏');
+assert(!html.includes('id="btn-archives"') && !viewBar.includes('btn-archives'), '全部主题不能在顶栏或视图栏重复出现');
+for (const id of ['topic-search', 'service-status', 'btn-index-primary', 'warehouse-categories', 'warehouse-recovery', 'btn-settings']) {
+  assert(sidebar.includes(`id="${id}"`), `${id} 必须常驻左侧仓库栏`);
+}
+assert(!html.includes('<section class="toolbar">'), '旧工具栏已合并进顶栏与左侧仓库栏');
 assert(html.includes('id="btn-index-primary"'), '缺少索引主按钮');
 assert(html.includes('id="btn-index-menu-toggle"'), '缺少索引下拉按钮');
 assert.deepStrictEqual(modes, ['all', 'folder', 'selected']);

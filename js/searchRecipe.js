@@ -3,7 +3,7 @@ const SearchRecipe = (() => {
   const OPTION_KEYS = [
     'modelName', 'threshold', 'visualThreshold', 'visualMargin', 'visualAgg',
     'visualCentered', 'visualSceneFrames', 'visualVideoFrames', 'aiEnhance',
-    'aiExpand', 'aiMode', 'dedup', 'dedupThreshold', 'miniRerank',
+    'aiExpand', 'aiMode', 'miniRerank',
   ];
   const MONTHS = [6, 12, 24, 36, 48, 60];
   const clone = (value) => JSON.parse(JSON.stringify(value));
@@ -183,6 +183,7 @@ const SearchRecipe = (() => {
 
   async function resolve(recipe) {
     if (normalize(recipe.library) !== normalize(eagle.library.path)) throw new Error('请切换到主题所属的 Eagle 素材库');
+    if (recipe.sourceMissing) throw new Error('查询来源素材已失效，请重新选择来源后保存');
     const resolved = await resolveScope(recipe.scope, recipe.time);
     const payload = clone(recipe.payload || {});
     // 固定截图已保存；源素材仅用于更新排除自身的路径，不是重放的必需文件。

@@ -33,7 +33,7 @@ function fixture(lazy = true, observerAvailable = true, network = false, limits 
   });
   if (observerAvailable) context.IntersectionObserver = Observer;
   vm.createContext(context);
-  if (lazy) vm.runInContext(fs.readFileSync(path.join(__dirname, '../js/shortcuts.js'), 'utf8'), context);
+  if (lazy) vm.runInContext(fs.readFileSync(path.join(__dirname, '../js/dom.js'), 'utf8'), context);
   const source = fs.readFileSync(path.join(__dirname, '../js/search.js'), 'utf8')
     .replace('let maxEntries = 5000;', `let maxEntries = ${limits.entries || 5000};`)
     .replace('let maxBytes = 128 * 1024 * 1024;', `let maxBytes = ${limits.bytes || 128 * 1024 * 1024};`)

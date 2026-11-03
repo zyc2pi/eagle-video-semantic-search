@@ -106,7 +106,8 @@ async function main() {
   const saved = { ...context.Config.get(), aiEnhance: true, dedup: true, visualMargin: 7 };
   await api.search('仓库主题', ['demo.lance'], 18, new Set(), saved);
   assert.strictEqual(requests.at(-1).body.ai_search_enabled, true, '仓库使用保存参数，而非当前配置');
-  assert.strictEqual(requests.at(-1).body.use_dedup, true);
+  assert.strictEqual(Object.hasOwn(requests.at(-1).body, 'use_dedup'), false);
+  assert.strictEqual(Object.hasOwn(requests.at(-1).body, 'dedup_threshold'), false);
   assert.deepStrictEqual(Array.from(requests.at(-1).body.allowed_video_paths), []);
   await api.searchVisual({ image_base64: 'test' }, ['demo.lance'], 35, null, saved);
   assert.strictEqual(requests.at(-1).body.relative_margin, 7);

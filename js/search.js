@@ -53,7 +53,6 @@ const Search = (() => {
   let previewLoadToken = 0;     // 连续切换结果时废弃上一轮异步媒体事件
   let sentinelObserver = null;
   let cancelPreviewLoad = () => {};
-  let previewDiag = null;      // 临时诊断：当前预览的播放采样记录器
 
   const el = {};
 
@@ -62,11 +61,13 @@ const Search = (() => {
     const queue = [];
     const cache = new Map();
     const pending = new Map();
+    const failed = new WeakMap();
     let maxEntries = 5000;
     let maxBytes = 128 * 1024 * 1024;
     let cacheBytes = 0;
     let active = 0;
     let generation = 0;
+    let cacheGeneration = 0;
 
     function cachedSource(url) {
       const entry = cache.get(url);
@@ -120,6 +121,7 @@ const Search = (() => {
         // 入队发生在卡片插入 DOM 之前，不能用 isConnected 过滤；
         // 换一轮结果时 clear() 已清空队列，不会有陈旧请求。
         const { img, url, onError, token } = queue.shift();
+        const cacheToken = cacheGeneration;
         active += 1;
         let settled = false;
         let source = cachedSource(url);
@@ -130,7 +132,15 @@ const Search = (() => {
           active -= 1;
           img.onload = null;
           img.onerror = null;
-          if (event?.type === 'load' && source) remember(url, source);
+          if (event?.type === 'load') {
+            img.style.visibility = '';
+            delete img.dataset.thumbnailFailed;
+            failed.delete(img);
+          } else if (event?.type === 'error' && token === generation) {
+            img.dataset.thumbnailFailed = 'true';
+            failed.set(img, { url, onError });
+          }
+          if (event?.type === 'load' && source && cacheToken === cacheGeneration) remember(url, source);
           if (request && pending.get(url) === request) pending.delete(url);
           try { if (event?.type === 'error' && token === generation) onError?.(); } finally { pump(); }
         };
@@ -165,10 +175,13 @@ const Search = (() => {
         trim();
       },
       load(img, url, onError) {
+        img.style.visibility = 'hidden';
+        delete img.dataset.thumbnailFailed;
         const source = cachedSource(url);
         if (source) {
           // 已确认能解码的数据直接显示，不等待懒加载观察器或网络队列。
           img.src = source;
+          img.style.visibility = '';
           return;
         }
         const token = generation;
@@ -192,11 +205,22 @@ const Search = (() => {
           LazyLoad.clear();
         }
       },
+      resetCache() {
+        this.clear();
+        cacheGeneration += 1;
+        cache.clear(); pending.clear(); cacheBytes = 0;
+      },
+      retryFailed() {
+        document.querySelectorAll('img[data-thumbnail-failed]').forEach((img) => {
+          const request = failed.get(img);
+          if (request) this.load(img, request.url, request.onError);
+        });
+      },
     };
   })();
 
   /* ---------- 悬停自动播放（小窗静音循环该片段） ---------- */
-  const hover = { video: null, box: null, diag: null };
+  const hover = { video: null, box: null };
 
   function clearPreviewMediaEvents(video) {
     for (const name of ['loadedmetadata', 'seeking', 'seeked', 'timeupdate', 'playing', 'waiting', 'pause', 'ended', 'error', 'canplay', 'loadeddata', 'progress']) {
@@ -205,11 +229,6 @@ const Search = (() => {
   }
 
   function stopHoverPreview() {
-    if (hover.diag) {
-      hover.diag.mark('hover-stop');
-      hover.diag.flush();
-      hover.diag = null;
-    }
     if (hover.video) {
       clearPreviewMediaEvents(hover.video);
       hover.video.pause();
@@ -261,9 +280,7 @@ const Search = (() => {
     const playFromScene = () => {
       if (hover.video !== v || starting || !located) return;
       starting = true;
-      diag.mark('play');
-      v.play().then(() => { diag.mark('play-ok'); revealAfterPaint(); }).catch((error) => {
-        diag.mark('play-error', error.name);
+      v.play().then(revealAfterPaint).catch((error) => {
         if (hover.video === v && error.name !== 'AbortError') stopHoverPreview();
       });
     };
@@ -275,28 +292,16 @@ const Search = (() => {
     v.onseeked = () => { located = true; playFromScene(); };
     v.oncanplay = playFromScene;
     v.onprogress = playFromScene;
-    v.onplaying = () => diag.mark('playing');
     v.onerror = () => {
-      if (v.error) diag.mark('error', `${v.error.code}:${String(v.error.message || '').slice(0, 40)}`);
       if (hover.video === v) stopHoverPreview();
     };
     v.ontimeupdate = () => {
       if (v.currentTime >= endSec) v.currentTime = startSec; // 片段内循环
     };
-    const diag = PreviewDiag.begin({
-      mode: 'hover',
-      video: v,
-      clip: m.video_name,
-      file: item.fileURL,
-      scene: [m.start_frame, m.end_frame],
-      srcKind: 'file',
-    });
-    diag.setPath('hover', 'file');
     box.appendChild(v);
     box.classList.add('hovering');
     hover.video = v;
     hover.box = box;
-    hover.diag = diag;
     v.src = item.fileURL;
   }
 
@@ -462,36 +467,77 @@ const Search = (() => {
     return matches.filter((m) => scopeSet.has(Bridge.normalizePath(m.video_path)));
   }
 
-  function finishSearch(resp, scopeSet, query, recipe) {
+  function finishSearch(resp, query, recipe, filters) {
     if (!resp.ok || !resp.data || !resp.data.success) {
       const msg = (resp.data && resp.data.error) || `搜索失败（HTTP ${resp.status}）`;
       return { ok: false, message: msg };
     }
     lastQuery = query;
-    lastMatches = identifyMatches(applyScope(resp.data.matches || [], scopeSet));
-    archiveTime = { mode: 'all' };
-    archiveFilter = { query: '', source: 'all' };
+    if (recipe.refinement) {
+      view.sortBy = 'sim';
+      document.getElementById('view-sort').value = 'sim';
+    }
+    lastMatches = identifyMatches(resp.data.matches || []);
+    archiveTime = SearchRecipe.clone(filters.time);
+    archiveFilter = { ...filters.filter };
     lastRecipe = recipe;
     newKeys.clear();
     selectedIdx.clear(); // 勾选下标相对上一轮结果，跨搜索保留会让批量操作命中错误素材
     render();
     document.dispatchEvent(new CustomEvent('search-completed'));
-    return { ok: true, count: lastMatches.length, extra: resp.data };
+    return { ok: true, count: displayList.length, extra: resp.data };
   }
 
   async function prepare(modelName) {
     const indices = await findLibraryIndexes(modelName, { withRevisions: true });
     if (indices.paths.length === 0) return null;
-    await Bridge.refreshPathMap();
-    return indices;
+    const pathMap = await Bridge.refreshPathMap();
+    return { ...indices, pathMap };
   }
 
   const NO_INDEX = { ok: false, message: '当前素材库还没有索引，请先点击「索引整个库」' };
 
   function identifyMatches(matches) {
-    return matches.map((match) => ({ ...match,
-      eagleItemId: Bridge.itemForPath(match.video_path)?.id || match.eagleItemId,
-    }));
+    return matches.flatMap((match) => {
+      const item = Bridge.itemForPath(match.video_path);
+      if (!item || (match.eagleItemId && match.eagleItemId !== item.id)) return [];
+      return [{ ...match, eagleItemId: item.id }];
+    });
+  }
+
+  function refinementCandidates(refinement, pathMap) {
+    if (!Array.isArray(refinement.scenes) || !Number.isFinite(refinement.weight)
+        || refinement.weight < 0 || refinement.weight > 10) throw new Error('继续搜索的候选或权重无效');
+    const byId = new Map([...pathMap.values()].map((item) => [item.id, item]));
+    return refinement.scenes.flatMap((scene) => {
+      if (typeof scene.video_path !== 'string' || !Number.isFinite(scene.similarity)
+          || !Number.isInteger(scene.start_frame) || scene.start_frame < 0
+          || !Number.isInteger(scene.end_frame) || scene.end_frame < scene.start_frame) {
+        throw new Error('继续搜索的候选镜头无效，请从原结果重新搜索');
+      }
+      const item = scene.eagleItemId ? byId.get(scene.eagleItemId) : pathMap.get(Bridge.normalizePath(scene.video_path));
+      if (!item) return [];
+      return [{ ...scene, video_path: item.filePath }];
+    });
+  }
+
+  function weightedScore(previous, current, weight) {
+    if (weight === 0) return previous;
+    if (weight === 10) return current;
+    return (previous * (10 - weight) + current * weight) / 10;
+  }
+
+  function applyRefinement(matches, scenes, weight) {
+    const find = ArchiveStore.sceneLookup(scenes);
+    return identifyMatches(matches).flatMap((match) => {
+      const index = find(match);
+      if (index === undefined) return [];
+      const previous = scenes[index].similarity;
+      const current = match.similarity;
+      if (!Number.isFinite(current)) throw new Error('搜索服务返回了无效分数');
+      return [{ ...match, similarity: weightedScore(previous, current, weight),
+        refinementScore: { previous, current } }];
+    });
   }
 
   async function requestRecipe(recipe, context, signal) {
@@ -502,12 +548,19 @@ const Search = (() => {
     if (SearchRecipe.normalize(recipe.library) !== SearchRecipe.normalize(eagle.library.path)) {
       throw new Error('素材库已切换，请重新搜索');
     }
+    const scenes = recipe.refinement ? refinementCandidates(recipe.refinement, snapshot.pathMap) : null;
+    if (scenes) {
+      const paths = new Set(scenes.map((scene) => Bridge.normalizePath(scene.video_path)));
+      context = { ...context, paths: new Set([...paths].filter((path) => context.paths == null || context.paths.has(path))) };
+    }
     if (context.paths && context.paths.size === 0) {
       return { ok: true, data: { success: true, matches: [] } };
     }
 
     const payload = context.payload || recipe.payload;
-    const cfg = recipe.config;
+    const cfg = SearchRecipe.options(recipe.config);
+    // 加权前保留新词的完整分数，不能先按新词阈值丢掉上一轮的高分镜头。
+    if (scenes) cfg.threshold = 0;
     const cacheParams = {
       kind: recipe.kind, query: recipe.query, payload, config: cfg,
       library: recipe.library, indexNames: indices,
@@ -517,36 +570,42 @@ const Search = (() => {
     };
     // 旧服务没有索引版本时仍可搜索，但不可把同路径误当作未更新。
     const canCache = snapshot.revisions.every((revision) => typeof revision === 'string' && revision.length > 0);
+    let resp;
     if (canCache && typeof SearchCache !== 'undefined') {
       const cached = SearchCache.get(cacheParams);
       if (cached) {
         console.log('[搜索缓存] 命中缓存，跳过请求');
         setPhase('从缓存加载结果…');
-        return { ok: true, data: { success: true, matches: cached } };
+        resp = { ok: true, data: { success: true, matches: cached } };
       }
     }
 
-    setPhase('等待服务返回结果…');
+    if (!resp) {
+      setPhase('等待服务返回结果…');
+      if (recipe.kind === 'visual') {
+        resp = await Api.searchVisual(payload, indices, cfg.visualThreshold, context.paths, cfg, { signal });
+      } else if (recipe.kind === 'hybrid') {
+        resp = await Api.searchHybrid(recipe.query, payload, indices, cfg.threshold, context.paths, cfg, { signal });
+      } else {
+        resp = await Api.search(recipe.query, indices, cfg.threshold, context.paths, cfg, { signal });
+      }
 
-    let resp;
-    if (recipe.kind === 'visual') {
-      resp = await Api.searchVisual(payload, indices, cfg.visualThreshold, context.paths, cfg, { signal });
-    } else if (recipe.kind === 'hybrid') {
-      resp = await Api.searchHybrid(recipe.query, payload, indices, cfg.threshold, context.paths, cfg, { signal });
-    } else {
-      resp = await Api.search(recipe.query, indices, cfg.threshold, context.paths, cfg, { signal });
+      // 缓存原始新词分数；候选镜头交集与权重在命中缓存后也要重新计算。
+      if (canCache && !signal?.aborted && typeof SearchCache !== 'undefined' && resp.ok && resp.data?.success && resp.data?.matches) {
+        SearchCache.set(cacheParams, resp.data.matches);
+        console.log('[搜索缓存] 已缓存结果');
+      }
     }
-
-    // 存储到缓存
-    if (canCache && !signal?.aborted && typeof SearchCache !== 'undefined' && resp.ok && resp.data?.success && resp.data?.matches) {
-      SearchCache.set(cacheParams, resp.data.matches);
-      console.log('[搜索缓存] 已缓存结果');
+    if (scenes && resp.ok && resp.data?.success) {
+      const matches = applyRefinement(resp.data.matches || [], scenes, recipe.refinement.weight)
+        .filter((match) => match.similarity >= (recipe.config.threshold ?? 0));
+      return { ...resp, data: { ...resp.data, matches } };
     }
 
     return resp;
   }
 
-  async function runCaptured(kind, query, payload, context, threshold) {
+  async function runCaptured(kind, query, payload, context, threshold, refinement = null) {
     if (busy) return { ok: false, message: '已有搜索正在进行，请稍候' };
     const generation = ++requestGeneration;
     const controller = new AbortController();
@@ -555,13 +614,24 @@ const Search = (() => {
     setPhase('准备搜索范围…');
     try {
       const recipe = SearchRecipe.capture(kind, query, payload, context, threshold);
-      const resp = await requestRecipe(recipe, context, controller.signal);
+      if (refinement) recipe.refinement = refinement;
+      const standalone = document.body.dataset.topic !== 'true';
+      const filters = { time: context.time || { mode: 'all' },
+        filter: { ...(standalone && !refinement ? archiveFilter : { query: '', source: 'all' }),
+          minScore: kind === 'text' ? recipe.config.threshold || null : null } };
+      if (standalone && !refinement) {
+        archiveTime = SearchRecipe.clone(filters.time);
+        archiveFilter = { ...filters.filter };
+      }
+      // 新搜索保留全库候选；显示条件不进入请求和缓存键，主题更新仍按原 recipe 重放。
+      const request = { ...recipe, config: { ...recipe.config, ...(kind === 'text' ? { threshold: 0 } : {}) } };
+      const resp = await requestRecipe(request, { ...context, paths: null }, controller.signal);
       if (generation !== requestGeneration) return { ok: false, cancelled: true, stale: true };
       if (SearchRecipe.normalize(recipe.library) !== SearchRecipe.normalize(eagle.library.path)) {
         throw new Error('素材库已切换，已忽略旧搜索结果');
       }
       setPhase('渲染结果…');
-      return finishSearch(resp, context.paths, query, recipe);
+      return finishSearch(resp, query, recipe, standalone && !refinement ? { time: archiveTime, filter: archiveFilter } : filters);
     } catch (error) {
       if (generation !== requestGeneration || error.name === 'AbortError') return { ok: false, cancelled: true, stale: generation !== requestGeneration };
       throw error;
@@ -572,6 +642,34 @@ const Search = (() => {
 
   function run(query, threshold, context) {
     return runCaptured('text', query, null, context, threshold);
+  }
+
+  async function refine(query, threshold, context, source, weight) {
+    if (SearchRecipe.normalize(source.library) !== SearchRecipe.normalize(eagle.library.path)) {
+      throw new Error('素材库已切换，请重新打开原结果');
+    }
+    if (!source.matches.length) throw new Error('当前筛选下没有可继续搜索的镜头');
+    const scenes = source.matches.map((match) => ({ video_path: match.video_path,
+      eagleItemId: match.eagleItemId || Bridge.itemForPath(match.video_path)?.id,
+      start_frame: match.original_start_frame ?? match.start_frame,
+      end_frame: match.original_end_frame ?? match.end_frame, similarity: match.similarity }));
+    return runCaptured('text', query, null, { ...context,
+      config: { ...context.config, modelName: source.modelName || context.config.modelName } }, threshold,
+    { label: source.label, scenes, weight });
+  }
+
+  function setRefinementWeight(weight) {
+    if (busy) throw new Error('搜索中暂不能调整权重');
+    if (!lastRecipe?.refinement) return;
+    if (!Number.isFinite(weight) || weight < 0 || weight > 10) throw new Error('权重应为 0～10');
+    lastMatches = lastMatches.map((match) => {
+      if (!match.refinementScore || match.manualScore) return match;
+      const { previous, current } = match.refinementScore;
+      if (!Number.isFinite(previous) || !Number.isFinite(current)) throw new Error('已存镜头的权重分数无效，请更新主题后再调整');
+      return { ...match, similarity: weightedScore(previous, current, weight) };
+    });
+    lastRecipe = { ...lastRecipe, refinement: { ...lastRecipe.refinement, weight } };
+    render();
   }
 
   function runVisual(payload, context, label = '') {
@@ -882,7 +980,17 @@ const Search = (() => {
 
     const has = displayList.length > 0;
     el.emptyState.classList.toggle('hidden', has);
-    el.viewBar.classList.toggle('hidden', lastMatches.length === 0);
+    el.viewBar.classList.toggle('hidden', lastMatches.length === 0 && !lastRecipe?.refinement);
+    const refinement = lastRecipe?.refinement;
+    document.getElementById('result-refine-controls').classList.toggle('hidden', !refinement);
+    if (refinement) {
+      const chain = document.getElementById('result-search-chain');
+      chain.textContent = `${refinement.label} → ${lastQuery}`;
+      chain.title = chain.textContent;
+      document.getElementById('result-refine-weight').value = refinement.weight;
+      document.getElementById('result-refine-old').textContent = 10 - refinement.weight;
+      document.getElementById('result-refine-new').textContent = refinement.weight;
+    }
     if (el.localFilters) {
       el.localFilters.classList.remove('hidden');
       const values = { 'topic-scene-query': archiveFilter.query, 'topic-scene-source': archiveFilter.source,
@@ -905,7 +1013,7 @@ const Search = (() => {
       el.emptyState.innerHTML = lastMatches.length > 0 && hasLocalFilter
         ? '<p>当前组合筛选下没有片段，可清除筛选或调整时间与片段时长。标签使用 Eagle 素材信息。</p>'
         : lastMatches.length > 0 && archiveTime.mode !== 'all'
-        ? '<p>当前筛选下没有已保存的结果，可切回「不限时间」或调整时长。缺少加入 Eagle 时间的素材不参与时间筛选。</p>'
+        ? '<p>当前时间筛选下没有结果，可切回「不限时间」或调整时长。缺少加入 Eagle 时间的素材不参与时间筛选。</p>'
         : lastMatches.length > 0
         ? '<p>当前时长过滤下没有结果，调低「≥秒」试试。</p>'
         : '<p>没有匹配结果，可尝试降低阈值或换个描述。</p>';
@@ -1049,163 +1157,8 @@ const Search = (() => {
     return true;
   }
 
-  /* ---------- 预览诊断（临时：把真实播放数据追加到 <插件目录>/preview-diag.log） ---------- */
-  const PreviewDiag = (() => {
-    const SAMPLE_MS = 2000;   // 起播后采样多久的帧间隔
-    const now = () => (typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now());
-    function logPath() {
-      try {
-        // 写到系统临时目录，避免往插件目录写文件触发 Eagle 的重载监听
-        return require('path').join(require('os').tmpdir(), 'eagle-preview-diag.log');
-      } catch (error) { return ''; }
-    }
-    function push(record) {
-      const file = logPath();
-      if (!file) return;
-      try {
-        require('fs').appendFileSync(file, JSON.stringify(record) + '\n');
-        if (require('fs').statSync(file).size > 512 * 1024) require('fs').writeFileSync(file, '');
-      } catch (error) { /* 诊断失败不影响播放 */ }
-    }
-    function elementInfo(video) {
-      const rect = video.getBoundingClientRect ? video.getBoundingClientRect() : null;
-      const panel = el.previewPanel;
-      const workspace = typeof document.querySelector === 'function'
-        ? document.querySelector('.result-workspace') : null;
-      return {
-        box: rect ? `${Math.round(rect.width)}x${Math.round(rect.height)}` : '',
-        panelHidden: !!(panel && panel.classList.contains('hidden')),
-        panelState: (panel && panel.dataset.state) || '',
-        layout: (workspace && workspace.dataset.previewLayout) || '',
-      };
-    }
-    function begin(meta) {
-      if (!logPath()) return { mark() {}, setPath() {}, flush() {} };
-      const t0 = now();
-      const rec = {
-        at: new Date().toISOString(),
-        mode: meta.mode,
-        path: '',
-        clip: meta.clip || '',
-        scene: meta.scene || null,
-        file: meta.file || '',
-        srcKind: meta.srcKind || '',
-        events: [],
-      };
-      if (typeof navigator !== 'undefined' && navigator.userAgent) {
-        const chrome = /Chrome\/([\d.]+)/.exec(navigator.userAgent);
-        rec.chrome = chrome ? chrome[1] : navigator.userAgent;
-      }
-      let sampling = false;
-      let finished = false;
-      let sampleTimer = null;
-      const finish = () => {
-        if (finished) return;
-        finished = true;
-        if (sampleTimer !== null) clearTimeout(sampleTimer);
-        sampleTimer = null;
-        const video = meta.video;
-        const quality = video && video.getVideoPlaybackQuality ? video.getVideoPlaybackQuality() : null;
-        if (video) {
-          rec.video = `${video.videoWidth}x${video.videoHeight}`;
-          rec.readyState = video.readyState;
-          rec.networkState = video.networkState;
-          rec.seeking = video.seeking;
-          rec.currentTime = video.currentTime;
-          rec.buffered = [];
-          for (let i = 0; i < (video.buffered?.length || 0); i += 1) {
-            rec.buffered.push([video.buffered.start(i), video.buffered.end(i)]);
-          }
-          rec.paused = video.paused;
-          rec.currentSrc = (video.currentSrc || '').slice(0, 160);
-          rec.muted = video.muted;
-          rec.rate = video.playbackRate;
-          rec.controls = !!video.controls;
-          Object.assign(rec, elementInfo(video));
-          try { rec.videos = document.querySelectorAll('video').length; } catch (error) { /* ignore */ }
-        }
-        if (quality) rec.droppedTotal = quality.droppedVideoFrames;
-        push(rec);
-      };
-      const sample = () => {
-        sampling = true;
-        const video = meta.video;
-        const sampleStarted = now();
-        const mediaStarted = video ? video.currentTime : 0;
-        const startQuality = video && video.getVideoPlaybackQuality ? video.getVideoPlaybackQuality() : null;
-        const gaps = [];
-        const rafGaps = [];
-        let last = null;
-        let lastRaf = null;
-        const onRaf = (time) => {
-          if (finished) return;
-          if (lastRaf !== null) rafGaps.push(+(time - lastRaf).toFixed(1));
-          lastRaf = time;
-          if (now() - sampleStarted < SAMPLE_MS) requestAnimationFrame(onRaf);
-        };
-        if (typeof requestAnimationFrame === 'function') requestAnimationFrame(onRaf);
-        const onFrame = (time) => {
-          if (finished) return;
-          if (last !== null) gaps.push(+(time - last).toFixed(1));
-          last = time;
-          if (now() - sampleStarted < SAMPLE_MS && typeof video.requestVideoFrameCallback === 'function') {
-            video.requestVideoFrameCallback(onFrame);
-          } else {
-            stop();
-          }
-        };
-        const stop = () => {
-          if (finished) return;
-          const endQuality = video && video.getVideoPlaybackQuality ? video.getVideoPlaybackQuality() : null;
-          rec.sampleMs = Math.round(now() - sampleStarted);
-          rec.advanced = video ? +(video.currentTime - mediaStarted).toFixed(3) : 0;
-          rec.frames = gaps.length;
-          rec.gapMean = gaps.length ? +(gaps.reduce((a, b) => a + b, 0) / gaps.length).toFixed(1) : 0;
-          rec.gapMax = gaps.length ? +Math.max(...gaps).toFixed(1) : 0;
-          rec.gapOver40 = gaps.filter((g) => g > 40).length;
-          rec.rafFrames = rafGaps.length;
-          rec.rafGapMean = rafGaps.length ? +(rafGaps.reduce((a, b) => a + b, 0) / rafGaps.length).toFixed(1) : 0;
-          rec.rafGapMax = rafGaps.length ? +Math.max(...rafGaps).toFixed(1) : 0;
-          rec.rafGapOver40 = rafGaps.filter((g) => g > 40).length;
-          if (startQuality && endQuality) {
-            rec.dropped = endQuality.droppedVideoFrames - startQuality.droppedVideoFrames;
-            rec.decoded = endQuality.totalVideoFrames - startQuality.totalVideoFrames;
-          }
-          finish();
-        };
-        sampleTimer = setTimeout(stop, SAMPLE_MS);
-        if (video && typeof video.requestVideoFrameCallback === 'function') video.requestVideoFrameCallback(onFrame);
-      };
-      return {
-        mark(name, extra) {
-          if (finished) return;
-          rec.events.push(extra === undefined ? `${name}@${Math.round(now() - t0)}` : `${name}(${extra})@${Math.round(now() - t0)}`);
-          if (name === 'playing' && !sampling) sample();
-        },
-        setPath(path, srcKind) {
-          rec.path = path;
-          if (srcKind) rec.srcKind = srcKind;
-        },
-        flush: finish,
-      };
-    }
-    function boot() {
-      const rec = { at: new Date().toISOString(), mode: 'boot', file: logPath() };
-      if (typeof navigator !== 'undefined' && navigator.userAgent) rec.ua = navigator.userAgent;
-      const workspace = typeof document.querySelector === 'function' ? document.querySelector('.result-workspace') : null;
-      if (workspace) rec.layout = workspace.dataset.previewLayout || '';
-      if (typeof window !== 'undefined') rec.window = `${window.innerWidth}x${window.innerHeight}@${window.devicePixelRatio}`;
-      push(rec);
-    }
-    return { begin, boot };
-  })();
-  if (typeof document !== 'undefined') {
-    try { PreviewDiag.boot(); } catch (error) { /* 诊断不可用时忽略 */ }
-  }
-
   function openPreview(match) {
     cancelPreviewLoad();
-    if (previewDiag) { previewDiag.mark('superseded'); previewDiag.flush(); previewDiag = null; }
     const item = Bridge.itemForPath(match.video_path);
     const warmVideo = hover.video;
     const fps = match.fps || 25;
@@ -1245,17 +1198,6 @@ const Search = (() => {
       if (poster) video.poster = poster;
       else video.removeAttribute('poster');
     }
-    const diag = PreviewDiag.begin({
-      mode: 'preview',
-      video,
-      clip: match.video_name,
-      file: (item && item.fileURL) || '',
-      scene: [match.start_frame, match.end_frame],
-      srcKind: item && item.fileURL ? 'file' : 'missing',
-    });
-    diag.setPath(tookOver ? 'takeover' : 'unknown');
-    diag.mark('begin', `readyState=${video.readyState}`);
-    previewDiag = diag;
 
     const isCurrent = () => loadToken === previewLoadToken;
     let positioned = false;
@@ -1291,7 +1233,6 @@ const Search = (() => {
     setPreviewState('loading', '正在加载预览…');
     const fail = (message = '无法直接播放原视频，请重试或在 Eagle 中打开素材。') => {
       if (!isCurrent()) return;
-      diag.mark('fail');
       cancelPreviewLoad();
       clearPreviewMediaEvents(video);
       video.pause();
@@ -1316,7 +1257,6 @@ const Search = (() => {
           watchForStall();
           return;
         }
-        diag.mark('stall-timeout', 'native');
         if (!nativeReloaded && locateNative) {
           // 解码管线可能在接管/seek 后停住，仅重开原文件一次。
           nativeReloaded = true;
@@ -1332,7 +1272,6 @@ const Search = (() => {
             video.onloadedmetadata = locateNative;
             locateNative();
           };
-          diag.mark('native-reload');
           setPreviewState('native', '正在重新加载预览…');
           video.load();
           watchForStall();
@@ -1347,14 +1286,11 @@ const Search = (() => {
       video.onloadedmetadata = null;
       video.oncanplay = null; video.onloadeddata = null; video.onprogress = null;
       const playingAttempt = attempt;
-      diag.mark('play');
       video.play().then(() => {
         if (!isCurrent() || playingAttempt !== attempt) return;
-        diag.mark('play-ok');
         setPreviewState('ready', '');
       }).catch((error) => {
         if (!isCurrent() || playingAttempt !== attempt || error.name === 'AbortError') return;
-        diag.mark('play-error', error.name);
         if (error.name === 'NotAllowedError') {
           clearStallTimer();
           setPreviewState('ready', '预览已就绪，请点击播放');
@@ -1377,7 +1313,6 @@ const Search = (() => {
     };
     video.onplaying = () => {
       if (!isCurrent()) return;
-      diag.mark('playing');
       if (!pendingPlayback && !seekPending && !video.seeking) {
         if (lastPlaybackTime === null) lastPlaybackTime = video.currentTime;
         watchForStall();
@@ -1386,7 +1321,6 @@ const Search = (() => {
     };
     video.onwaiting = () => {
       if (isCurrent() && !video.paused) {
-        diag.mark('waiting', video.currentTime.toFixed(2));
         if (!seekPending && !video.seeking && lastPlaybackTime === null) lastPlaybackTime = video.currentTime;
         if (bufferingTimer === null) {
           const noticeAttempt = attempt;
@@ -1402,8 +1336,6 @@ const Search = (() => {
     };
     video.onpause = video.onended = () => {
       if (!isCurrent() || !video.paused || pendingPlayback) return;
-      diag.mark('paused');
-      diag.flush();
       cancelPreviewLoad();
       setPreviewState('ready', '');
     };
@@ -1422,11 +1354,9 @@ const Search = (() => {
 
     if (item && item.fileURL) {
       setPreviewState('native', '正在加载源视频…');
-      diag.setPath(tookOver ? 'takeover' : 'native', 'file');
       // Chromium 108 的 poster 失败也会向 video 派发 error，但不设置 MediaError。
       video.onerror = () => {
-        if (!video.error) { diag.mark('error-empty'); return; }
-        diag.mark('error', `${video.error.code}:${String(video.error.message || '').slice(0, 40)}`);
+        if (!video.error) return;
         fail();
       };
       watchForStall();
@@ -1434,7 +1364,6 @@ const Search = (() => {
         if (!isCurrent() || video.onloadedmetadata !== locate) return;
         video.onloadedmetadata = null;
         if (Math.abs(video.currentTime - startSec) >= 0.04) {
-          diag.mark('seek', `${video.currentTime.toFixed(2)}->${startSec.toFixed(2)}`);
           seekPending = true;
           video.currentTime = startSec;
         }
@@ -1446,11 +1375,9 @@ const Search = (() => {
       locateNative = locate;
       video.onloadedmetadata = locate;
       if (video.getAttribute?.('src') === item.fileURL && !video.error) {
-        diag.mark('reuse-src', `readyState=${video.readyState}`);
         if (video.readyState >= 1) locate();
-      } else { diag.mark('src-set'); video.src = item.fileURL; }
+      } else video.src = item.fileURL;
     } else {
-      diag.setPath('missing', 'missing');
       fail('原视频已不在当前 Eagle 库中，请刷新结果。');
     }
 
@@ -1480,7 +1407,6 @@ const Search = (() => {
     previewLoadToken += 1;
     activeMatch = null;
     activePos = -1;
-    if (previewDiag) { previewDiag.mark('close'); previewDiag.flush(); previewDiag = null; }
     document.getElementById('inspector-empty')?.classList.remove('hidden');
     el.results?.querySelectorAll('.preview-active').forEach((card) => card.classList.remove('preview-active'));
     if (el.previewVideo) {
@@ -1586,6 +1512,7 @@ const Search = (() => {
       matches: lastMatches.slice(), query: lastQuery,
       recipe: lastRecipe && SearchRecipe.clone(lastRecipe), view: { ...view },
       addedKeys: [...newKeys], time: SearchRecipe.clone(archiveTime),
+      threshold: document.getElementById('threshold').value,
       selected: [...selectedIdx],
       filter: { ...archiveFilter }, position: captureBrowsePosition(),
     };
@@ -1607,9 +1534,20 @@ const Search = (() => {
     newKeys = new Set(state?.addedKeys || []);
     archiveTime = SearchRecipe.clone(state?.time || { mode: 'all' });
     archiveFilter = { query: '', source: 'all', ...state?.filter };
+    SearchRecipe.writeTime(archiveTime);
+    const threshold = state?.threshold ?? archiveFilter.minScore ?? Config.get().threshold;
+    document.getElementById('threshold').value = threshold;
+    document.getElementById('threshold-val').textContent = threshold;
     selectedIdx = new Set(state?.selected || []);
     setPhase('');
     render();
+  }
+
+  function pruneMissingVideos(inventory) {
+    ThumbLoader.resetCache();
+    const state = captureState();
+    if (ArchiveStore.reconcileVideoReferences(state, inventory)) state.selected = [];
+    restoreState(state);
   }
 
   async function loadResults(matches, query, recipe = null, savedView = null, addedKeys = [], time = { mode: 'all' }, filter = { query: '', source: 'all' }, options = {}) {
@@ -1677,14 +1615,18 @@ const Search = (() => {
   }
 
   return {
-    bindDom, run, runVisual, runFrameText, runHybrid, setView, findLibraryIndexes, loadResults, captureState, restoreState,
+    bindDom, run, refine, setRefinementWeight, runVisual, runFrameText, runHybrid, setView, findLibraryIndexes, loadResults, captureState, restoreState, pruneMissingVideos,
     configureThumbnailCache: (cfg) => ThumbLoader.configure(cfg),
+    retryThumbnails: () => ThumbLoader.retryFailed(),
+    clearThumbnailCache() { ThumbLoader.resetCache(); render(); },
     setSelectionHandler, replaceResults, captureBrowsePosition, restoreBrowsePosition, refreshTopicMembership,
     getSelectedMatches, clearSelection, getAllMatches, getLastQuery, getActiveMatch, openPreviewByKey,
+    hasResults: () => displayList.length > 0,
     getRawMatches: () => lastMatches.slice(),
     getRecipe: () => lastRecipe && SearchRecipe.clone(lastRecipe),
     getView: () => ({ ...view }),
     getArchiveFilter: () => ({ ...archiveFilter }),
+    getArchiveTime: () => SearchRecipe.clone(archiveTime),
     setScopeFilter(paths, library) {
       sessionScope = { library, paths: paths == null ? null : new Set(paths) };
       render();

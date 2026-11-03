@@ -9,6 +9,7 @@ const Indexer = (() => {
   let listeners = {};
   let uncertainSubmission = null;
   let legacyIndexDetected = null;
+  const completedCleanups = new Set();
 
   function isRunning() { return running || submitting; }
   function stopPolling() {
@@ -93,7 +94,20 @@ const Indexer = (() => {
       } else {
         stopPolling();
         listeners.onTerminal?.(status);
-        if (['done', 'cancelled'].includes(status.state)) listeners.onDone?.(status);
+        if (['done', 'cancelled'].includes(status.state)) {
+          submitting = true;
+          try {
+            const cleaned = await listeners.onDone?.(status);
+            if (cleaned === true && status.source === 'semantic-search' && status.state === 'done' && (status.prune_missing || status.cleanup_after_retry)) {
+              completedCleanups.add(status.job_id);
+              try {
+                localStorage.setItem(`eagle-semantic-index-cleanup:${Config.baseUrl()}:${status.library_id}`, status.job_id);
+              } catch { /* 无法持久化时，下次打开仍可幂等补全清理。 */ }
+            }
+          }
+          catch (error) { listeners.onError?.(error.message); }
+          finally { submitting = false; listeners.onSettled?.(); }
+        }
         else listeners.onError?.(status.error || '任务已中断或状态丢失；已写入结果保留，可重新增量索引');
       }
     };
@@ -113,7 +127,14 @@ const Indexer = (() => {
     const library = await Bridge.resolveLibraryIdentity();
     const jobs = await Api.listIndexJobs(library.id);
     if (isRunning()) return null;
-    const job = jobs.find((value) => value.source === 'semantic-search' && ['queued', 'running', 'cancelling'].includes(value.state));
+    let job = jobs.find((value) => value.source === 'semantic-search' && ['queued', 'running', 'cancelling'].includes(value.state));
+    if (!job) {
+      const completed = jobs.filter((value) => value.source === 'semantic-search' && value.state === 'done'
+        && (value.prune_missing || value.cleanup_after_retry)).sort((a, b) => b.finished_at - a.finished_at)[0];
+      let receipt = null;
+      try { receipt = localStorage.getItem(`eagle-semantic-index-cleanup:${Config.baseUrl()}:${library.id}`); } catch { /* 会话内记录仍有效。 */ }
+      if (completed && completed.job_id !== receipt && !completedCleanups.has(completed.job_id)) job = completed;
+    }
     if (job) watch(job.job_id, handlers);
     return job;
   }

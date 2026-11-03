@@ -1,4 +1,4 @@
-/* Python 搜索服务生命周期：健康检查 + 自动拉起（detached，插件关闭不随之退出） */
+/* Python 搜索服务生命周期：健康检查 + 自动拉起（关插件窗口保留，退出 Eagle 清理） */
 const Service = (() => {
   const fs = require('fs');
   const path = require('path');
@@ -64,8 +64,11 @@ const Service = (() => {
     } catch { /* 日志不可写时退回丢弃输出 */ }
 
     // 端口跟随设置：text_search.py 已支持 --port（不传则 5006），改端口后自动拉起才能对上健康检查
+    const args = ['text_search.py', '--port', String(Config.get().port || 5006)];
+    // Eagle 的插件 renderer 由主进程直接创建，不能绑定会随窗口重载的 renderer。
+    if (process.platform === 'win32') args.push('--eagle-host-pid', String(process.ppid));
     let child;
-    try { child = spawn(pythonExe(projectRoot), ['text_search.py', '--port', String(Config.get().port || 5006)], {
+    try { child = spawn(pythonExe(projectRoot), args, {
       cwd: projectRoot,
       detached: true,
       windowsHide: true,

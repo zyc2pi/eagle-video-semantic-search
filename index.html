@@ -8,72 +8,87 @@
 <body>
   <aside id="library-sidebar" class="library-sidebar" aria-label="主题仓库导航">
     <header class="library-sidebar-heading"><strong>搜索仓库</strong></header>
-    <button id="library-new-search" class="library-nav-row" type="button"><span aria-hidden="true">＋</span>新搜索</button>
+    <button id="topic-search" class="library-nav-row library-new-search" type="button"><span aria-hidden="true">＋</span>新搜索</button>
     <input id="library-query" type="search" placeholder="查找分类或主题…" aria-label="查找分类或主题">
     <nav id="library-tree" class="library-tree" aria-label="分类与主题"></nav>
+    <section class="library-status" aria-label="搜索服务与索引">
+      <div class="library-status-row">
+        <div id="service-status" class="service-status" role="status" title="加载搜索服务…" aria-label="加载搜索服务…">
+          <span id="service-dot" class="dot starting" aria-hidden="true"></span>
+          <span id="service-text">加载搜索服务…</span>
+        </div>
+        <div id="index-mode-picker" class="index-mode-picker">
+          <div class="index-split-button">
+            <button id="btn-index-primary" type="button" disabled>索引整个库</button>
+            <button id="btn-index-menu-toggle" type="button" disabled
+                    title="切换索引范围" aria-label="切换索引范围"
+                    aria-haspopup="menu" aria-expanded="false">▾</button>
+          </div>
+          <div id="index-mode-menu" class="index-mode-menu hidden" role="menu"
+               aria-label="索引范围">
+            <button type="button" class="index-mode-option active" data-index-mode="all"
+                    role="menuitemradio" aria-checked="true">
+              <span>索引整个库</span><span class="index-mode-check" aria-hidden="true">✓</span>
+            </button>
+            <button type="button" class="index-mode-option" data-index-mode="folder"
+                    role="menuitemradio" aria-checked="false">
+              <span>索引选中文件夹</span><span class="index-mode-check" aria-hidden="true">✓</span>
+            </button>
+            <button type="button" class="index-mode-option" data-index-mode="selected"
+                    role="menuitemradio" aria-checked="false">
+              <span>索引选中素材</span><span class="index-mode-check" aria-hidden="true">✓</span>
+            </button>
+          </div>
+        </div>
+      </div>
+      <span id="index-hint" title="库内视频与索引内容的对比结果"></span>
+      <div id="index-progress" class="index-progress hidden">
+        <div class="bar"><div id="index-bar-fill"></div></div>
+        <span id="index-progress-text"></span>
+        <button id="btn-stop-index" type="button">停止</button>
+      </div>
+    </section>
     <footer class="library-sidebar-footer">
-      <button id="library-categories" type="button">管理分类</button>
-      <button id="library-recovery" type="button" title="备份 / 回收站">备份 / 回收站</button>
+      <button id="warehouse-categories" type="button">管理分类</button>
+      <button id="warehouse-recovery" type="button" title="备份 / 回收站">备份 / 回收站</button>
+      <button id="btn-settings" class="icon-btn" type="button" title="设置" aria-label="设置">⚙</button>
     </footer>
   </aside>
   <div id="library-resizer" class="library-resizer" role="separator" tabindex="0" aria-label="调整仓库导航宽度" aria-orientation="vertical" aria-controls="library-sidebar"></div>
   <div class="main-workspace">
-  <section class="search-row">
+  <!-- 顶栏：新搜索显示搜索框，主题页显示主题标题与操作；筛选在两种页面共用。 -->
+  <section class="search-row app-bar">
     <div class="query-wrap">
       <input id="query" type="text" placeholder="用自然语言描述画面，如：夜晚的城市街道 / 人物特写（支持 -负向词）" autocomplete="off" autofocus>
       <button id="btn-history" class="history-toggle" title="搜索历史" tabindex="-1">▾</button>
       <div id="history-panel" class="history-panel hidden"></div>
     </div>
     <button id="btn-search" class="primary" disabled>搜索</button>
-  </section>
-
-  <section class="toolbar">
-    <div class="index-actions">
-      <div id="service-status" class="service-status" role="status" title="加载搜索服务…" aria-label="加载搜索服务…">
-        <span id="service-dot" class="dot starting" aria-hidden="true"></span>
-        <span id="service-text">加载搜索服务…</span>
-      </div>
-      <div id="index-mode-picker" class="index-mode-picker">
-        <div class="index-split-button">
-          <button id="btn-index-primary" type="button" disabled>索引整个库</button>
-          <button id="btn-index-menu-toggle" type="button" disabled
-                  title="切换索引范围" aria-label="切换索引范围"
-                  aria-haspopup="menu" aria-expanded="false">▾</button>
+    <section id="warehouse-topic" class="warehouse-topic hidden">
+      <button id="topic-back" type="button">← 仓库</button>
+      <div class="topic-heading"><h2 id="topic-name"></h2><p id="topic-meta" class="hint"></p></div>
+      <button id="topic-favorite" type="button" aria-pressed="false" title="设为常用主题">☆</button>
+      <button id="topic-update" type="button" class="primary" title="按已保存的搜索条件重新搜索并替换结果">更新结果</button>
+      <details class="compact-menu topic-options">
+        <summary>主题管理</summary>
+        <div class="menu-content">
+          <h3>主题管理</h3>
+          <button id="topic-edit" type="button">编辑条件</button>
+          <button id="topic-history" type="button" title="查看备份中的此主题版本，仅恢复当前主题">主题历史</button>
+          <button id="topic-removed" type="button">已移除 (0)</button>
+          <button id="topic-reset-cover" type="button" class="hidden">恢复默认封面</button>
         </div>
-        <div id="index-mode-menu" class="index-mode-menu hidden" role="menu"
-             aria-label="索引范围">
-          <button type="button" class="index-mode-option active" data-index-mode="all"
-                  role="menuitemradio" aria-checked="true">
-            <span>索引整个库</span><span class="index-mode-check" aria-hidden="true">✓</span>
-          </button>
-          <button type="button" class="index-mode-option" data-index-mode="folder"
-                  role="menuitemradio" aria-checked="false">
-            <span>索引选中文件夹</span><span class="index-mode-check" aria-hidden="true">✓</span>
-          </button>
-          <button type="button" class="index-mode-option" data-index-mode="selected"
-                  role="menuitemradio" aria-checked="false">
-            <span>索引选中素材</span><span class="index-mode-check" aria-hidden="true">✓</span>
-          </button>
-        </div>
-      </div>
-      <span id="index-hint" title="库内视频与索引内容的对比结果"></span>
-    </div>
-    <div id="index-progress" class="index-progress hidden">
-      <div class="bar"><div id="index-bar-fill"></div></div>
-      <span id="index-progress-text"></span>
-      <button id="btn-stop-index">停止</button>
-    </div>
-    <div class="spacer"></div>
-    <button id="btn-archives" title="查看全部主题与批量整理">全部主题</button>
-    <button id="topic-search" type="button">新搜索</button>
+      </details>
+    </section>
     <details id="result-filter-menu" class="compact-menu">
       <summary>筛选<span id="filter-active-indicator" class="menu-indicator hidden" aria-label="已启用筛选"></span></summary>
       <div class="menu-content">
         <section id="new-search-filter" class="filter-section">
-          <h3>搜索范围</h3>
+          <h3>结果范围</h3>
+          <span class="hint">每次搜索全库，调整条件立即筛选结果。</span>
           <div class="threshold">
             <label for="threshold">阈值</label>
-            <input id="threshold" type="range" min="5" max="35" step="0.5">
+            <input id="threshold" type="range" min="0" max="35" step="0.5">
             <span id="threshold-val">11</span>
           </div>
           <button id="btn-scope" class="scope-btn" title="设置搜索范围（含子文件夹）">范围: 整个库</button>
@@ -115,23 +130,18 @@
         </section>
       </div>
     </details>
-    <button id="btn-settings" class="icon-btn" type="button" title="设置" aria-label="设置">⚙</button>
   </section>
 
   <section id="warehouse-page" class="warehouse-page hidden" aria-label="搜索仓库">
     <header class="warehouse-header">
-      <div><h1>搜索仓库</h1>
-        <p id="warehouse-summary" class="hint"></p></div>
-      <div class="warehouse-header-actions">
-        <button id="warehouse-recovery" type="button">备份 / 回收站</button>
-      </div>
+      <h1>搜索仓库</h1>
+      <p id="warehouse-summary" class="hint"></p>
     </header>
     <div class="warehouse-controls">
       <div class="warehouse-filters">
         <input id="warehouse-query" type="search" placeholder="查找主题名称…" aria-label="查找主题名称">
         <select id="warehouse-category" aria-label="按分类筛选"></select>
         <button id="warehouse-favorites" type="button" aria-pressed="false" title="只显示已星标的常用主题">★ 常用</button>
-        <button id="warehouse-categories" type="button">管理分类</button>
         <div class="warehouse-view-toggle" role="group" aria-label="视图方式">
           <button id="warehouse-view-card" type="button" class="active" title="卡片视图" aria-label="卡片视图"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="2" width="4" height="4" rx=".6"/><rect x="10" y="2" width="4" height="4" rx=".6"/><rect x="2" y="10" width="4" height="4" rx=".6"/><rect x="10" y="10" width="4" height="4" rx=".6"/></svg></button>
           <button id="warehouse-view-list" type="button" title="列表视图" aria-label="列表视图"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3h8M6 8h8M6 13h8"/><path d="M2 3h.5M2 8h.5M2 13h.5"/></svg></button>
@@ -145,23 +155,6 @@
 
   <div class="result-workspace" data-preview-layout="sidebar">
   <div class="results-pane">
-  <section id="warehouse-topic" class="warehouse-topic hidden">
-    <button id="topic-back" type="button">← 仓库</button>
-    <div class="topic-heading"><h2 id="topic-name"></h2><p id="topic-meta" class="hint"></p></div>
-    <button id="topic-favorite" type="button" aria-pressed="false" title="设为常用主题">☆</button>
-    <button id="topic-update" type="button" class="primary" title="按已保存的搜索条件重新搜索并替换结果">更新结果</button>
-    <details class="compact-menu topic-options">
-      <summary>主题管理</summary>
-      <div class="menu-content">
-        <h3>主题管理</h3>
-        <button id="topic-edit" type="button">编辑条件</button>
-        <button id="topic-history" type="button" title="查看备份中的此主题版本，仅恢复当前主题">主题历史</button>
-        <button id="topic-removed" type="button">已移除 (0)</button>
-        <button id="topic-reset-cover" type="button" class="hidden">恢复默认封面</button>
-      </div>
-    </details>
-  </section>
-
   <section id="view-bar" class="view-bar hidden">
     <details class="compact-menu">
       <summary>显示</summary>
@@ -173,33 +166,41 @@
             <option value="top">顶部预览（双击展开）</option>
           </select>
         </label>
-    <label>排序
-      <select id="view-sort">
-        <option value="sim">相似度</option>
-        <option value="dur">时长</option>
-        <option value="name">视频名</option>
-      </select>
-    </label>
-    <label class="scope-toggle"><input id="view-grouped" type="checkbox"> 按视频分组</label>
+        <label>排序
+          <select id="view-sort">
+            <option value="sim">相似度</option>
+            <option value="dur">时长</option>
+            <option value="name">视频名</option>
+          </select>
+        </label>
+        <label class="scope-toggle"><input id="view-grouped" type="checkbox"> 按视频分组</label>
       </div>
     </details>
     <button id="btn-save-results" class="mini-btn" title="保存当前筛选后的全部结果及搜索条件">保存到仓库</button>
+    <button id="btn-refine-results" type="button" class="mini-btn" title="在当前筛选后的全部镜头中继续语义搜索">在结果中搜索</button>
     <button id="btn-organize-undo" type="button" class="mini-btn hidden" title="撤销最近一次收录或改分（Ctrl+Z）" disabled>撤销整理</button>
-    <span id="selection-count" class="hint" aria-live="polite"></span>
+    <span id="selection-count" class="selection-count" aria-live="polite"></span>
+    <!-- 有选中片段时才显示入口；右键菜单复用同一份内容。 -->
     <details id="result-selection-menu" class="compact-menu">
       <summary>整理所选</summary>
       <div class="menu-content">
         <h3>整理所选片段</h3>
-    <button id="btn-topic-add" type="button" class="mini-btn" disabled>添加到主题</button>
-    <button id="btn-topic-remove" type="button" class="mini-btn hidden" disabled>从主题移除</button>
-    <button id="btn-topic-score" type="button" class="mini-btn hidden" disabled>调整评分</button>
-    <button id="btn-clear-selection" class="mini-btn" disabled>取消全部选择</button>
-    <button id="btn-selection-tag" class="mini-btn" disabled>添加标签</button>
-    <button id="btn-selection-folder" class="mini-btn" disabled>添加到新文件夹</button>
-    <button id="btn-selection-exclude-folder" type="button" class="mini-btn" disabled title="仅限一个素材；本次打开内共用，不修改 Eagle 文件夹或主题">排除此素材所在的最小子文件夹</button>
+        <button id="btn-topic-add" type="button" class="mini-btn" disabled>添加到主题</button>
+        <button id="btn-topic-remove" type="button" class="mini-btn hidden" disabled>从主题移除</button>
+        <button id="btn-topic-score" type="button" class="mini-btn hidden" disabled>调整评分</button>
+        <button id="btn-clear-selection" class="mini-btn" disabled>取消全部选择</button>
+        <button id="btn-selection-tag" class="mini-btn" disabled>添加标签</button>
+        <button id="btn-selection-folder" class="mini-btn" disabled>添加到新文件夹</button>
+        <button id="btn-selection-exclude-folder" type="button" class="mini-btn" disabled title="仅限一个素材；本次打开内共用，不修改 Eagle 文件夹或主题">排除此素材所在的最小子文件夹</button>
       </div>
     </details>
     <span id="result-count" class="result-count"></span>
+    <div id="result-refine-controls" class="refine-controls hidden">
+      <span id="result-search-chain" class="hint"></span>
+      <label for="result-refine-weight">上一轮 <output id="result-refine-old">0</output></label>
+      <input id="result-refine-weight" type="range" min="0" max="10" step="1" value="10" aria-label="新搜索词权重，0 为只用上一轮分数，10 为只用新搜索词分数">
+      <label for="result-refine-weight">新词 <output id="result-refine-new">10</output></label>
+    </div>
   </section>
 
   <div id="frame-query-reference" class="frame-query-reference hidden">
@@ -344,6 +345,26 @@
     </form>
   </dialog>
 
+  <dialog id="refine-search-dialog" aria-labelledby="refine-search-title">
+    <form id="refine-search-form" class="settings-form">
+      <h3 id="refine-search-title">在结果中搜索</h3>
+      <p id="refine-search-summary" class="hint"></p>
+      <label>继续描述画面<input id="refine-search-query" type="text" required autocomplete="off" placeholder="例如：花"></label>
+      <div class="refine-controls">
+        <span>上一轮 <output id="refine-search-old">0</output></span>
+        <input id="refine-search-weight" type="range" min="0" max="10" step="1" value="10" aria-label="新搜索词权重，0 为只用上一轮分数，10 为只用新搜索词分数">
+        <span>新词 <output id="refine-search-new">10</output></span>
+      </div>
+      <p class="hint">只搜索当前筛选后的镜头。滑条最左只按上一轮打分，最右只按新词打分，中间各占一半。新结果可继续搜索或保存；原主题保留。</p>
+      <p class="hint">保存后会固定本次候选镜头，更新主题时继续在这些镜头中搜索。</p>
+      <p id="refine-search-error" role="status"></p>
+      <div class="dialog-actions">
+        <button id="refine-search-cancel" type="button">取消</button>
+        <button id="refine-search-submit" class="primary" type="submit">搜索</button>
+      </div>
+    </form>
+  </dialog>
+
   <dialog id="scope-dialog">
     <div class="settings-form">
       <h3>搜索范围</h3>
@@ -379,7 +400,7 @@
         <label>相似度阈值（越低合并越激进）
           <input id="dedup-threshold" type="number" min="0.8" max="0.99" step="0.01" value="0.93">
         </label>
-        <button id="btn-dedup-rescan" type="button" style="align-self:flex-end">重新扫描</button>
+        <button id="btn-dedup-rescan" type="button" class="field-pair-action">重新扫描</button>
       </div>
       <div id="dedup-body" class="stats-body"></div>
       <div class="dialog-actions">
@@ -397,6 +418,9 @@
       <div id="entry-conditions">
         <label>搜索词 / 查询名称<input id="entry-query" required></label>
         <p id="entry-source" class="hint"></p>
+        <label id="entry-refine-controls" class="hidden">继续搜索的新词权重（0 为只用上一轮，10 为只用新词）
+          <input id="entry-refine-weight" type="number" min="0" max="10" step="1" value="10">
+        </label>
         <button id="entry-replace-source" type="button" class="hidden">使用 Eagle 当前选中素材作为查询来源</button>
         <div class="field-pair">
           <label>文本阈值<input id="entry-threshold" type="number" min="0" step="0.5" required></label>
@@ -434,8 +458,6 @@
           <label class="check-row"><input id="entry-aiEnhance" type="checkbox">AI 查询增强</label>
           <label class="check-row"><input id="entry-aiExpand" type="checkbox">AI 语义扩展</label>
           <label>AI 模式<select id="entry-aiMode"><option value="fast">快速</option><option value="balanced">均衡</option><option value="quality">质量</option></select></label>
-          <label class="check-row"><input id="entry-dedup" type="checkbox">跨视频去重</label>
-          <label>去重阈值<input id="entry-dedupThreshold" type="number" min="0" max="1" step="0.01"></label>
           <label class="check-row"><input id="entry-miniRerank" type="checkbox">MiniCPM 精搜</label>
         </details>
       </div>
@@ -571,10 +593,6 @@
           <option value="quality">quality — 变体多，最全</option>
         </select>
       </label>
-      <label class="check-row"><input id="cfg-dedup" type="checkbox"> 跨视频去重（重复片段只保留一条）</label>
-      <label>去重相似度阈值（0.80~0.99，越低合并越激进）
-        <input id="cfg-dedup-threshold" type="number" min="0.8" max="0.99" step="0.01">
-      </label>
       <label class="check-row"><input id="cfg-mini-rerank" type="checkbox"> 二阶段精搜（MiniCPM 复核，明显更慢、占显存大）</label>
       <label class="check-row"><input id="cfg-auto-index" type="checkbox"> 静默自动索引（插件随 Eagle 后台运行，每 10 分钟检查新素材并自动增量索引）</label>
       <div class="btn-row">
@@ -601,6 +619,7 @@
     </form>
   </dialog>
 
+  <script src="js/dom.js"></script>
   <script src="js/shortcuts.js"></script>
   <script src="js/searchCache.js"></script>
   <script src="js/config.js"></script>
@@ -619,7 +638,14 @@
   <script src="js/manualAdd.js"></script>
   <script src="js/topicRelations.js"></script>
   <script src="js/warehouseNavigation.js"></script>
+  <script src="js/warehouseCategories.js"></script>
+  <script src="js/warehouseCards.js"></script>
+  <script src="js/warehouseUpdates.js"></script>
+  <script src="js/warehouseEditor.js"></script>
+  <script src="js/warehouseRecovery.js"></script>
   <script src="js/warehouse.js"></script>
+  <script src="js/layoutPanels.js"></script>
+  <script src="js/libraryTools.js"></script>
   <script src="js/plugin.js"></script>
 </body>
 </html>

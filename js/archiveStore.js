@@ -70,6 +70,63 @@ const ArchiveStore = (() => {
   }
 
   const pathSceneKey = (match) => sceneKey({ ...match, eagleItemId: undefined });
+
+  // 同一份完整 Eagle 清单用于存档和会话，已知 ID 不回退到同路径的其他素材。
+  function reconcileVideoReferences(entry, inventory) {
+    let changed = false;
+    const find = (id, file) => id ? inventory.byId.get(id) : inventory.byPath.get(normalize(file));
+    const reconcile = (matches) => (matches || []).flatMap((match) => {
+      const item = find(match.eagleItemId, match.video_path);
+      if (!item) { changed = true; return []; }
+      if (match.video_path === item.filePath && match.eagleItemId === item.id) return [match];
+      changed = true;
+      return [{ ...match, eagleItemId: item.id, video_path: item.filePath }];
+    });
+    const oldKeys = new Set(entry.newKeys || entry.addedKeys || []);
+    const newKeys = new Set();
+    const original = entry.matches || [];
+    entry.matches = original.flatMap((match) => {
+      const kept = reconcile([match]);
+      if (kept.length && oldKeys.has(sceneKey(match))) newKeys.add(sceneKey(kept[0]));
+      return kept;
+    });
+    if (entry.newKeys) entry.newKeys = [...newKeys];
+    if (entry.addedKeys) entry.addedKeys = [...newKeys];
+    if (oldKeys.size !== newKeys.size) changed = true;
+    if (entry.removedMatches) entry.removedMatches = entry.removedMatches.flatMap((record) => {
+      const kept = reconcile([record.match]);
+      return kept.length ? [{ ...record, match: kept[0], key: sceneKey(kept[0]) }] : [];
+    });
+    if (entry.recipe) {
+      const recipe = clone(entry.recipe);
+      if (recipe.refinement) recipe.refinement.scenes = reconcile(recipe.refinement.scenes);
+      const payload = recipe.payload || {};
+      for (const [idKey, pathKey] of [['sourceItemId', 'video_path'], ['sourceVideoItemId', 'source_video_path']]) {
+        if (!recipe[idKey] && !payload[pathKey]) continue;
+        recipe.payload = payload;
+        const item = find(recipe[idKey], payload[pathKey]);
+        if (item) {
+          if (recipe[idKey] !== item.id || payload[pathKey] !== item.filePath) changed = true;
+          recipe[idKey] = item.id; payload[pathKey] = item.filePath;
+        } else {
+          delete recipe[idKey]; delete payload[pathKey];
+          if (idKey === 'sourceItemId' && !payload.image_base64) recipe.sourceMissing = true;
+          changed = true;
+        }
+      }
+      entry.recipe = recipe;
+    }
+    if (entry.cover && (entry.cover.eagleItemId || entry.cover.videoPath)) {
+      const cover = clone(entry.cover);
+      const item = find(cover.eagleItemId, cover.videoPath);
+      if (!item) { delete cover.eagleItemId; delete cover.videoPath; changed = true; }
+      else if (cover.eagleItemId !== item.id || cover.videoPath !== item.filePath) {
+        cover.eagleItemId = item.id; cover.videoPath = item.filePath; changed = true;
+      }
+      entry.cover = cover;
+    }
+    return changed;
+  }
   function validManualScore(match) {
     if (match.manualScore === undefined) return true;
     const score = match.manualScore;
@@ -408,7 +465,7 @@ const ArchiveStore = (() => {
       return data;
     }
 
-    function write(data) {
+    function write(data, { preserveHistory = false } = {}) {
       fs.mkdirSync(dir, { recursive: true });
       const temporary = `${file}.${crypto.randomUUID()}.tmp`;
       let locked = false;
@@ -434,7 +491,7 @@ const ArchiveStore = (() => {
         reserveRevisions(data);
         const policy = retention(data);
         // 0 means keep forever. Unknown/invalid historical trash is never purged.
-        if (policy.trashDays > 0) data.trash = data.trash.filter((item) => {
+        if (!preserveHistory && policy.trashDays > 0) data.trash = data.trash.filter((item) => {
           const deleted = Date.parse(item?.deletedAt);
           if (!recognizedTrash.has(item) || !Number.isFinite(deleted)
               || deleted > Date.now() - policy.trashDays * 86400000) return true;
@@ -456,7 +513,7 @@ const ArchiveStore = (() => {
         // Prune only after a successful commit, and only valid, owned backups.
         // Corrupt/unknown files are evidence and must not be silently deleted.
         try {
-          backups().filter((item) => item.valid && ownedBackup.test(item.name))
+          if (!preserveHistory) backups().filter((item) => item.valid && ownedBackup.test(item.name))
             .slice(policy.backupCount).forEach((item) => fs.unlinkSync(path.join(backupsDir, item.name)));
         } catch { /* Cleanup failure must not report a successfully committed write as failed. */ }
       } finally {
@@ -492,6 +549,28 @@ const ArchiveStore = (() => {
       }
       if (changed) write(data);
       return { ...data, warnings };
+    }
+
+    async function pruneMissingVideos(inventory, shouldApply) {
+      const data = read();
+      let topics = 0;
+      let matches = 0;
+      for (const entry of data.entries) {
+        if (!shouldApply()) throw new Error('素材库已切换，主题清理未写入');
+        if (entry.sourceLibrary && normalize(entry.sourceLibrary) !== normalize(library)) continue;
+        await hydrateEntry(entry);
+        const count = entry.matches.length;
+        if (!reconcileVideoReferences(entry, inventory)) continue;
+        entry.revision = (entry.revision || 0) + 1;
+        entry.summary = { matches: entry.matches.length,
+          videos: new Set(entry.matches.map((match) => match.eagleItemId || normalize(match.video_path))).size,
+          removed: (entry.removedMatches || []).length };
+        topics += 1;
+        matches += count - entry.matches.length;
+      }
+      if (!shouldApply()) throw new Error('素材库已切换，主题清理未写入');
+      if (topics) write(data, { preserveHistory: true });
+      return { topics, matches, data };
     }
 
     function resolveCategory(data, selection) {
@@ -1169,7 +1248,7 @@ const ArchiveStore = (() => {
     const exportBundleAsync = (options) => runBundleWorker('export', undefined, options);
     const importBundleAsync = (text, options) => runBundleWorker('import', text, options);
 
-    return { list, add, copyEntry, replace, remove, removeEntries, removeMatches, restoreMatches, addMatches, undoMatches, setReviewed, setFavorite, category, setCategory, setCategories, setCover, restore, backups, restoreBackup, entryHistory, readEntryBackup, restoreEntryBackup, exportBundle, importBundle, exportBundleAsync, importBundleAsync, setRetention, hydrateEntry, recoverLock };
+    return { list, add, copyEntry, replace, remove, removeEntries, pruneMissingVideos, removeMatches, restoreMatches, addMatches, undoMatches, setReviewed, setFavorite, category, setCategory, setCategories, setCover, restore, backups, restoreBackup, entryHistory, readEntryBackup, restoreEntryBackup, exportBundle, importBundle, exportBundleAsync, importBundleAsync, setRetention, hydrateEntry, recoverLock };
   }
-  return { open, sceneKey, sceneLookup, updatedEntry, entryChanges, categoryTree };
+  return { open, sceneKey, sceneLookup, updatedEntry, entryChanges, categoryTree, reconcileVideoReferences };
 })();

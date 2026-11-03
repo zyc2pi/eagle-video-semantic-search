@@ -1,33 +1,22 @@
-/* 仓库页面、主题编辑与保存流程。结果浏览继续使用 Search 的预览和批量操作。 */
+/* 仓库入口、主题加载与浏览恢复，统一协调子模块及跨库导航。 */
 const Warehouse = (() => {
-  const $ = (id) => document.getElementById(id);
+  const $ = Dom.$;
   let hooks;
   let data;
   let current = null;
   let currentLibrary = null;
   let searchSession = null; // 打开第一个主题前的独立搜索状态，主题间切换不覆盖。
   let searchBrowsePosition = null;
-  let editing = null;
-  let editingLibrary = null;
-  let editorCategoryPicker = null;
   let categoryLibrary = null;
-  let draft = null;
-  let savingMatches = [];
-  let savingView = null;
-  let updating = false;
   let coverSaving = false;
   let scenesSaving = false;
+  let cleaning = false;
   let lastRemoval = null;
   let removedSession = null;
-  let editorToken = 0;
-  let thumbnailObserver;
   const localTimes = new Map();
   const localFilters = new Map();
   const topicPositions = new Map();
   const warehousePositions = new Map();
-  let warehouseLibrary = null;
-  let renderedEntryCount = 0;
-  let warehouseRenderToken = 0;
   let navigationGeneration = 0;
   let restoringBrowseGeneration = -1;
   const beginNavigation = () => ({ generation: ++navigationGeneration, library: eagle.library.path });
@@ -38,22 +27,35 @@ const Warehouse = (() => {
   let positionHideTimer;
   let positionTarget = null;
   let itemsById = new Map();
-  let viewMode = 'card';
-  let favoritesOnly = false;
   let undoManager = null;
-  const selectedEntries = new Set();
-  let visibleEntryIds = [];
-  let selectionAnchor = null;
-  let queryTimer;
-  let closeContextMenu = () => {};
-  let cancelBoxSelection = () => {};
   const pageSize = 60;
-  const viewPreferenceKey = 'eagle-semantic-warehouse-view';
-  const recentCategories = new Map();
-  const categoryPreferenceKey = (library) => `eagle-semantic-recent-categories:${SearchRecipe.normalize(library)}`;
   const timeKey = (entry) => `${SearchRecipe.normalize(eagle.library.path)}:${entry.id}`;
   const localTime = (entry) => localTimes.get(timeKey(entry)) || { mode: 'all' };
   const localFilter = (entry) => localFilters.get(timeKey(entry)) || { query: '', source: 'all' };
+  // 子模块持有各自的 UI 状态，跨页导航和当前主题由此处统一协调。
+  const shared = { $, node, dateText, countVideos, categoryName, categoryOptions,
+    categoryPicker: (id, library) => WarehouseCategories.picker(id, library, data.categories),
+    rememberCategory: WarehouseCategories.remember,
+    store, checkIdle, attempt, beginNavigation, currentNavigation,
+    load: (...args) => load(...args),
+    toast: (...args) => hooks.toast(...args),
+    current: () => current, currentLibrary: () => currentLibrary,
+    setData: (snapshot) => { data = snapshot; } };
+  const cards = WarehouseCards.create({ ...shared,
+    getData: () => data, hidePositionNotice, showPositionNotice, forgetWarehousePosition,
+    editEntry: (entry) => editor.editEntry(entry), toggleFavorite,
+    refreshEntry: (...args) => updates.refreshEntry(...args), detachTopic });
+  const updates = WarehouseUpdates.create({ ...shared,
+    requireTopic, syncSceneActions, editEntry: (entry) => editor.editEntry(entry),
+    warnings: () => data?.warnings || [], canSearch: () => hooks.canSearch() });
+  const editor = WarehouseEditor.create({ ...shared,
+    reloadData: () => { data = store().list(); },
+    isUpdating: updates.isUpdating, refreshEntry: updates.refreshEntry, copyTopic: updates.copyTopic,
+    renderCards, confirmButton, detachTopic, open });
+
+  function renderCards(position = null) { cards.render(position); }
+  function recoveryDialog() { WarehouseRecovery.open({ ...shared, detachTopic, open }); }
+
   function filteredMatches(entry) {
     return SearchRecipe.filterMatches(entry.matches, localTime(entry),
       (match) => itemsById.get(match.eagleItemId) || Bridge.itemForPath(match.video_path));
@@ -63,8 +65,6 @@ const Warehouse = (() => {
     return `${countVideos(matches)} 个素材 / ${matches.length} 个片段`
       + (localTime(entry).mode !== 'all' ? `（已存 ${entry.matches.length} 个）` : '');
   }
-  const boolKeys = ['visualCentered', 'aiEnhance', 'aiExpand', 'dedup', 'miniRerank'];
-  const numberKeys = ['visualThreshold', 'visualMargin', 'visualSceneFrames', 'visualVideoFrames', 'dedupThreshold'];
 
   function store() { return ArchiveStore.open(Config.pluginPath(), eagle.library.path); }
   function node(tag, className, text) {
@@ -88,102 +88,6 @@ const Warehouse = (() => {
     ArchiveStore.categoryTree(data.categories).items.forEach((category) => select.appendChild(new Option(category.path, category.id)));
     select.value = selected;
     if (select.selectedIndex < 0) select.value = all ? '*' : '';
-  }
-
-  function categoryHistory(library) {
-    const key = categoryPreferenceKey(library);
-    if (!recentCategories.has(key)) {
-      let ids = [];
-      try {
-        const saved = JSON.parse(localStorage.getItem(key) || '[]');
-        if (Array.isArray(saved)) ids = [...new Set(saved.filter((id) => typeof id === 'string'))];
-      } catch { /* 偏好不可用时保留会话内顺序。 */ }
-      recentCategories.set(key, ids);
-    }
-    return recentCategories.get(key);
-  }
-
-  function rememberCategory(library, id) {
-    if (!id) return;
-    const ids = [id, ...categoryHistory(library).filter((value) => value !== id)].slice(0, 100);
-    recentCategories.set(categoryPreferenceKey(library), ids);
-    try { localStorage.setItem(categoryPreferenceKey(library), JSON.stringify(ids)); }
-    catch { /* 保存失败时仍保留会话内顺序。 */ }
-  }
-
-  function categoryPicker(selectedId, library) {
-    const element = node('div', 'category-picker');
-    const input = node('input', 'category-picker-input');
-    input.type = 'text'; input.maxLength = 60; input.autocomplete = 'off';
-    input.placeholder = '搜索或输入新分类名称';
-    input.setAttribute('aria-label', '搜索或新建分类');
-    const selected = node('p', 'category-picker-selected');
-    selected.setAttribute('aria-live', 'polite');
-    const options = node('div', 'category-picker-options');
-    const categories = ArchiveStore.categoryTree(data.categories).items.map((category) => ({ ...category, name: category.path }));
-    let value = selectedId;
-    const choose = (next) => {
-      value = next; input.value = ''; render(); input.focus();
-    };
-    const addOption = (parent, id, name) => {
-      const button = node('button', 'category-picker-option', name);
-      button.type = 'button'; button.title = name;
-      button.dataset.categoryId = id;
-      button.setAttribute('aria-pressed', String(value === id));
-      button.addEventListener('click', () => choose(id));
-      parent.appendChild(button);
-    };
-    const render = () => {
-      const query = input.value.trim();
-      selected.textContent = `已选择：${typeof value === 'object' ? `${value.name}（新分类，确认后创建）`
-        : categories.find((category) => category.id === value)?.name || '未分类'}`;
-      options.replaceChildren();
-      if (query && !categories.some((category) => category.name === query)) {
-        const create = node('button', 'category-picker-create', `＋ 新建「${query}」`);
-        create.type = 'button';
-        create.addEventListener('click', () => choose({ name: query }));
-        options.appendChild(create);
-      }
-      const matches = categories.filter((category) => category.name.toLocaleLowerCase().includes(query.toLocaleLowerCase()));
-      const recent = categoryHistory(library).map((id) => matches.find((category) => category.id === id)).filter(Boolean);
-      const recentIds = new Set(recent.map((category) => category.id));
-      const groups = query ? [['匹配分类', matches]]
-        : [['最近使用', recent], ['其他分类', matches.filter((category) => !recentIds.has(category.id))]];
-      groups.forEach(([label, items]) => {
-        if (!items.length) return;
-        const group = node('div', 'category-picker-group');
-        group.setAttribute('role', 'group'); group.setAttribute('aria-label', label);
-        group.appendChild(node('p', 'category-picker-heading', `${label}（${items.length}）`));
-        const grid = node('div', 'category-picker-grid');
-        items.forEach((category) => addOption(grid, category.id, category.name));
-        group.appendChild(grid); options.appendChild(group);
-      });
-      if (!query) addOption(options, '', '未分类');
-    };
-    const getValue = () => {
-      const query = input.value.trim();
-      return query ? categories.find((category) => category.name === query)?.id || { name: query } : value;
-    };
-    input.addEventListener('input', render);
-    element.addEventListener('keydown', (event) => {
-      if (event.isComposing || event.keyCode === 229) return;
-      if (event.target === input && event.key === 'Enter') {
-        event.preventDefault(); event.stopPropagation();
-        choose(getValue());
-      } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-        const buttons = [...options.querySelectorAll('button:not(:disabled)')];
-        if (!buttons.length) return;
-        event.preventDefault();
-        const index = buttons.indexOf(document.activeElement);
-        if (index < 0) buttons[event.key === 'ArrowDown' ? 0 : buttons.length - 1].focus();
-        else if ((index === 0 && event.key === 'ArrowUp') || (index === buttons.length - 1 && event.key === 'ArrowDown')) input.focus();
-        else buttons[index + (event.key === 'ArrowDown' ? 1 : -1)].focus();
-      }
-    });
-    element.append(input, selected, options, node('p', 'hint', '输入新名称后确认即可创建；也可用 ↑ ↓ 选择，Enter 选中。'));
-    render();
-    return { element, getValue, focus: () => input.focus(),
-      setDisabled: (disabled) => element.querySelectorAll('input, button').forEach((control) => { control.disabled = disabled; }) };
   }
 
   function timeControl(saved, onChange) {
@@ -227,7 +131,7 @@ const Warehouse = (() => {
     return { element };
   }
   function checkIdle() {
-    if (updating || coverSaving || scenesSaving || Search.isBusy()) throw new Error('已有搜索、更新或保存正在进行，请稍候');
+    if (cleaning || updates.isBusy() || coverSaving || scenesSaving || Search.isBusy()) throw new Error('已有搜索、更新、清理或保存正在进行，请稍候');
   }
   async function attempt(action) {
     try { await action(); } catch (error) { hooks.toast(error.message, true, 6500); }
@@ -238,7 +142,7 @@ const Warehouse = (() => {
     const button = $('btn-organize-undo');
     if (!button) return;
     button.classList.toggle('hidden', !current || currentLibrary !== eagle.library.path || document.body.dataset.topic !== 'true');
-    const pending = updating || coverSaving || scenesSaving || Search.isBusy();
+    const pending = updates.isBusy() || coverSaving || scenesSaving || Search.isBusy();
     const next = undoManager?.peek();
     button.disabled = pending || !undoManager?.canUndo();
     button.title = next ? `撤销${next.label}「${next.targetName}」（Ctrl+Z）`
@@ -274,7 +178,7 @@ const Warehouse = (() => {
     checkIdle();
     const library = eagle.library.path;
     if (SearchRecipe.normalize(data?.library) !== SearchRecipe.normalize(library)
-        || (document.body.dataset.page === 'warehouse' ? warehouseLibrary !== library : currentLibrary !== library)) {
+        || (document.body.dataset.page === 'warehouse' ? cards.state.library !== library : currentLibrary !== library)) {
       throw new Error('素材库已切换，请重新打开主题后操作');
     }
     const result = store().setFavorite(entry.id, entry.favorite !== true, entry.updatedAt, entry.revision || 0);
@@ -315,7 +219,7 @@ const Warehouse = (() => {
     }, resume ? 4000 : 2000);
   }
   function rememberTopicPosition() {
-    clearTimeout(sceneQueryTimer);
+    // 捕获浏览状态不会取消筛选输入的防抖应用，导航时单独清理。
     if (restoringBrowseGeneration !== -1) return;
     if (!current || currentLibrary !== eagle.library.path || document.body.dataset.page === 'warehouse') return;
     const filter = Search.getArchiveFilter();
@@ -325,20 +229,20 @@ const Warehouse = (() => {
       filter: { query, source, tags, orientation, maxDur, minScore }, time: localTime(current) });
   }
   function rememberWarehousePosition() {
-    if (document.body.dataset.page !== 'warehouse' || warehouseLibrary !== eagle.library.path) return;
+    if (document.body.dataset.page !== 'warehouse' || cards.state.library !== eagle.library.path) return;
     const grid = $('warehouse-grid');
     const rect = grid.getBoundingClientRect();
     const anchor = [...grid.querySelectorAll('.warehouse-card')].find((card) => card.getBoundingClientRect().bottom > rect.top);
-    warehousePositions.set(SearchRecipe.normalize(warehouseLibrary), {
-      query: $('warehouse-query').value, category: $('warehouse-category').value, viewMode,
-      favoritesOnly,
-      rendered: renderedEntryCount, scrollTop: grid.scrollTop,
+    warehousePositions.set(SearchRecipe.normalize(cards.state.library), {
+      query: $('warehouse-query').value, category: $('warehouse-category').value, viewMode: cards.state.viewMode,
+      favoritesOnly: cards.state.favoritesOnly,
+      rendered: cards.state.rendered, scrollTop: grid.scrollTop,
       anchorId: anchor?.dataset.entryId || null,
       anchorOffset: anchor ? anchor.getBoundingClientRect().top - rect.top : 0,
     });
   }
   function forgetWarehousePosition() {
-    if (warehouseLibrary) warehousePositions.delete(SearchRecipe.normalize(warehouseLibrary));
+    if (cards.state.library) warehousePositions.delete(SearchRecipe.normalize(cards.state.library));
   }
   async function restoreTopicPosition(position) {
     const library = eagle.library.path;
@@ -348,12 +252,12 @@ const Warehouse = (() => {
   }
 
   function showSearch({ preserveNavigation = false } = {}) {
-    cancelBoxSelection();
+    cards.cancelBoxSelection();
     if (!preserveNavigation) navigationGeneration += 1;
     rememberWarehousePosition();
     hidePositionNotice();
-    closeContextMenu();
-    clearTimeout(queryTimer);
+    cards.closeContextMenu();
+    cards.clearQuery();
     document.body.dataset.page = 'search';
     $('warehouse-page').classList.add('hidden');
     WarehouseNavigation.refresh();
@@ -377,6 +281,7 @@ const Warehouse = (() => {
   }
   async function returnToSearch() {
     checkIdle();
+    clearTimeout(sceneQueryTimer);
     rememberTopicPosition();
     const session = searchSession;
     const sameLibrary = session?.state.library === SearchRecipe.normalize(eagle.library.path);
@@ -392,438 +297,11 @@ const Warehouse = (() => {
     $('query').focus();
   }
 
-  function renderCards(position = null) {
-    WarehouseNavigation.refresh();
-    cancelBoxSelection();
-    const token = ++warehouseRenderToken;
-    hidePositionNotice();
-    clearTimeout(queryTimer);
-    closeContextMenu();
-    thumbnailObserver?.disconnect();
-    const grid = $('warehouse-grid');
-    grid.replaceChildren();
-    grid.scrollTop = 0;
-    renderedEntryCount = 0;
-    grid.className = `warehouse-grid ${viewMode === 'list' ? 'list-view' : ''}`;
-    const query = $('warehouse-query').value.trim().toLocaleLowerCase();
-    const category = $('warehouse-category').value;
-    const categoryIds = ArchiveStore.categoryTree(data.categories).byId.get(category)?.ids || new Set([category]);
-    const entries = data.entries.filter((entry) => entry.name.toLocaleLowerCase().includes(query)
-      && (category === '*' || categoryIds.has(entry.categoryId || '')) && (!favoritesOnly || entry.favorite === true))
-      .sort((a, b) => Number(b.favorite === true) - Number(a.favorite === true)
-        || String(b.updatedAt).localeCompare(String(a.updatedAt)));
-    visibleEntryIds = entries.map((entry) => entry.id);
-    const visibleIds = new Set(visibleEntryIds);
-    for (const id of selectedEntries) if (!visibleIds.has(id)) selectedEntries.delete(id);
-    if (!visibleIds.has(selectionAnchor)) selectionAnchor = null;
-    $('warehouse-summary').textContent = `${data.entries.length} 个主题 · ${data.categories.length} 个分类 · 常用优先`;
-    $('warehouse-favorites').setAttribute('aria-pressed', String(favoritesOnly));
-    $('warehouse-warning').textContent = [...new Set(data.warnings)].join('；');
-    syncBatchActions();
-    if (!entries.length) {
-      const empty = node('div', 'warehouse-empty');
-      empty.append(node('h2', '', data.entries.length ? '没有找到对应主题' : '把一次搜索，留作下次的起点'),
-        node('p', 'hint', data.entries.length ? '试试其他名称或分类。' : '搜索并筛选素材后，点击”保存到仓库”。旧存档会自动出现在这里。'));
-      grid.appendChild(empty);
-      return;
-    }
-    // 自选封面直接读快照；默认抽取命中片段画面，复用全局缩略图并发队列。
-    const entriesById = new Map(entries.map((entry) => [entry.id, entry]));
-    const observer = new IntersectionObserver((observations) => {
-      observations.forEach(async (observation) => {
-        if (!observation.isIntersecting) return;
-        const cover = observation.target;
-        observer.unobserve(cover);
-        const entry = entriesById.get(cover.dataset.id);
-        if (!entry) return;
-        try { await store().hydrateEntry(entry, ['cover', 'matches']); }
-        catch { cover.title = '封面或结果资源无法读取，请从历史版本恢复'; return; }
-        if (!cover.isConnected) return;
-        const match = entry.matches[0];
-        const image = node('img');
-        image.alt = entry.cover ? `${entry.name}的自选封面` : `${entry.name}的片段封面`;
-        cover.prepend(image);
-        const loadDefault = () => {
-          if (!match) { image.remove(); return; }
-          const frame = Math.min(Math.max(Number(match.start_frame) || 0, 3), Number(match.end_frame) || 3);
-          Search.loadThumbnail(image, Api.previewUrl(match.video_path, frame), () => {
-            const item = Bridge.itemForPath(match.video_path);
-            if (item?.thumbnailURL) Search.loadThumbnail(image, item.thumbnailURL, () => image.remove());
-            else image.remove();
-          });
-        };
-        if (/^data:image\/jpeg;base64,/.test(entry.cover?.dataUrl || '')) {
-          image.onerror = () => { image.onerror = null; loadDefault(); };
-          image.src = entry.cover.dataUrl;
-        } else loadDefault();
-      });
-    }, { root: grid, rootMargin: '160px' });
-    thumbnailObserver = observer;
-    const appendCard = (entry) => {
-      const card = node('article', 'warehouse-card');
-      card.dataset.entryId = entry.id;
-      if (selectedEntries.has(entry.id)) card.classList.add('selected');
-      const openButton = node('button', 'warehouse-card-open');
-      openButton.type = 'button';
-      openButton.setAttribute('aria-label', `打开主题 ${entry.name}`);
-      openButton.setAttribute('aria-pressed', String(selectedEntries.has(entry.id)));
-      const cover = node('div', 'warehouse-cover');
-      cover.dataset.id = entry.id;
-      cover.append(node('span', 'warehouse-cover-mark', entry.name.slice(0, 2)));
-      const body = node('div', 'warehouse-card-body');
-      body.title = entry.name;
-      const heading = node('div', 'warehouse-card-heading');
-      heading.append(node('h2', '', entry.name), node('span', 'warehouse-category-badge', categoryName(entry.categoryId)));
-      body.append(heading,
-        node('p', 'warehouse-count', `${(entry.summary?.videos ?? countVideos(entry.matches)).toLocaleString('zh-CN')} 个素材 · ${(entry.summary?.matches ?? entry.matches.length).toLocaleString('zh-CN')} 个片段`),
-        node('p', 'warehouse-date', `最近更新 ${dateText(entry.updatedAt)}`));
-      if (entry.legacy || Object.getOwnPropertyDescriptor(entry, 'recipe')?.value === null) body.append(node('span', 'warehouse-legacy', '旧存档 · 更新前补齐条件'));
-      else if (entry.newKeys?.length) body.append(node('span', 'warehouse-added', `本次新增 ${entry.newKeys.length} 个片段`));
-      openButton.append(cover, body);
-      openButton.addEventListener('click', (event) => {
-        if (event.ctrlKey || event.metaKey || event.shiftKey) {
-          event.preventDefault();
-          toggleSelection(entry.id, event.shiftKey);
-        } else {
-          attempt(() => load(entry));
-        }
-      });
-      card.addEventListener('contextmenu', (event) => {
-        event.preventDefault();
-        if (!selectedEntries.has(entry.id)) {
-          selectedEntries.clear();
-          toggleSelection(entry.id, false);
-        }
-        showContextMenu(event.clientX, event.clientY, openButton);
-      });
-      const actions = node('div', 'warehouse-card-actions');
-      const favorite = node('button', 'warehouse-favorite', entry.favorite === true ? '★' : '☆');
-      favorite.type = 'button';
-      favorite.setAttribute('aria-pressed', String(entry.favorite === true));
-      favorite.setAttribute('aria-label', entry.favorite === true ? `取消常用主题 ${entry.name}` : `设为常用主题 ${entry.name}`);
-      favorite.title = entry.favorite === true ? '取消常用' : '设为常用';
-      favorite.addEventListener('click', (event) => { event.stopPropagation(); attempt(() => toggleFavorite(entry)); });
-      const chooseCover = node('button', '', '选封面');
-      chooseCover.type = 'button';
-      chooseCover.title = '打开主题，选择素材并将预览的当前帧设为封面';
-      chooseCover.addEventListener('click', () => attempt(async () => {
-        await load(entry);
-        hooks.toast('选择一个素材，拖动预览进度或逐帧调整，再点击”当前帧设为封面”。', false, 6500);
-      }));
-      const edit = node('button', '', '编辑');
-      edit.type = 'button';
-      edit.addEventListener('click', () => attempt(() => editEntry(entry)));
-      const update = node('button', '', '更新结果');
-      update.type = 'button';
-      update.title = '按已保存的搜索条件重新搜索并替换结果';
-      update.addEventListener('click', () => attempt(() => refreshEntry(entry)));
-      actions.append(favorite, chooseCover, edit, update);
-      card.append(openButton, actions);
-      observer.observe(cover);
-      return card;
-    };
-    let rendered = 0;
-    const more = node('button', 'warehouse-load-more');
-    more.type = 'button';
-    const appendPage = () => {
-      more.remove();
-      const end = Math.min(rendered + (rendered === 0 ? Math.max(pageSize, position?.rendered || 0) : pageSize), entries.length);
-      const fragment = document.createDocumentFragment();
-      // 卡片先在离线片段中组装，抽帧仍由可见性观察器与全局队列控制。
-      while (rendered < end) {
-        fragment.appendChild(appendCard(entries[rendered++]));
-      }
-      grid.appendChild(fragment);
-      renderedEntryCount = rendered;
-      if (rendered < entries.length) {
-        more.textContent = `显示更多（已显示 ${rendered} / ${entries.length}）`;
-        grid.appendChild(more);
-      }
-    };
-    more.addEventListener('click', appendPage);
-    appendPage();
-    if (position) requestAnimationFrame(() => {
-      if (token !== warehouseRenderToken || document.body.dataset.page !== 'warehouse' || warehouseLibrary !== eagle.library.path) return;
-      const anchor = [...grid.querySelectorAll('.warehouse-card')].find((card) => card.dataset.entryId === position.anchorId);
-      const desired = anchor
-        ? grid.scrollTop + anchor.getBoundingClientRect().top - grid.getBoundingClientRect().top - position.anchorOffset
-        : position.scrollTop;
-      grid.scrollTop = Math.max(0, Number(desired) || 0);
-      if (grid.scrollTop > 0) showPositionNotice(grid);
-    });
-  }
-
-  function toggleSelection(entryId, shiftKey) {
-    const index = visibleEntryIds.indexOf(entryId);
-    if (index < 0) return;
-    const anchorIndex = visibleEntryIds.indexOf(selectionAnchor);
-    if (shiftKey && anchorIndex >= 0) {
-      const start = Math.min(anchorIndex, index);
-      const end = Math.max(anchorIndex, index);
-      for (let i = start; i <= end; i++) {
-        selectedEntries.add(visibleEntryIds[i]);
-      }
-    } else {
-      if (selectedEntries.has(entryId)) selectedEntries.delete(entryId);
-      else selectedEntries.add(entryId);
-      selectionAnchor = entryId;
-    }
-    syncBatchActions();
-    syncSelectionCards();
-  }
-
-  function syncSelectionCards() {
-    $('warehouse-grid').querySelectorAll('.warehouse-card').forEach((card) => {
-      const selected = selectedEntries.has(card.dataset.entryId);
-      card.classList.toggle('selected', selected);
-      card.querySelector('.warehouse-card-open').setAttribute('aria-pressed', String(selected));
-    });
-  }
-
-  function syncBatchActions() {
-    const count = selectedEntries.size;
-    $('warehouse-selection-count').textContent = count ? `已选择 ${count} 个主题` : '';
-  }
-
-  function initBoxSelection() {
-    const grid = $('warehouse-grid');
-    grid.addEventListener('contextmenu', (event) => {
-      if (event.target.closest('.warehouse-card, button, input, select')) return;
-      event.preventDefault();
-      if (selectedEntries.size) showContextMenu(event.clientX, event.clientY, grid);
-    });
-    grid.addEventListener('pointerdown', (event) => {
-      if (event.button !== 0 || !event.isPrimary || document.body.dataset.page !== 'warehouse'
-          || warehouseLibrary !== eagle.library.path
-          || event.target.closest('.warehouse-card, button, input, select')) return;
-      const bounds = grid.getBoundingClientRect();
-      if (event.clientX >= bounds.left + grid.clientWidth) return; // 保留原生滚动条。
-      cancelBoxSelection();
-      closeContextMenu();
-      event.preventDefault();
-      const original = new Set(selectedEntries);
-      const additive = event.ctrlKey || event.metaKey || event.shiftKey;
-      const anchor = selectionAnchor;
-      const startX = event.clientX - bounds.left + grid.scrollLeft;
-      const startY = event.clientY - bounds.top + grid.scrollTop;
-      let x = event.clientX;
-      let y = event.clientY;
-      let dragging = false;
-      let frame;
-      const box = node('div', 'warehouse-selection-box');
-      box.hidden = true;
-      document.body.appendChild(box);
-      grid.classList.add('selecting');
-      grid.setPointerCapture(event.pointerId);
-      const update = () => {
-        const rect = grid.getBoundingClientRect();
-        const endX = Math.max(0, Math.min(grid.clientWidth, x - rect.left)) + grid.scrollLeft;
-        const endY = Math.max(0, Math.min(grid.clientHeight, y - rect.top)) + grid.scrollTop;
-        if (!dragging && Math.hypot(endX - startX, endY - startY) < 4) return;
-        dragging = true;
-        const left = Math.min(startX, endX);
-        const right = Math.max(startX, endX);
-        const top = Math.min(startY, endY);
-        const bottom = Math.max(startY, endY);
-        const screenLeft = Math.max(rect.left, rect.left + left - grid.scrollLeft);
-        const screenTop = Math.max(rect.top, rect.top + top - grid.scrollTop);
-        box.hidden = false;
-        box.style.left = `${screenLeft}px`;
-        box.style.top = `${screenTop}px`;
-        box.style.width = `${Math.max(0, Math.min(rect.left + grid.clientWidth, rect.left + right - grid.scrollLeft) - screenLeft)}px`;
-        box.style.height = `${Math.max(0, Math.min(rect.top + grid.clientHeight, rect.top + bottom - grid.scrollTop) - screenTop)}px`;
-        selectedEntries.clear();
-        if (additive) original.forEach((id) => selectedEntries.add(id));
-        grid.querySelectorAll('.warehouse-card').forEach((card) => {
-          const cardRect = card.getBoundingClientRect();
-          const cardLeft = cardRect.left - rect.left + grid.scrollLeft;
-          const cardTop = cardRect.top - rect.top + grid.scrollTop;
-          if (cardLeft < right && cardLeft + cardRect.width > left
-              && cardTop < bottom && cardTop + cardRect.height > top) selectedEntries.add(card.dataset.entryId);
-        });
-        selectionAnchor = [...selectedEntries][0] || null;
-        syncBatchActions(); syncSelectionCards();
-      };
-      const finish = (cancelled) => {
-        cancelAnimationFrame(frame);
-        grid.removeEventListener('pointermove', move);
-        grid.removeEventListener('pointerup', up);
-        grid.removeEventListener('pointercancel', cancel);
-        grid.removeEventListener('lostpointercapture', cancel);
-        grid.removeEventListener('scroll', update);
-        document.removeEventListener('keydown', keyboard);
-        window.removeEventListener('blur', cancel);
-        if (grid.hasPointerCapture(event.pointerId)) grid.releasePointerCapture(event.pointerId);
-        box.remove(); grid.classList.remove('selecting');
-        cancelBoxSelection = () => {};
-        if (cancelled || (!dragging && !additive)) {
-          selectedEntries.clear();
-          if (cancelled) original.forEach((id) => selectedEntries.add(id));
-          selectionAnchor = cancelled ? anchor : null;
-          syncBatchActions(); syncSelectionCards();
-        }
-      };
-      const move = (next) => {
-        if (next.pointerId !== event.pointerId) return;
-        x = next.clientX; y = next.clientY; update();
-      };
-      const up = (next) => { if (next.pointerId === event.pointerId) { move(next); finish(false); } };
-      const cancel = () => finish(true);
-      const keyboard = (key) => { if (key.key === 'Escape') { key.preventDefault(); cancel(); } };
-      const scroll = () => {
-        if (document.body.dataset.page !== 'warehouse' || warehouseLibrary !== eagle.library.path) { cancel(); return; }
-        if (dragging) {
-          const rect = grid.getBoundingClientRect();
-          const speed = y < rect.top + 28 ? -Math.min(18, (rect.top + 28 - y) / 2)
-            : y > rect.bottom - 28 ? Math.min(18, (y - rect.bottom + 28) / 2) : 0;
-          if (speed) { grid.scrollTop += speed; update(); }
-        }
-        frame = requestAnimationFrame(scroll);
-      };
-      cancelBoxSelection = cancel;
-      grid.addEventListener('pointermove', move);
-      grid.addEventListener('pointerup', up);
-      grid.addEventListener('pointercancel', cancel);
-      grid.addEventListener('lostpointercapture', cancel);
-      grid.addEventListener('scroll', update);
-      document.addEventListener('keydown', keyboard);
-      window.addEventListener('blur', cancel);
-      frame = requestAnimationFrame(scroll);
-    });
-  }
-
-  function showContextMenu(x, y, trigger) {
-    closeContextMenu();
-    const menu = document.createElement('div');
-    menu.className = 'warehouse-context-menu';
-    menu.setAttribute('role', 'menu');
-    menu.style.cssText = `position: fixed; left: ${x}px; top: ${y}px; z-index: 10000;`;
-    const actions = [
-      { label: '批量修改分类', run: () => batchEditEntries() },
-      { label: '删除所选主题', run: () => batchEditEntries(true) },
-    ];
-    actions.forEach((item) => {
-      const button = node('button', '', item.label);
-      button.type = 'button';
-      button.setAttribute('role', 'menuitem');
-      button.disabled = item.disabled || false;
-      button.addEventListener('click', () => {
-        closeContextMenu();
-        attempt(item.run);
-      });
-      menu.append(button);
-    });
-    document.body.appendChild(menu);
-    const bounds = menu.getBoundingClientRect();
-    menu.style.left = `${Math.max(4, Math.min(x, window.innerWidth - bounds.width - 4))}px`;
-    menu.style.top = `${Math.max(4, Math.min(y, window.innerHeight - bounds.height - 4))}px`;
-    const outside = (event) => { if (!menu.contains(event.target)) closeContextMenu(); };
-    const keyboard = (event) => { if (event.key === 'Escape') { event.preventDefault(); closeContextMenu(); } };
-    closeContextMenu = () => {
-      menu.remove();
-      document.removeEventListener('pointerdown', outside);
-      document.removeEventListener('keydown', keyboard);
-      closeContextMenu = () => {};
-      if (trigger?.isConnected) trigger.focus({ preventScroll: true });
-    };
-    document.addEventListener('pointerdown', outside);
-    document.addEventListener('keydown', keyboard);
-    menu.querySelector('button').focus();
-  }
-
-  function batchEditEntries(deleting = false) {
-    checkIdle();
-    if (warehouseLibrary !== eagle.library.path) throw new Error('素材库已切换，请重新打开仓库');
-    if (selectedEntries.size === 0) throw new Error('请先选择要操作的主题');
-    const verb = deleting ? '删除' : '修改';
-    const dialog = document.createElement('dialog');
-    dialog.className = 'warehouse-batch-dialog';
-    const title = node('h3', '', `${deleting ? '删除所选主题' : '批量修改分类'}（已选择 ${selectedEntries.size} 个主题）`);
-    const archive = store();
-    const library = eagle.library.path;
-    const picker = deleting ? null : categoryPicker('', library);
-    let requests = [...selectedEntries].map((id) => {
-      const entry = data.entries.find((value) => value.id === id);
-      return { id, name: entry?.name || id, updatedAt: entry?.updatedAt, revision: entry?.revision };
-    });
-    const status = node('div', 'warehouse-batch-status');
-    status.setAttribute('aria-live', 'polite');
-    let lockedCategory = null;
-    let conflict = false;
-    let pending = false;
-    const actions = node('div', 'dialog-actions');
-    const cancel = node('button', '', '取消');
-    cancel.type = 'button';
-    cancel.addEventListener('click', () => dialog.close());
-    const confirm = node('button', 'primary', '确认');
-    confirm.type = 'button';
-    confirm.addEventListener('click', async () => {
-      if (pending || conflict) return;
-      pending = true; confirm.disabled = true; cancel.disabled = true; picker?.setDisabled(true);
-      lockedCategory ??= picker?.getValue();
-      let results;
-      try {
-        checkIdle();
-        if (library !== eagle.library.path) throw new Error('素材库已切换，请重新打开并确认');
-        results = (await (deleting ? archive.removeEntries(requests) : archive.setCategories(requests, lockedCategory))).results;
-      } catch (error) {
-        results = requests.map(({ id }) => ({ id, ok: false, error: error.message }));
-      }
-      const resultById = new Map((results || []).map((result) => [result.id, result]));
-      const failures = requests.map((request) => resultById.get(request.id)
-        || { id: request.id, ok: false, error: '未收到保存结果，请重试' }).filter((result) => !result.ok);
-      const count = requests.length - failures.length;
-      const successfulCategory = !deleting && results?.find((result) => result.ok)?.categoryId;
-      if (typeof successfulCategory === 'string') {
-        lockedCategory = successfulCategory;
-        rememberCategory(library, successfulCategory);
-      }
-      if (deleting && library === currentLibrary && results?.some((result) => result.ok && result.id === current?.id)) detachTopic();
-      const requestNames = new Map(requests.map((request) => [request.id, request.name]));
-      selectedEntries.clear();
-      failures.forEach((result) => selectedEntries.add(result.id));
-      const failedIds = new Set(failures.map((result) => result.id));
-      requests = requests.filter((request) => failedIds.has(request.id));
-      conflict = failures.some((result) => result.code === 'conflict' || result.code === 'missing'
-        || /冲突|已修改|版本|重新打开|已切换/.test(result.error || ''));
-      status.replaceChildren(node('p', '', `已${verb} ${count} 个主题，失败 ${failures.length} 个。`));
-      failures.forEach((result) => status.appendChild(node('p', 'error',
-        `${requestNames.get(result.id)}：${result.error || '保存失败'}`)));
-      if (conflict) status.appendChild(node('p', 'error', '有主题或素材库已变化，请关闭对话框、重新打开仓库后再次选择并确认。'));
-      if (library === eagle.library.path) {
-        try { data = archive.list(); } catch (error) { status.appendChild(node('p', 'error', error.message)); }
-        categoryOptions($('warehouse-category'), true, $('warehouse-category').value);
-      }
-      // 保存后只更新当前卡片的分类；失败项仍然可见并保持选择。
-      $('warehouse-grid').querySelectorAll('.warehouse-card').forEach((card) => {
-        const entry = data.entries.find((value) => value.id === card.dataset.entryId);
-        if (entry) card.querySelector('.warehouse-category-badge').textContent = categoryName(entry.categoryId);
-        else if (deleting) card.remove();
-      });
-      syncBatchActions(); syncSelectionCards();
-      pending = false; cancel.disabled = false;
-      confirm.textContent = '重试失败项'; confirm.disabled = conflict;
-      if (!failures.length) {
-        dialog.close(); renderCards();
-        hooks.toast(deleting ? `已删除 ${count} 个主题，可从「备份 / 回收站」恢复` : `已修改 ${count} 个主题的分类`);
-      }
-    });
-    actions.append(cancel, confirm);
-    dialog.append(title);
-    if (deleting) dialog.append(node('p', 'hint', '所选主题将移入回收站，不删除 Eagle 中的原素材。'));
-    else dialog.append(picker.element);
-    dialog.append(status, actions);
-    document.body.appendChild(dialog);
-    dialog.showModal();
-    picker?.focus();
-    dialog.addEventListener('close', () => dialog.remove());
-    dialog.addEventListener('cancel', (event) => { if (pending) event.preventDefault(); });
-  }
-
   async function open(options = {}) {
     await attempt(async () => {
       checkIdle();
       const navigation = beginNavigation();
+      clearTimeout(sceneQueryTimer);
       rememberTopicPosition();
       rememberWarehousePosition();
       if (!current && document.body.dataset.page !== 'warehouse') searchBrowsePosition = Search.captureBrowsePosition();
@@ -836,17 +314,17 @@ const Warehouse = (() => {
       checkIdle();
       itemsById = new Map([...pathMap.values()].map((item) => [item.id, item]));
       Search.pausePreview();
-      $('warehouse-query').value = position?.query ?? (warehouseLibrary === library ? $('warehouse-query').value : '');
-      categoryOptions($('warehouse-category'), true, position?.category ?? (warehouseLibrary === library ? $('warehouse-category').value || '*' : '*'));
-      if (position) viewMode = position.viewMode;
-      favoritesOnly = position?.favoritesOnly ?? (warehouseLibrary === library ? favoritesOnly : false);
+      $('warehouse-query').value = position?.query ?? (cards.state.library === library ? $('warehouse-query').value : '');
+      categoryOptions($('warehouse-category'), true, position?.category ?? (cards.state.library === library ? $('warehouse-category').value || '*' : '*'));
+      if (position) cards.state.viewMode = position.viewMode;
+      cards.state.favoritesOnly = position?.favoritesOnly ?? (cards.state.library === library ? cards.state.favoritesOnly : false);
       if (options.category !== undefined) {
         $('warehouse-query').value = '';
         $('warehouse-category').value = options.category;
-        favoritesOnly = options.favoritesOnly === true;
+        cards.state.favoritesOnly = options.favoritesOnly === true;
       }
-      warehouseLibrary = library;
-      syncViewButtons();
+      cards.state.library = library;
+      cards.syncViewButtons();
       document.body.dataset.page = 'warehouse';
       $('warehouse-page').classList.remove('hidden');
       renderCards(position);
@@ -862,12 +340,12 @@ const Warehouse = (() => {
     removedSession = null;
     $('topic-removal-notice').classList.add('hidden');
     if ($('topic-removed-dialog').open) $('topic-removed-dialog').close();
-    closeContextMenu();
+    cards.closeContextMenu();
   }
 
   function syncSceneActions() {
     const hasTopic = !!current && currentLibrary === eagle.library.path && document.body.dataset.topic === 'true';
-    const saving = updating || coverSaving || scenesSaving || Search.isBusy();
+    const saving = updates.isBusy() || coverSaving || scenesSaving || Search.isBusy();
     syncUndoActions();
     $('btn-topic-add').disabled = saving || !(Search.getSelectedMatches() || []).length;
     $('btn-topic-remove').classList.toggle('hidden', !hasTopic);
@@ -1082,6 +560,7 @@ const Warehouse = (() => {
   async function load(entry, { resetView = false } = {}) {
     checkIdle();
     const navigation = beginNavigation();
+    clearTimeout(sceneQueryTimer);
     rememberTopicPosition();
     restoringBrowseGeneration = navigation.generation;
     try {
@@ -1118,465 +597,6 @@ const Warehouse = (() => {
       return true;
     } finally {
       if (restoringBrowseGeneration === navigation.generation) restoringBrowseGeneration = -1;
-      WarehouseNavigation.refresh();
-    }
-  }
-
-  function previewChanges(previous, candidate, { rawMatches, restore = false, note = '', commit }) {
-    const changes = ArchiveStore.entryChanges(previous, candidate, rawMatches);
-    const dialog = node('dialog', 'topic-changes-dialog');
-    dialog.id = 'topic-changes-dialog';
-    dialog.append(node('h2', '', restore ? '恢复此主题 · 预览变化' : '更新结果 · 预览变化'),
-      node('p', 'topic-changes-summary', `「${candidate.name}」：${previous.matches.length} → ${candidate.matches.length} 个片段`),
-      node('p', 'hint', restore
-        ? '将恢复此版本的结果、人工评分、审阅进度、移除记录、封面和主题设置。其他主题保持当前状态。'
-        : `保留 ${changes.retained} 个片段，其中 ${changes.manual.length} 个本次未命中的人工片段继续保留。确认后才替换已存结果。`));
-    if (note) dialog.appendChild(node('p', 'hint', note));
-    if (restore) {
-      const counts = (entry) => [entry.matches.filter((match) => match.manualScore).length,
-        entry.matches.filter((match) => match.reviewedAt).length, (entry.removedMatches || []).length];
-      const before = counts(previous); const after = counts(candidate);
-      dialog.appendChild(node('p', 'hint', ['人工评分', '已审阅', '已移除']
-        .map((label, index) => `${label} ${before[index]} → ${after[index]}`).join(' · ')));
-    }
-    const lists = node('div', 'topic-changes-lists');
-    const groups = [['新增', changes.added], ['消失', changes.removed]];
-    if (!restore) groups.push(['人工保留', changes.manual]);
-    for (const [label, matches] of groups) {
-      const section = node('details');
-      section.appendChild(node('summary', '', `${label} · ${matches.length}`));
-      let rendered = 0;
-      const rows = node('div');
-      const more = node('button', '', '显示更多');
-      more.type = 'button';
-      const render = () => {
-        const end = Math.min(rendered + 50, matches.length);
-        for (; rendered < end; rendered += 1) {
-          const match = matches[rendered];
-          const name = Bridge.itemForPath(match.video_path)?.name || match.video_path.split(/[\\/]/).pop();
-          const start = match.start || `第 ${match.original_start_frame ?? match.start_frame ?? 0} 帧`;
-          const endFrame = match.end || `第 ${match.original_end_frame ?? match.end_frame ?? 0} 帧`;
-          rows.appendChild(node('p', '', `${name} · ${start} — ${endFrame}`));
-        }
-        more.hidden = rendered >= matches.length;
-      };
-      section.addEventListener('toggle', () => { if (section.open && !rendered) render(); });
-      more.addEventListener('click', render);
-      section.append(rows, more); lists.appendChild(section);
-    }
-    dialog.appendChild(lists);
-    const error = node('p', 'error'); error.id = 'topic-changes-error'; error.setAttribute('role', 'alert');
-    const actions = node('div', 'dialog-actions');
-    const cancel = node('button', '', '取消'); cancel.id = 'topic-changes-cancel'; cancel.type = 'button';
-    const apply = node('button', 'primary', restore ? '恢复此主题' : '应用更新');
-    apply.id = 'topic-changes-apply'; apply.type = 'button';
-    actions.append(cancel, apply); dialog.append(error, actions); document.body.appendChild(dialog);
-    return new Promise((resolve) => {
-      let pending = false;
-      let saved = null;
-      cancel.addEventListener('click', () => { if (!pending) dialog.close(); });
-      dialog.addEventListener('cancel', (event) => { if (pending) event.preventDefault(); });
-      dialog.addEventListener('close', () => { dialog.remove(); resolve(saved); }, { once: true });
-      apply.addEventListener('click', async () => {
-        if (pending) return;
-        pending = true; apply.disabled = true; cancel.disabled = true; error.textContent = '';
-        try { saved = await commit(); dialog.close(); }
-        catch (failure) { error.textContent = failure.message; }
-        finally { pending = false; apply.disabled = false; cancel.disabled = false; }
-      });
-      dialog.showModal(); cancel.focus();
-    });
-  }
-
-  async function topicHistory() {
-    requireTopic();
-    const entry = current;
-    const navigation = beginNavigation();
-    const archive = store();
-    const dialog = node('dialog', 'topic-changes-dialog');
-    dialog.id = 'topic-history-dialog';
-    dialog.append(node('h2', '', `「${entry.name}」的历史版本`),
-      node('p', 'hint', '来自当前保留的整库备份，同一主题版本只显示一次。默认保留最近 10 次仓库写入，并非每个主题 10 份；缺失或损坏的版本无法恢复。'));
-    const error = node('p', 'error'); error.setAttribute('role', 'alert');
-    const close = node('button', '', '关闭'); close.type = 'button';
-    let pending = false;
-    const versions = archive.entryHistory(entry.id);
-    if (!versions.length) dialog.appendChild(node('p', 'hint', '暂无可读取的主题历史版本。'));
-    for (const version of versions) {
-      const row = node('div', 'topic-history-row');
-      const label = version.savedAt ? new Date(version.savedAt).toLocaleString() : version.name;
-      const button = node('button', '', '预览'); button.type = 'button';
-      row.append(node('span', '', `${label} · ${version.title} · ${version.summary?.matches ?? '—'} 个片段`), button);
-      button.addEventListener('click', async () => {
-        if (pending) return;
-        pending = true; updating = true; syncSceneActions(); error.textContent = '';
-        const controls = [...dialog.querySelectorAll('button')];
-        controls.forEach((control) => { control.disabled = true; });
-        try {
-          if (!currentNavigation(navigation)) throw new Error('素材库或当前页面已切换，请重新打开');
-          await archive.hydrateEntry(entry);
-          const snapshot = await archive.readEntryBackup(version.name, entry.id);
-          if (!currentNavigation(navigation)) throw new Error('素材库或当前页面已切换，请重新打开');
-          const categories = archive.list().categories;
-          const missingCategory = snapshot.entry.categoryId && !categories.some((item) => item.id === snapshot.entry.categoryId);
-          const restored = await previewChanges(entry, snapshot.entry, { restore: true,
-            note: missingCategory ? '历史分类已不存在，恢复后放入未分类。' : '',
-            commit: () => archive.restoreEntryBackup(version.name, entry.id, entry.updatedAt, entry.revision,
-              snapshot.fingerprint, () => currentNavigation(navigation)) });
-          if (!restored) return;
-          updating = false;
-          dialog.close();
-          if (!currentNavigation(navigation)) {
-            hooks.toast('主题已恢复到原素材库，当前页面已切换');
-            return;
-          }
-          try {
-            data = archive.list();
-            await load(restored, { resetView: true });
-            hooks.toast('已恢复此主题，恢复前的版本也已备份');
-          } catch (failure) {
-            hooks.toast(`恢复已保存，界面刷新失败，请重新打开主题：${failure.message}`, true, 6500);
-          }
-        } catch (failure) { error.textContent = failure.message; }
-        finally {
-          pending = false; updating = false; syncSceneActions();
-          controls.forEach((control) => { control.disabled = false; });
-        }
-      });
-      dialog.appendChild(row);
-    }
-    close.addEventListener('click', () => { if (!pending) dialog.close(); });
-    dialog.addEventListener('cancel', (event) => { if (pending) event.preventDefault(); });
-    dialog.addEventListener('close', () => dialog.remove(), { once: true });
-    dialog.append(error, close); document.body.appendChild(dialog); dialog.showModal();
-  }
-
-  async function refreshEntry(entry, recipe, savedView = entry.view) {
-    checkIdle();
-    const navigation = beginNavigation();
-    const library = eagle.library.path;
-    const archive = store();
-    await archive.hydrateEntry(entry);
-    if (!currentNavigation(navigation)) return;
-    checkIdle();
-    recipe = recipe === undefined ? entry.recipe : recipe;
-    if (!recipe) { await editEntry(entry); return; }
-    if (!hooks.canSearch()) throw new Error('搜索服务未就绪或正在建索引，请稍后更新');
-    updating = true;
-    syncSceneActions();
-    const controls = $('warehouse-editor').open
-      ? [...$('warehouse-form').elements].map((element) => ({ element, disabled: element.disabled })) : [];
-    controls.forEach(({ element }) => { element.disabled = true; });
-    document.body.classList.add('warehouse-updating');
-    $('warehouse-page').setAttribute('aria-busy', 'true');
-    $('warehouse-warning').textContent = `正在更新「${entry.name}」，原结果仍保留…`;
-    $('topic-update').textContent = '更新中…';
-    hooks.toast(`正在更新「${entry.name}」…`, false, 10000);
-    try {
-      const result = await Search.replay(recipe);
-      if (library !== eagle.library.path) throw new Error('素材库已切换，未写入更新结果');
-      const matches = result.matches;
-      const previous = { ...entry, matches: entry.matches.map((match) => ({ ...match,
-        eagleItemId: match.eagleItemId || Bridge.itemForPath(match.video_path)?.id,
-      })) };
-      let updated = ArchiveStore.updatedEntry(previous, matches, recipe, savedView);
-      updated.query = recipe.query;
-      updated.legacy = false;
-      updated = await previewChanges(previous, updated, { rawMatches: matches,
-        note: result.missingDates ? `${result.missingDates} 个素材缺少导入时间，已排除。` : '',
-        commit: () => {
-          if (!currentNavigation(navigation)) throw new Error('素材库或当前页面已切换，未写入更新结果');
-          return archive.replace(updated, entry.updatedAt);
-        } });
-      if (!updated) return null;
-      // 此时更新已落盘，才允许装载；load 内仍防止其他搜索并发。
-      updating = false;
-      if (!currentNavigation(navigation)) {
-        hooks.toast('更新已保存到原素材库，当前页面已切换');
-        return updated;
-      }
-      try {
-        data = archive.list();
-        await load(updated, { resetView: $('warehouse-editor').open });
-      } catch (failure) {
-        hooks.toast(`更新已保存，界面刷新失败，请重新打开主题：${failure.message}`, true, 6500);
-        return updated;
-      }
-      hooks.toast(`更新完成：${updated.matches.length} 个片段，本次新增 ${updated.newKeys.length}`
-        + (result.missingDates ? `；${result.missingDates} 个素材缺少导入时间，已排除` : ''), false, 6500);
-      return updated;
-    } finally {
-      updating = false;
-      syncSceneActions();
-      controls.forEach(({ element, disabled }) => { element.disabled = disabled; });
-      document.body.classList.remove('warehouse-updating');
-      $('warehouse-page').setAttribute('aria-busy', 'false');
-      $('warehouse-warning').textContent = [...new Set(data?.warnings || [])].join('；');
-      $('topic-update').textContent = '更新结果';
-    }
-  }
-
-  function fillEditor(entry, recipe, view) {
-    $('warehouse-editor-error').textContent = '';
-    $('entry-name').value = entry?.name || recipe?.query || '未命名';
-    editorCategoryPicker = categoryPicker(entry?.categoryId || '', eagle.library.path);
-    $('entry-category').replaceChildren(editorCategoryPicker.element);
-    $('entry-delete').classList.toggle('hidden', !entry);
-    $('entry-copy')?.classList.toggle('hidden', !entry);
-    $('entry-delete').textContent = '删除主题';
-    $('entry-delete').dataset.confirming = '';
-    $('entry-conditions').classList.toggle('hidden', !entry);
-    // 初次保存保持条件不可变，确保保存结果与条件一一对应。
-    $('entry-conditions').querySelectorAll('input, select, button').forEach((el) => { el.disabled = !entry; });
-    if (!entry) return;
-    $('entry-query').value = recipe.query || '';
-    $('entry-threshold').value = recipe.config.threshold;
-    $('entry-duration').value = view.minDur;
-    $('entry-sort').value = view.sortBy;
-    $('entry-grouped').checked = view.grouped;
-    $('entry-model').value = recipe.config.modelName;
-    boolKeys.forEach((key) => { $(`entry-${key}`).checked = !!recipe.config[key]; });
-    numberKeys.forEach((key) => { $(`entry-${key}`).value = recipe.config[key] ?? ''; });
-    $('entry-visualAgg').value = recipe.config.visualAgg || 'mean';
-    $('entry-aiMode').value = recipe.config.aiMode || 'balanced';
-    SearchRecipe.writeTime(recipe.time, 'entry-time');
-    $('entry-scope').value = recipe.scope.mode;
-    $('entry-folders').classList.toggle('hidden', recipe.scope.mode === 'all');
-    $('entry-extra-exclusions').textContent = recipe.scope.excludeFolderIds?.length
-      ? `此条件另排除了 ${recipe.scope.excludeFolderIds.length} 个文件夹；改为“整个库”可清除这些排除。` : '';
-    $('entry-replace-source').classList.toggle('hidden', recipe.kind === 'text');
-    $('entry-source').textContent = recipe.kind === 'text' ? '文本搜索'
-      : `${recipe.kind === 'hybrid' ? '文本 × 视觉混合搜索' : '视觉搜索'} · ${recipe.payload?.video_path || '已保存查询图片'}`;
-  }
-
-  async function fillFolders(recipe, token) {
-    $('entry-folders').textContent = '正在读取文件夹…';
-    try {
-      const folders = await Bridge.getFolderTree();
-      if (token !== editorToken) return;
-      $('entry-folders').replaceChildren();
-      const wanted = new Set(recipe.scope.folderIds || []);
-      const seen = new Set();
-      const walk = (nodes, parent, depth = 0) => {
-        for (const folder of nodes) {
-          if (seen.has(folder.id)) continue;
-          seen.add(folder.id);
-          const row = node('label', 'check-row');
-          row.style.paddingLeft = `${Math.min(depth, 8) * 14}px`;
-          const check = node('input');
-          check.type = 'checkbox';
-          check.value = folder.id;
-          check.checked = wanted.has(folder.id);
-          row.append(check, document.createTextNode(folder.name));
-          parent.appendChild(row);
-          walk(folder.children || [], parent, depth + 1);
-        }
-      };
-      walk(folders, $('entry-folders'));
-      wanted.forEach((id) => {
-        if (!seen.has(id)) {
-          const row = node('label', 'check-row');
-          const check = node('input');
-          check.type = 'checkbox'; check.value = id; check.checked = true;
-          row.append(check, document.createTextNode(`已失效的文件夹 (${id})，请取消勾选`));
-          $('entry-folders').appendChild(row);
-        }
-      });
-    } catch (error) {
-      if (token === editorToken) $('entry-folders').textContent = `文件夹读取失败：${error.message}`;
-    }
-  }
-
-  async function editEntry(entry) {
-    checkIdle();
-    const navigation = beginNavigation();
-    await store().hydrateEntry(entry);
-    if (!currentNavigation(navigation)) return;
-    checkIdle();
-    Search.pausePreview();
-    data = store().list();
-    editing = SearchRecipe.clone(entry);
-    editingLibrary = eagle.library.path;
-    draft = entry.recipe ? SearchRecipe.clone(entry.recipe) : {
-      kind: 'text', query: entry.query || entry.name, payload: null,
-      config: SearchRecipe.options(Config.get()), scope: { mode: 'all' }, time: { mode: 'all' }, library: eagle.library.path,
-    };
-    $('warehouse-editor-title').textContent = '编辑主题';
-    $('warehouse-editor-hint').textContent = entry.recipe
-      ? '名称、分类、排序、分组及最短时长仅本地保存；改变搜索条件才重新搜索。最短时长只过滤显示，不删除已存片段。'
-      : '旧存档缺少完整条件。请确认下方条件，以文本搜索重新建立主题；原文件会保留。';
-    fillEditor(entry, draft, entry.view);
-    $('entry-submit').textContent = '保存 / 更新';
-    $('warehouse-editor').showModal();
-    const token = ++editorToken;
-    await fillFolders(draft, token);
-  }
-
-  function copyTopic() {
-    checkIdle();
-    if (!editing) return;
-    if (editingLibrary !== eagle.library.path) throw new Error('素材库已切换，请重新打开主题后复制');
-    const source = editing;
-    const navigation = beginNavigation();
-    const archive = store();
-    const dialog = node('dialog', 'topic-changes-dialog topic-copy-dialog');
-    dialog.id = 'topic-copy-dialog';
-    const form = node('form');
-    form.append(node('h2', '', '复制主题'),
-      node('p', 'hint', `复制「${source.name}」的已保存版本，未保存的编辑不会带入。片段、评分、审阅进度、移除记录、封面和搜索条件完整保留，后续修改相互独立。`));
-    const label = node('label', '', '副本名称');
-    label.htmlFor = 'topic-copy-name';
-    const name = node('input'); name.id = 'topic-copy-name'; name.type = 'text'; name.required = true;
-    name.value = `${source.name} 副本`;
-    const error = node('p', 'form-error'); error.id = 'topic-copy-error'; error.setAttribute('role', 'alert');
-    const actions = node('div', 'dialog-actions');
-    const cancel = node('button', '', '取消'); cancel.type = 'button';
-    const submit = node('button', 'primary', '创建并打开副本'); submit.type = 'submit';
-    actions.append(cancel, submit); form.append(label, name, error, actions);
-    dialog.appendChild(form); document.body.appendChild(dialog);
-    let pending = false;
-    cancel.addEventListener('click', () => { if (!pending) dialog.close(); });
-    dialog.addEventListener('cancel', (event) => { if (pending) event.preventDefault(); });
-    dialog.addEventListener('close', () => dialog.remove(), { once: true });
-    form.addEventListener('submit', async (event) => {
-      event.preventDefault();
-      if (pending) return;
-      error.textContent = '';
-      try {
-        checkIdle();
-        if (!currentNavigation(navigation)) throw new Error('素材库或当前页面已切换，请重新打开主题');
-        pending = true; scenesSaving = true; syncSceneActions();
-        name.disabled = true; submit.disabled = true; cancel.disabled = true;
-        const copy = await archive.copyEntry(source.id, name.value, source.updatedAt, source.revision,
-          () => currentNavigation(navigation));
-        scenesSaving = false;
-        dialog.close(); $('warehouse-editor').close();
-        if (!currentNavigation(navigation)) {
-          hooks.toast('副本已保存到原素材库，当前页面已切换'); return;
-        }
-        try {
-          data = archive.list();
-          await load(copy, { resetView: true });
-          hooks.toast(`已创建副本「${copy.name}」`);
-        } catch (failure) {
-          hooks.toast(`副本已保存，打开失败，请从仓库重新打开：${failure.message}`, true, 6500);
-        }
-      } catch (failure) { error.textContent = failure.message; }
-      finally {
-        pending = false; scenesSaving = false; syncSceneActions();
-        name.disabled = false; submit.disabled = false; cancel.disabled = false;
-      }
-    });
-    dialog.showModal(); name.focus(); name.select();
-  }
-
-  async function saveCurrent() {
-    await attempt(async () => {
-      checkIdle();
-      const navigation = beginNavigation();
-      const recipe = Search.getRecipe();
-      if (!recipe) throw new Error('旧存档请先在仓库中编辑并补齐条件');
-      savingMatches = SearchRecipe.clone(Search.getAllMatches());
-      savingView = Search.getView();
-      if (!savingMatches.length) throw new Error('当前筛选下没有可保存的结果');
-      data = store().list();
-      draft = await SearchRecipe.persistSource(recipe);
-      if (!currentNavigation(navigation)) return;
-      checkIdle();
-      editing = null;
-      editingLibrary = eagle.library.path;
-      $('warehouse-editor-title').textContent = '保存到仓库';
-      $('warehouse-editor-hint').textContent = `保存 ${countVideos(savingMatches)} 个素材 / ${savingMatches.length} 个片段及当前筛选条件。`;
-      fillEditor(null, draft, savingView);
-      $('entry-submit').textContent = '保存主题';
-      $('warehouse-editor').showModal();
-    });
-  }
-
-  function readDraft() {
-    const recipe = SearchRecipe.clone(draft);
-    recipe.query = $('entry-query').value.trim();
-    if (!recipe.query) throw new Error('请输入搜索词');
-    recipe.config.threshold = Number($('entry-threshold').value);
-    recipe.config.modelName = $('entry-model').value.trim();
-    boolKeys.forEach((key) => { recipe.config[key] = $(`entry-${key}`).checked; });
-    numberKeys.forEach((key) => {
-      if ($(`entry-${key}`).value !== '') recipe.config[key] = Number($(`entry-${key}`).value);
-    });
-    recipe.config.visualAgg = $('entry-visualAgg').value;
-    recipe.config.aiMode = $('entry-aiMode').value;
-    recipe.time = SearchRecipe.readTime('entry-time');
-    const ids = [...$('entry-folders').querySelectorAll('input:checked')].map((input) => input.value);
-    const scopeMode = $('entry-scope').value;
-    const extra = recipe.scope.excludeFolderIds;
-    recipe.scope = scopeMode === 'all' ? { mode: 'all' } : { mode: scopeMode, folderIds: ids };
-    if (scopeMode !== 'all' && extra?.length) recipe.scope.excludeFolderIds = extra;
-    if (scopeMode !== 'all' && !ids.length) throw new Error('请至少选择一个文件夹');
-    const view = { minDur: Number($('entry-duration').value), sortBy: $('entry-sort').value, grouped: $('entry-grouped').checked };
-    return { recipe, view };
-  }
-
-  function equivalent(a, b) {
-    // 文件夹显示名称不影响搜索，顺序也不影响范围。
-    const clean = (value) => {
-      const copy = SearchRecipe.clone(value);
-      if (copy?.scope) {
-        delete copy.scope.names;
-        if (copy.scope.folderIds) copy.scope.folderIds.sort();
-        if (copy.scope.excludeFolderIds) copy.scope.excludeFolderIds.sort();
-      }
-      return copy;
-    };
-    const sorted = (value) => {
-      if (Array.isArray(value)) return value.map(sorted);
-      if (value && typeof value === 'object') return Object.fromEntries(
-        Object.keys(value).sort().map((key) => [key, sorted(value[key])]),
-      );
-      return value;
-    };
-    return JSON.stringify(sorted(clean(a))) === JSON.stringify(sorted(clean(b)));
-  }
-
-  async function submit(event) {
-    event.preventDefault();
-    $('warehouse-editor-error').textContent = '';
-    $('entry-submit').disabled = true;
-    try {
-      checkIdle();
-      const name = $('entry-name').value.trim();
-      if (!name) throw new Error('请输入主题名称');
-      if (editingLibrary !== eagle.library.path) throw new Error('素材库已切换，请重新打开并确认');
-      const categoryId = editorCategoryPicker.getValue();
-      editorCategoryPicker.setDisabled(true);
-      if (!editing) {
-        const entry = store().add({ name, categoryId, recipe: draft, view: savingView, matches: savingMatches });
-        rememberCategory(editingLibrary, entry.categoryId);
-        data = store().list();
-        await load(entry);
-        hooks.toast(`已保存主题「${name}」`);
-      } else {
-        const { recipe, view } = readDraft();
-        let renamed = { ...editing, name, categoryId, view, metadataUpdatedAt: new Date().toISOString() };
-        if (!equivalent(recipe, editing.recipe)) {
-          const persisted = await SearchRecipe.persistSource(recipe);
-          const updated = await refreshEntry(renamed, persisted, view);
-          if (!updated) return;
-          rememberCategory(editingLibrary, updated.categoryId);
-        } else {
-          renamed = store().replace(renamed, editing.updatedAt);
-          rememberCategory(editingLibrary, renamed.categoryId);
-          data = store().list();
-          categoryOptions($('warehouse-category'), true, $('warehouse-category').value);
-          if (current?.id === renamed.id && document.body.dataset.page !== 'warehouse') await load(renamed, { resetView: true });
-          if (document.body.dataset.page === 'warehouse') renderCards();
-          hooks.toast('主题信息已保存');
-        }
-      }
-      $('warehouse-editor').close();
-    } catch (error) {
-      $('warehouse-editor-error').textContent = error.message;
-    } finally {
-      $('entry-submit').disabled = false; editorCategoryPicker.setDisabled(false);
       WarehouseNavigation.refresh();
     }
   }
@@ -1629,121 +649,12 @@ const Warehouse = (() => {
     });
   }
 
-  function recoveryDialog() {
-    checkIdle();
-    let dialog = $('warehouse-recovery-dialog');
-    if (!dialog) {
-      dialog = node('dialog'); dialog.id = 'warehouse-recovery-dialog';
-      dialog.style.cssText = 'max-width:680px;width:80vw;max-height:80vh;overflow:auto';
-      document.body.appendChild(dialog);
-    }
-    dialog.replaceChildren(node('h2', '', '仓库备份与回收站'),
-      node('p', 'hint', '写入前自动备份，默认保留最近 10 个有效版本；回收站默认保留 30 天，下次成功写入时清理。未知或损坏的备份不自动删除。恢复前也会保存当前文件。'));
-    const status = node('p', 'hint'); status.setAttribute('aria-live', 'polite');
-    let processing = false;
-    const run = async (action) => {
-      if (processing) return;
-      processing = true;
-      const controls = [...dialog.querySelectorAll('button, input, select')]
-        .map((element) => ({ element, disabled: element.disabled }));
-      controls.forEach(({ element }) => { element.disabled = true; });
-      dialog.setAttribute('aria-busy', 'true');
-      try { await action(); } catch (error) { status.textContent = error.message; }
-      finally {
-        processing = false;
-        controls.forEach(({ element, disabled }) => { element.disabled = disabled || element.dataset.completed === 'true'; });
-        dialog.setAttribute('aria-busy', 'false');
-      }
-    };
-    const archive = store();
-    const library = eagle.library.path;
-    const guard = () => { checkIdle(); if (library !== eagle.library.path) throw new Error('素材库已切换，请重新打开恢复面板'); };
-    const policyRow = node('p');
-    const countLabel = node('label', '', '备份份数 ');
-    const countInput = node('input'); countInput.type = 'number'; countInput.min = '1'; countInput.max = '100'; countInput.value = '10';
-    const daysLabel = node('label', '', ' 回收站天数（0 永久） ');
-    const daysInput = node('input'); daysInput.type = 'number'; daysInput.min = '0'; daysInput.max = '3650'; daysInput.value = '30';
-    try { const policy = archive.list().retention; if (policy) { countInput.value = policy.backupCount; daysInput.value = policy.trashDays; } } catch { /* Keep recovery accessible for a broken manifest. */ }
-    const savePolicy = node('button', '', '保存清理策略'); savePolicy.type = 'button';
-    savePolicy.addEventListener('click', () => run(() => {
-      guard(); archive.setRetention(Number(countInput.value), Number(daysInput.value)); status.textContent = '清理策略已保存';
-    }));
-    countLabel.append(countInput); daysLabel.append(daysInput); policyRow.append(countLabel, daysLabel, savePolicy); dialog.append(policyRow);
-    const exportButton = node('button', '', '导出仓库包'); exportButton.type = 'button';
-    exportButton.addEventListener('click', () => run(async () => {
-      guard(); status.textContent = '正在导出仓库包…';
-      const bundle = await archive.exportBundleAsync();
-      guard(); const blob = new Blob([bundle], { type: 'application/json' });
-      const url = URL.createObjectURL(blob); const link = node('a');
-      link.href = url; link.download = `warehouse-${Date.now()}.json`; link.click();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-      status.textContent = '仓库包已生成';
-    }));
-    const input = node('input'); input.type = 'file'; input.accept = '.json';
-    const moveLabel = node('label', '', '我确认这是搬家后的同一素材库：允许导入异路径仓库（仅快照，更新前需重设条件）');
-    const moveCheck = node('input'); moveCheck.type = 'checkbox'; moveLabel.prepend(moveCheck);
-    input.setAttribute('aria-label', '导入同库仓库包（合并，不覆盖同 ID 主题）');
-    input.addEventListener('change', () => run(async () => {
-      const file = input.files[0]; if (!file) return;
-      if (file.size > 128 * 1024 * 1024) throw new Error('仓库包超过 128 MB，请分批整理后导入');
-      guard(); status.textContent = '正在校验并合并仓库包…';
-      const text = await file.text(); guard();
-      const count = await archive.importBundleAsync(text, { allowLibraryMove: moveCheck.checked });
-      guard();
-      status.textContent = `已合并 ${count} 个新主题（同 ID 主题不覆盖）`;
-      detachTopic(); await open();
-    }));
-    const unlock = node('button', '', '恢复已退出进程的遗留锁'); unlock.type = 'button';
-    unlock.addEventListener('click', () => run(() => { guard(); status.textContent = archive.recoverLock() ? '遗留锁已移除，可重试保存' : '没有遗留锁'; }));
-    dialog.append(exportButton, moveLabel, input, unlock, status, node('h3', '', '回收站'));
-    try {
-      const trash = archive.list().trash || [];
-      if (!trash.length) dialog.append(node('p', 'hint', '回收站为空'));
-      trash.forEach((item) => {
-        if (!item?.entry?.name || !item.trashId) { dialog.append(node('p', 'hint', '有未知格式回收站记录，已原样保留')); return; }
-        const row = node('p', '', `${item.entry.name} · ${dateText(item.deletedAt)} `);
-        const button = node('button', '', '恢复主题'); button.type = 'button';
-        button.addEventListener('click', () => run(async () => {
-          guard(); archive.restore(item.trashId); button.dataset.completed = 'true'; button.disabled = true;
-          status.textContent = '主题已恢复'; await open();
-        })); row.append(button); dialog.append(row);
-      });
-    } catch (error) { status.textContent = error.message; }
-    dialog.append(node('h3', '', '历史版本'));
-    const versions = archive.backups();
-    if (!versions.length) dialog.append(node('p', 'hint', '暂无备份（首次成功写入后的下一次修改开始备份）'));
-    versions.forEach((item) => {
-      const row = node('p', '', `${dateText(Number(item.name.split('-')[0]))} · ${item.valid ? `${item.count} 个主题（恢复时校验资源）` : '损坏，不可恢复'} `);
-      const button = node('button', '', '恢复此版本'); button.type = 'button'; button.disabled = !item.valid;
-      button.addEventListener('click', () => run(() => {
-        guard();
-        if (button.dataset.confirming !== '1') {
-          button.dataset.confirming = '1'; button.textContent = '再次点击确认恢复整库'; return;
-        }
-        archive.restoreBackup(item.name); button.dataset.completed = 'true'; button.disabled = true; detachTopic();
-        status.textContent = '已恢复；恢复前的文件已另存为备份'; return open();
-      })); row.append(button); dialog.append(row);
-    });
-    const close = node('button', '', '关闭'); close.type = 'button';
-    close.addEventListener('click', () => dialog.close()); dialog.append(close);
-    dialog.oncancel = (event) => { if (processing) event.preventDefault(); };
-    if (!dialog.open) dialog.showModal();
-  }
-
-  function syncViewButtons() {
-    $('warehouse-view-card').classList.toggle('active', viewMode === 'card');
-    $('warehouse-view-list').classList.toggle('active', viewMode === 'list');
-    $('warehouse-view-card').setAttribute('aria-pressed', String(viewMode === 'card'));
-    $('warehouse-view-list').setAttribute('aria-pressed', String(viewMode === 'list'));
-  }
-
   function init(callbacks) {
     hooks = callbacks;
     WarehouseNavigation.init({
       attempt, toast: hooks.toast, snapshot: () => store().list(),
       active: () => ({ page: document.body.dataset.page, topicId: current?.id,
-        category: $('warehouse-category').value, favoritesOnly }),
-      newSearch: returnToSearch,
+        category: $('warehouse-category').value, favoritesOnly: cards.state.favoritesOnly }),
       openCollection: (category, favorites) => open({ category, favoritesOnly: favorites }),
       openTopic: (id) => {
         checkIdle();
@@ -1824,56 +735,29 @@ const Warehouse = (() => {
         catch { hooks.toast('整理已保存，界面刷新失败，请重新打开主题', true); }
       },
     });
-    try { if (localStorage.getItem(viewPreferenceKey) === 'list') viewMode = 'list'; }
-    catch { /* 偏好不可用时保留会话状态。 */ }
-    const setViewMode = (value) => {
-      viewMode = value;
-      try { localStorage.setItem(viewPreferenceKey, value); } catch { /* 降级为会话内记忆。 */ }
-      syncViewButtons();
-      if (data) renderCards();
-    };
-    setViewMode(viewMode);
+    cards.init();
     const recovery = $('warehouse-recovery');
     recovery.addEventListener('click', () => attempt(recoveryDialog));
-    $('search-time').addEventListener('change', () => {
+    const applySearchTime = () => {
       $('search-time-dates').classList.toggle('hidden', $('search-time').value !== 'custom');
-      $('time-warning').textContent = '';
+      if (current || document.body.dataset.page === 'warehouse') return;
+      try {
+        Search.setArchiveTime(SearchRecipe.readTime());
+        $('time-warning').textContent = '';
+      } catch (error) { $('time-warning').textContent = error.message; }
+    };
+    ['search-time', 'search-time-start', 'search-time-end'].forEach((id) => {
+      $(id).addEventListener('change', applySearchTime);
     });
-    $('entry-time').addEventListener('change', () => $('entry-time-dates').classList.toggle('hidden', $('entry-time').value !== 'custom'));
-    $('entry-scope').addEventListener('change', () => $('entry-folders').classList.toggle('hidden', $('entry-scope').value === 'all'));
-    $('warehouse-query').addEventListener('input', () => {
-      forgetWarehousePosition();
-      clearTimeout(queryTimer);
-      queryTimer = setTimeout(renderCards, 120);
-    });
-    $('warehouse-category').addEventListener('change', () => {
-      forgetWarehousePosition();
-      clearTimeout(queryTimer); renderCards();
-    });
-    $('warehouse-favorites').addEventListener('click', () => {
-      forgetWarehousePosition();
-      favoritesOnly = !favoritesOnly;
-      clearTimeout(queryTimer); renderCards();
-    });
-    $('warehouse-view-card').addEventListener('click', () => {
-      forgetWarehousePosition();
-      clearTimeout(queryTimer); setViewMode('card');
-    });
-    $('warehouse-view-list').addEventListener('click', () => {
-      forgetWarehousePosition();
-      clearTimeout(queryTimer); setViewMode('list');
-    });
-    initBoxSelection();
     $('topic-back').addEventListener('click', () => {
-      selectedEntries.clear();
+      cards.clearSelection();
       open();
     });
     $('topic-search').addEventListener('click', () => attempt(returnToSearch));
-    $('topic-edit').addEventListener('click', () => attempt(() => editEntry(current)));
+    $('topic-edit').addEventListener('click', () => attempt(() => editor.editEntry(current)));
     $('topic-favorite').addEventListener('click', () => attempt(() => { requireTopic(); toggleFavorite(current); }));
-    $('topic-update').addEventListener('click', () => attempt(() => refreshEntry(current)));
-    $('topic-history')?.addEventListener('click', () => attempt(topicHistory));
-    $('entry-copy')?.addEventListener('click', () => attempt(copyTopic));
+    $('topic-update').addEventListener('click', () => attempt(() => updates.refreshEntry(current)));
+    $('topic-history')?.addEventListener('click', () => attempt(updates.topicHistory));
     $('topic-removed').addEventListener('click', () => attempt(showRemovedMatches));
     $('btn-topic-remove').addEventListener('click', () => attempt(() => removeTopicMatches(Search.getSelectedMatches())));
     $('btn-topic-score').addEventListener('click', () => attempt(() => { requireTopic(); ManualAdd.editScores(current); }));
@@ -1923,6 +807,12 @@ const Warehouse = (() => {
         localTimes.set(timeKey(current), { mode: 'all' });
         Search.setArchiveTime({ mode: 'all' });
         syncTopic();
+      } else {
+        SearchRecipe.writeTime({ mode: 'all' });
+        Search.setArchiveTime({ mode: 'all' });
+        $('threshold').value = 0;
+        $('threshold-val').textContent = '0';
+        $('time-warning').textContent = '';
       }
     }));
     $('browse-position-top').addEventListener('click', () => {
@@ -1967,7 +857,7 @@ const Warehouse = (() => {
     });
     document.addEventListener('search-selection', syncSceneActions);
     document.addEventListener('search-busy', syncSceneActions);
-    document.addEventListener('search-context', () => closeContextMenu());
+    document.addEventListener('search-context', () => cards.closeContextMenu());
     $('btn-set-topic-cover').addEventListener('click', () => attempt(saveCover));
     $('btn-cover-prev-frame').addEventListener('click', () => attempt(() => { checkIdle(); Search.stepPreviewFrame(-1); }));
     $('btn-cover-next-frame').addEventListener('click', () => attempt(() => { checkIdle(); Search.stepPreviewFrame(1); }));
@@ -1978,27 +868,7 @@ const Warehouse = (() => {
       syncTopic();
       hooks.toast('已恢复默认片段封面');
     }));
-    $('warehouse-form').addEventListener('submit', submit);
-    $('entry-cancel').addEventListener('click', () => { if (!updating) $('warehouse-editor').close(); });
-    $('warehouse-editor').addEventListener('cancel', (event) => { if (updating) event.preventDefault(); });
-    $('warehouse-editor').addEventListener('close', () => { editorToken += 1; });
-    $('entry-delete').addEventListener('click', () => attempt(() => {
-      checkIdle();
-      confirmButton($('entry-delete'), () => {
-        store().remove(editing.id);
-        if (current?.id === editing.id) detachTopic();
-        $('warehouse-editor').close();
-        open();
-      });
-    }));
-    $('entry-replace-source').addEventListener('click', () => attempt(async () => {
-      const items = await eagle.item.getSelected();
-      const item = items.find((value) => Bridge.isVideoItem(value) || Bridge.isImageItem(value));
-      if (!item) throw new Error('请先在 Eagle 选中一张图片或一个视频');
-      draft.payload = Bridge.isVideoItem(item) ? { video_path: item.filePath } : { image_path: item.filePath };
-      delete draft.sourceItemId;
-      $('entry-source').textContent = `新查询来源：${item.name}`;
-    }));
+    editor.init();
     $('warehouse-categories').addEventListener('click', () => attempt(() => {
       checkIdle(); categoryLibrary = eagle.library.path;
       $('category-error').textContent = ''; renderCategories(); $('warehouse-category-dialog').showModal();
@@ -2013,7 +883,41 @@ const Warehouse = (() => {
         renderCategories(); categoryOptions($('warehouse-category'), true, $('warehouse-category').value); renderCards();
       } catch (error) { $('category-error').textContent = error.message; }
     });
-    document.addEventListener('search-completed', () => { detachTopic(); showSearch(); });
+    document.addEventListener('search-completed', () => { detachTopic(false); showSearch(); });
+  }
+
+  async function pruneMissingVideos(library) {
+    checkIdle();
+    if (library !== eagle.library.path) throw new Error('素材库已切换，请回到原库后再次索引以清理主题');
+    cleaning = true;
+    try {
+      const archive = store();
+      const videos = await Bridge.collectLibraryVideos(true);
+      if (library !== eagle.library.path) throw new Error('素材库已切换，主题清理未执行');
+      const pathMap = await Bridge.refreshPathMap(false, videos);
+      const inventory = { byId: new Map(videos.map((item) => [item.id, item])), byPath: pathMap };
+      const result = await archive.pruneMissingVideos(inventory, () => library === eagle.library.path);
+      if (library !== eagle.library.path) return result;
+      data = result.data;
+      itemsById = inventory.byId;
+      if (searchSession?.state.library === SearchRecipe.normalize(library)) {
+        if (ArchiveStore.reconcileVideoReferences(searchSession.state, inventory)) searchSession.state.selected = [];
+      }
+      const foreignTopic = current?.sourceLibrary
+        && SearchRecipe.normalize(current.sourceLibrary) !== SearchRecipe.normalize(library);
+      if (!foreignTopic) Search.pruneMissingVideos(inventory);
+      else Search.clearThumbnailCache();
+      clearRemovalUi();
+      if (result.topics) undoManager?.clear({ library });
+      if (current && currentLibrary === library) {
+        current = data.entries.find((entry) => entry.id === current.id) || null;
+        if (current) syncTopic();
+      }
+      if (document.body.dataset.page === 'warehouse') renderCards();
+      WarehouseNavigation.refresh();
+      if (typeof TopicRelations !== 'undefined') TopicRelations.refresh();
+      return result;
+    } finally { cleaning = false; }
   }
 
   function getScopeContext() {
@@ -2021,5 +925,5 @@ const Warehouse = (() => {
     return { id: current.id, library: currentLibrary, generation: navigationGeneration };
   }
 
-  return { init, open, saveCurrent, getScopeContext, getCurrentName: () => current?.name || '' };
+  return { init, open, saveCurrent: editor.saveCurrent, pruneMissingVideos, getScopeContext, getCurrentName: () => current?.name || '' };
 })();

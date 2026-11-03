@@ -93,11 +93,14 @@ const Api = (() => {
 
   async function startIndex(videoPaths, indexName, modelName, rebuild = false, pruneMissing = false, metadata = {}) {
     const cfg = Config.get();
-    if (['dinov3_cses', 'content_adaptive'].includes(cfg.indexFrameSelection)) {
+    if (pruneMissing || ['dinov3_cses', 'content_adaptive'].includes(cfg.indexFrameSelection)) {
       try {
         const info = await healthInfo();
-        const capability = cfg.indexFrameSelection === 'content_adaptive' ? 'content_adaptive_frames' : 'smart_frame_selection';
-        if (!info?.capabilities?.[capability]) throw new Error('当前搜索服务尚不支持所选选帧方式，请更新并重启配套后端');
+        if (pruneMissing && !info?.capabilities?.library_prune) throw new Error('当前搜索服务需要重启，以支持全库失效项清理');
+        if (['dinov3_cses', 'content_adaptive'].includes(cfg.indexFrameSelection)) {
+          const capability = cfg.indexFrameSelection === 'content_adaptive' ? 'content_adaptive_frames' : 'smart_frame_selection';
+          if (!info?.capabilities?.[capability]) throw new Error('当前搜索服务尚不支持所选选帧方式，请更新并重启配套后端');
+        }
       } catch (error) {
         error.indexNotSubmitted = true;
         throw error;
@@ -180,8 +183,6 @@ const Api = (() => {
       bilingual_search: !!cfg.aiEnhance,
       ai_enhance: !!cfg.aiExpand,
       ai_mode: cfg.aiMode || 'balanced',
-      use_dedup: !!cfg.dedup,
-      dedup_threshold: cfg.dedupThreshold != null ? cfg.dedupThreshold : 0.95,
       use_mini_rerank: !!cfg.miniRerank,
     }, allowedVideoPaths), cfg.miniRerank ? LONG_TIMEOUT_MS : DEFAULT_TIMEOUT_MS, requestOptions);
   }

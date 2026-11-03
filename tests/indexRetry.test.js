@@ -29,7 +29,7 @@ async function main() {
   const context = {
     require, console: { ...console, error() {} }, SearchCache, clearTimeout: () => { scheduled = null; },
     setTimeout: (callback, ms) => { scheduled = { callback, ms }; return 1; },
-    Config: { get: () => ({ scopeMode: 'all', scopeFolderIds: [], modelName: 'model' }) },
+    Config: { get: () => ({ scopeMode: 'all', scopeFolderIds: [], scopeExcludeFolderIds: [], modelName: 'model' }) },
     Search: { isBusy: () => false },
     document: { getElementById: node, querySelectorAll: () => [], body: new Element(), createElement: tag => new Element(tag), createTextNode: text => ({ textContent: text }) },
     eagle: { library: { path: library.path }, onPluginCreate() {}, onPluginShow() {}, onThemeChanged() {}, onLibraryChanged() {} },
@@ -47,8 +47,11 @@ async function main() {
   };
   vm.createContext(context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../js/indexer.js'), 'utf8') + '\nthis.Indexer = Indexer;', context);
+  for (const name of ['dom', 'libraryTools']) {
+    vm.runInContext(fs.readFileSync(path.join(__dirname, `../js/${name}.js`), 'utf8'), context);
+  }
   const plugin = fs.readFileSync(path.join(__dirname, '../js/plugin.js'), 'utf8');
-  vm.runInContext(plugin.replace('  eagle.onPluginCreate(', '  this.hooks = { openIndexJobs, openScopeDialog, openStats, setServiceStatus };\n  eagle.onPluginCreate('), context);
+  vm.runInContext(plugin.replace('  eagle.onPluginCreate(', '  this.hooks = { openIndexJobs, openScopeDialog, openStats: LibraryTools.openStats, setServiceStatus };\n  eagle.onPluginCreate('), context);
 
   SearchCache.clear();
   SearchCache.set({ query: 'before retry' }, [{ id: 1 }]);

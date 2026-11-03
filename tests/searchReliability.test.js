@@ -16,10 +16,11 @@ class Element {
 }
 const source = fs.readFileSync(path.join(__dirname, '..', 'js', 'search.js'), 'utf8');
 const deferred = [];
+const inputs = new Map(['threshold', 'threshold-val'].map((id) => [id, { value: '11', textContent: '11' }]));
 const context = {
   console, AbortController, setTimeout, clearTimeout,
   CustomEvent: class {},
-  document: { body: { dataset: { page: 'search' } }, getElementById: () => null, dispatchEvent() {}, createElement: () => new Element() },
+  document: { body: { dataset: { page: 'search' } }, getElementById: (id) => inputs.get(id) || null, dispatchEvent() {}, createElement: () => new Element() },
   Config: { get: () => ({ modelName: 'model' }) },
   eagle: { library: { path: 'library' } },
   Bridge: {
@@ -34,6 +35,9 @@ const context = {
     capture: (kind, query) => ({ kind, query, library: 'library', config: {} }),
     normalize: (p) => p,
     resolve: async () => ({ paths: null }),
+    writeTime() {},
+    options: vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../js/searchRecipe.js'), 'utf8')
+      + '\nSearchRecipe.options;'),
   },
   ArchiveStore: { sceneKey: (m) => m.start_frame },
   Api: {

@@ -137,11 +137,11 @@ const Bridge = (() => {
   async function collectLibraryVideos(force = false) {
     const library = normalizePath(eagle.library.path);
     if (!force && videoCache?.library === library && Date.now() - videoCache.time < 10000) return videoCache.items;
-    if (videoRequest?.library === library) return videoRequest.promise;
+    if (!force && videoRequest?.library === library) return videoRequest.promise;
     const promise = (async () => {
-      const items = (await eagle.item.getAll()).filter(isVideoItem);
+      const items = (await eagle.item.getAll()).filter((item) => !item.isDeleted && isVideoItem(item));
       if (normalizePath(eagle.library.path) !== library) throw new Error('素材库已切换，请重新操作');
-      videoCache = { library, time: Date.now(), items };
+      if (videoRequest?.promise === promise) videoCache = { library, time: Date.now(), items };
       return items;
     })();
     videoRequest = { library, promise };
@@ -259,8 +259,8 @@ const Bridge = (() => {
   }
 
   /* 搜索前刷新一次映射，供结果 video_path 反查 Eagle item */
-  async function refreshPathMap(force = false) {
-    const videos = await collectLibraryVideos(force);
+  async function refreshPathMap(force = false, snapshot = null) {
+    const videos = snapshot || await collectLibraryVideos(force);
     pathMap = new Map(videos.map((it) => [normalizePath(it.filePath), it]));
     return pathMap;
   }
