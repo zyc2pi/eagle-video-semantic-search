@@ -63,6 +63,8 @@
 
 本仓库只包含 Eagle 插件源码、测试和开发记录；后端 Python 环境、模型权重和索引需单独准备，安装方式见后端仓库说明。
 
+已有原作者完整运行环境的用户可以复用其中的 Python、模型和 FFmpeg，并按配套后端的依赖说明核对版本。Eagle 专用接口由上面链接的配套后端提供，安装时请使用与插件匹配的后端代码。
+
 ## 安装（开发者模式）
 
 1. 克隆本仓库，或在 GitHub 点击 Code → Download ZIP 并解压：
@@ -74,6 +76,36 @@
 2. Eagle 中按 `P` 打开插件面板 → 开发者选项 → 导入本地项目 → 选择包含 `manifest.json` 的本文件夹。
 3. 在插件设置中填写本机后端项目路径，保存后连接服务；无需安装前端依赖或构建。
 4. 如需分发 `.eagleplugin`，请在干净的源码副本中使用 Pack Plugin；使用过的目录可能包含密钥配置、素材路径和仓库数据，不应直接打包分发。
+
+## AI 辅助安装
+
+可以把下面这段完整复制给具备本机文件与终端操作能力的 AI 助手。后端运行环境或模型需要人工下载时，让它提供明确链接和操作步骤。
+
+```text
+请帮我在 Windows 上安装 Eagle 视频语义搜索插件。
+
+插件仓库
+https://github.com/zyc2pi/eagle-video-semantic-search
+
+配套后端
+https://github.com/zyc2pi/Auto-scenes-extraction
+
+原项目
+https://github.com/TuanAMV/Auto-scenes-extraction
+
+先阅读两个配套仓库的 README、AGENTS.md、AGENT.md 和安装说明。
+询问我的安装目录，检查 Eagle、显卡、Python、模型及 FFmpeg。
+优先复用已有 Auto-scenes-extraction 的运行环境和模型，
+部署配套后端代码，并按其 requirements.txt 核对依赖和 CUDA 兼容性。
+基础搜索先准备 qihoo360-fg-clip2-base 和 FFmpeg。
+保留已有个人配置、素材、索引和主题。
+
+指导我在 Eagle 中导入含 manifest.json 的插件目录，
+设置实际后端路径，确认 health 的 success=true、protocol_version=2、
+capabilities.library_prune=true，且模型已加载、插件连接正常。
+完成后告诉我如何执行首次索引。
+如果需要我手动下载运行包、登录下载页面或操作 Eagle，请说明具体步骤。
+```
 
 ## 使用
 

@@ -1,6 +1,39 @@
-/* 结果区布局：预览方式切换、右侧素材详情调宽、顶部预览调高；偏好保存在 localStorage。 */
+/* 窗口尺寸与结果区布局：预览方式、素材详情宽度及顶部预览高度；偏好保存在 localStorage。 */
 const LayoutPanels = (() => {
   const { $ } = Dom;
+
+  async function initWindowSize() {
+    if (typeof eagle.window?.setSize !== 'function') return;
+    const preferenceKey = 'eagle-semantic-window-size';
+    let restoring = true;
+    let timer;
+    let hasSavedSize = false;
+    const save = () => {
+      if (restoring || window.outerWidth < 800 || window.outerHeight < 560) return;
+      try {
+        localStorage.setItem(preferenceKey, JSON.stringify({ width: window.outerWidth, height: window.outerHeight }));
+      } catch { /* 本次窗口尺寸仍保留，存储不可用时不阻断界面。 */ }
+    };
+    window.addEventListener('resize', () => {
+      if (restoring) return;
+      clearTimeout(timer);
+      timer = setTimeout(save, 200);
+    });
+    window.addEventListener('beforeunload', save);
+    document.addEventListener('visibilitychange', () => { if (document.hidden) save(); });
+    try {
+      const saved = JSON.parse(localStorage.getItem(preferenceKey) || 'null');
+      hasSavedSize = Number.isSafeInteger(saved?.width) && saved.width >= 800
+        && Number.isSafeInteger(saved?.height) && saved.height >= 560;
+      if (hasSavedSize) {
+        const width = Math.max(800, Math.min(saved.width, screen.availWidth || saved.width));
+        const height = Math.max(560, Math.min(saved.height, screen.availHeight || saved.height));
+        await eagle.window.setSize(width, height);
+      }
+    } catch (error) { console.warn('窗口尺寸恢复失败', error.message); }
+    finally { restoring = false; }
+    if (!hasSavedSize) save();
+  }
 
   function initPreviewLayout() {
     const workspace = document.querySelector('.result-workspace');
@@ -167,6 +200,7 @@ const LayoutPanels = (() => {
   }
 
   function init() {
+    initWindowSize();
     initPreviewLayout();
     initInspectorResize();
     initPreviewResize();
