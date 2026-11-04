@@ -26,12 +26,14 @@ Eagle（素材管理软件）的窗口插件，提供视频的语义检索：中
 | `js/api.js` | 5006 `/api/v1/*` 客户端封装；搜索请求里聚合设置页的全部参数 |
 | `js/eagleBridge.js` | Eagle API 桥：filePath↔item 映射、文件夹树/递归、定位（folder.open+select）、找/建文件夹 |
 | `js/indexer.js` | 建索引：收集视频 → POST /index → 轮询 /index/status（服务端队列）|
-| `js/search.js` | 结果渲染核心：分批渲染+缩略图限流(6并发)、分组/排序/过滤视图、悬停自动播放、右侧预览及主题/标签/评分/基本信息详情、勾选 |
+| `js/search.js` | 结果渲染核心：分批渲染+缩略图限流(6并发)、分组/排序/过滤视图、右侧预览面板及主题/标签/评分/基本信息详情、勾选；媒体播放交给 PreviewPlayer |
+| `js/previewPlayer.js` | `PreviewPlayer.create(el, …)`：悬停小窗播放、预览面板原视频接管/定位/停滞恢复/逐帧与截图代次；与 Search 共用同一个 `el`，接管时替换 `el.previewVideo`；须先于 search.js 加载 |
 | `js/searchRecipe.js` | 搜索参数白名单快照、导入日期边界及文件夹交集、视觉查询来源持久化和重放 |
 | `js/archiveStore.js` | 按库隔离的搜索仓库 JSON、原子替换、旧 saves 迁移、片段新增比较与分类持久化 |
 | `js/coverFrame.js` | 原视频逐帧定位、源帧号换算、封面 JPEG 截图 |
 | `js/frameSearch.js` | 固定当前画面进行视觉单帧查询、取消及查询画面展示；历史文字主题仍由 Search 重放 |
 | `js/mediaDrag.js` | 缩略图原生拖出完整原视频、勾选去重、库与文件有效性校验 |
+| `js/timelineExport.js` | 片段导出 FCP7 XML（xmeml v4）：原视频 pathurl、按片段帧率的入出点、可选音频轨，供 PR / DaVinci 导入 |
 | `js/manualAdd.js` | 从搜索或主题收录选中片段；目标参考、逐片段/批量人工分数及键盘调整 |
 | `js/topicUndo.js` | 按库保存本会话收录/评分撤销栈；容量限制、连续逆撤销与版本祖先校验 |
 | `js/topicRelations.js` | 按库读取主题片段归属、缓存版本快照、比较共有/独有片段及本地预览 |
@@ -79,6 +81,10 @@ Eagle（素材管理软件）的窗口插件，提供视频的语义检索：中
 - 迭代记录与后续方向见 ROADMAP.md
 - 索引按 job_id 串行轮询，5 秒请求超时、2～30 秒退避；掉线是未知状态，禁止重复提交。提交超时保留原请求幂等键；重载后恢复本插件活动任务。设置页任务历史可定向取消/失败重试。5006 health protocol_version=2，safe_index_import/export=false，在线直接压缩/覆盖已移除；后端离线维护工具持有独占锁并保存回滚记录。
 - 全库索引要求 health.capabilities.library_prune：后端按完整 Eagle 路径清单清理当前库所有模型/维度的 v2 索引与处理结果清单，重置共用可重建预览图/临时预览片段，保留其他 temp 工作产物。成功终态由插件重新读取完整素材清单，按 ID（旧数据回退路径）清理有效主题、人工排除、继续搜索候选及内存会话，更新素材移动路径与主题 revision。保留人工评分/审阅、独立截图、回收站、所有历史备份、跨库导入快照和只读旧索引；清理写入专门跳过历史淘汰。视频查询来源缺失保存 sourceMissing，重新选择来源时解除。主题写入失败单独提示，不能用局部失败项重试的路径子集执行 prune；已完成全库清理的失败任务重试成功后继续清理主题。Lance 为逻辑删除，历史物理数据由离线维护处理。
+- 全库索引（all/rebuild）提交前经 `Indexer.start(mode, handlers, { beforeSubmit })` 交由 plugin.js 核对：`Warehouse.previewPrune` → `ArchiveStore.previewMissingVideos` 只读统计将被清理的活动片段；每库上次确认的视频数存于 localStorage `eagle-semantic-library-video-counts`。清单为 0 或（上次≥20 且）少于上次 70% 视为骤减；按钮触发在骤减、有主题片段将被清理时确认，Ctrl+I 一律确认，自动索引骤减直接放弃。完成后 `pruneMissingVideos(library, { expectedCount })` 再次读到骤减清单时跳过主题清理并报错，后端索引清理以提交时确认的清单为准。
+- 时间线导出只写 FCP7 XML：`end_frame` 为包含帧，xmeml `out` 为不包含帧（end+1）；入出点优先 original_* 原始帧，片段帧率取 match.fps（缺省 25），序列帧率取第一个片段，NTSC 以整数 timebase+ntsc 表示。路径按段 encodeURIComponent，盘符保留。
+- 「检查新素材」用 `Search.probe(recipe, paths)`：按主题 recipe 解析范围后只与主题 updatedAt 之后 importedAt 的视频取交集，跳过 refinement 与无 recipe 主题；结果按 sceneLookup 排除已有及已移除片段，只展示，不写入。应用仍走「更新结果」的变化预览。
+- 快捷键在弹窗打开时只响应 Esc；仓库为 Ctrl+B（Ctrl+W 可能被宿主当作关闭窗口）。初始化时窗口可见会主动 showPlugin({fromInit:true})，只跳过其后 1.5 秒内的那一次宿主 onPluginShow；之后关闭重开照常重置范围。窗口尺寸记录 `{width,height,maximized}`，最大化时保留此前普通尺寸，宿主窗口接口 3 秒无响应即放弃恢复。
 - 配置验证、临时文件替换完成后才更新内存；失败抛错并通知 UI。损坏原件只能在明确恢复操作下另存备份后替换，不记录密钥值。配置备份同样必须排除打包与 Git。
 - 外观设置 `theme` 为 `auto`（默认跟随 Eagle）/`dark`（夜间）/`light`（浅色），配置成功保存后立即应用；宿主主题事件仅在 auto 模式决定配色。统一通过根元素 data-theme 与 CSS 变量切换，并同步原生控件 color-scheme；不重建结果或播放器。
 - 仓库 schema v3：路径哈希清单与 `<hash>-assets/` 不可变资源，旧 v1/v2 兼容，正常保存前备份；列表用 summary，打开主题异步 hydrate。修改展示 view 不调用搜索。回收站与备份默认 30 天/10 份，未知文件保留；写锁及 fingerprint/revision 防止覆盖并发修改。恢复、复制和导出必须保留资源引用完整性。

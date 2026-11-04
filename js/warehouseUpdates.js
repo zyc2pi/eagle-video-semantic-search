@@ -135,6 +135,90 @@ const WarehouseUpdates = (() => {
       dialog.append(error, close); document.body.appendChild(dialog); dialog.showModal();
     }
 
+    /* 检查新素材：只对主题上次更新后加入 Eagle 的视频按原条件重放，统计可能的新命中；不写入任何主题。 */
+    async function checkNewMaterials() {
+      checkIdle();
+      if (!hooks.canSearch()) throw new Error('搜索服务未就绪或正在建索引，请稍后再检查');
+      const library = eagle.library.path;
+      const archive = store();
+      const snapshot = archive.list();
+      const owned = snapshot.entries.filter((entry) => !entry.sourceLibrary
+        || SearchRecipe.normalize(entry.sourceLibrary) === SearchRecipe.normalize(library));
+      const dialog = node('dialog', 'topic-changes-dialog');
+      const status = node('p', 'hint', '正在读取素材清单…'); status.setAttribute('aria-live', 'polite');
+      const list = node('div', 'topic-changes-lists');
+      const actions = node('div', 'dialog-actions');
+      const close = node('button', '', '停止'); close.type = 'button';
+      actions.append(close);
+      dialog.append(node('h2', '', '检查新素材'),
+        node('p', 'hint', '只在各主题上次更新后加入 Eagle 的视频中按原条件搜索，结果仅供参考，不会改写主题。'),
+        status, list, actions);
+      document.body.appendChild(dialog);
+      let running = true;
+      let stopped = false;
+      close.addEventListener('click', () => {
+        if (running) { stopped = true; Search.cancel(); close.disabled = true; status.textContent = '正在停止…'; }
+        else dialog.close();
+      });
+      dialog.addEventListener('cancel', (event) => { if (running) { event.preventDefault(); close.click(); } });
+      dialog.addEventListener('close', () => dialog.remove(), { once: true });
+      dialog.showModal();
+      const found = [];
+      const skipped = [];
+      let searched = 0;
+      try {
+        const videos = await Bridge.collectLibraryVideos(true);
+        await Bridge.refreshPathMap(false, videos);
+        for (const [index, entry] of owned.entries()) {
+          if (stopped || library !== eagle.library.path) break;
+          status.textContent = `正在检查 ${index + 1}/${owned.length}：${entry.name}`;
+          const since = Date.parse(entry.updatedAt);
+          if (!Number.isFinite(since)) { skipped.push(`${entry.name}（没有更新时间）`); continue; }
+          const fresh = new Set(videos.filter((item) => Number(item.importedAt) > since)
+            .map((item) => SearchRecipe.normalize(item.filePath)));
+          if (!fresh.size) continue;
+          await archive.hydrateEntry(entry);
+          const recipe = entry.recipe;
+          if (!recipe) { skipped.push(`${entry.name}（旧主题缺少搜索条件）`); continue; }
+          if (recipe.refinement) { skipped.push(`${entry.name}（固定候选的继续搜索不扩展新素材）`); continue; }
+          let result;
+          try { result = await Search.probe(recipe, fresh); }
+          catch (error) {
+            if (error.name === 'AbortError' || stopped) break;
+            skipped.push(`${entry.name}（${error.message}）`); continue;
+          }
+          searched += 1;
+          const known = ArchiveStore.sceneLookup([...(entry.matches || []),
+            ...(entry.removedMatches || []).map((record) => record.match)]);
+          const hits = result.matches.filter((match) => known(match) === undefined);
+          if (!hits.length) continue;
+          found.push({ entry, hits: hits.length, videos: new Set(hits.map((match) => match.eagleItemId)).size });
+          const row = node('div', 'archive-row');
+          const open = node('button', 'primary', '预览更新'); open.type = 'button';
+          open.addEventListener('click', () => {
+            if (running) return;
+            dialog.close();
+            hooks.attempt(() => refreshEntry(entry));
+          });
+          row.append(node('span', 'archive-name', `「${entry.name}」：${hits.length} 个新片段（${found.at(-1).videos} 个新素材）`), open);
+          list.appendChild(row);
+        }
+      } catch (error) {
+        skipped.push(error.message);
+      } finally {
+        running = false;
+        close.disabled = false; close.textContent = '关闭';
+      }
+      status.textContent = `${stopped ? '已停止。' : '检查完成。'}共 ${owned.length} 个主题，搜索 ${searched} 个有新素材的主题，${found.length} 个可能有新命中。`
+        + (found.length ? '点击「预览更新」先查看变化再决定是否应用。' : '');
+      if (skipped.length) {
+        const details = node('details');
+        details.append(node('summary', '', `未检查 ${skipped.length} 个`), ...skipped.map((text) => node('p', 'hint', text)));
+        list.appendChild(details);
+      }
+      return found;
+    }
+
     async function refreshEntry(entry, recipe, savedView = entry.view) {
       checkIdle();
       const navigation = beginNavigation();
@@ -258,7 +342,7 @@ const WarehouseUpdates = (() => {
       dialog.showModal(); name.focus(); name.select();
     }
 
-    return { refreshEntry, topicHistory, copyTopic, isBusy: () => updating || copying,
+    return { refreshEntry, checkNewMaterials, topicHistory, copyTopic, isBusy: () => updating || copying,
       isUpdating: () => updating };
   }
 

@@ -150,7 +150,7 @@ const Indexer = (() => {
     } finally { submitting = false; }
   }
 
-  async function start(mode, handlers = {}) {
+  async function start(mode, handlers = {}, { beforeSubmit } = {}) {
     if (submitting) return { started: false, message: '任务正在提交，请稍候' };
     if (running) return { started: false, message: '已有索引任务正在监视，断线时也请勿重复提交' };
     submitting = true;
@@ -171,6 +171,14 @@ const Indexer = (() => {
         if (!videos || (!videos.length && !pruneMissing)) return { started: false, message: '没有找到视频素材' };
         const currentLibrary = await Bridge.resolveLibraryIdentity();
         if (currentLibrary.id !== library.id || currentLibrary.path !== library.path) throw new Error('素材库已切换，请重新操作');
+        // 全库模式会清理失效索引和主题片段：提交前交由调用方核对清单并确认。
+        if (pruneMissing && beforeSubmit && !(await beforeSubmit(videos, library))) {
+          return { started: false, cancelled: true, message: '已取消全库索引' };
+        }
+        if (pruneMissing && beforeSubmit) {
+          const confirmedLibrary = await Bridge.resolveLibraryIdentity();
+          if (confirmedLibrary.id !== library.id || confirmedLibrary.path !== library.path) throw new Error('素材库已切换，请重新操作');
+        }
         submission = {
           paths: videos.map((item) => item.filePath), name: library.index_name,
           model: Config.get().modelName, rebuild: mode === 'rebuild', pruneMissing,

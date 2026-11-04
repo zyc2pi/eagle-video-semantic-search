@@ -142,6 +142,7 @@
         <input id="warehouse-query" type="search" placeholder="查找主题名称…" aria-label="查找主题名称">
         <select id="warehouse-category" aria-label="按分类筛选"></select>
         <button id="warehouse-favorites" type="button" aria-pressed="false" title="只显示已星标的常用主题">★ 常用</button>
+        <button id="warehouse-check-new" type="button" title="在各主题上次更新后加入的视频中按原条件搜索，提示可能的新命中，不写入主题">检查新素材</button>
         <div class="warehouse-view-toggle" role="group" aria-label="视图方式">
           <button id="warehouse-view-card" type="button" class="active" title="卡片视图" aria-label="卡片视图"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="2" width="4" height="4" rx=".6"/><rect x="10" y="2" width="4" height="4" rx=".6"/><rect x="2" y="10" width="4" height="4" rx=".6"/><rect x="10" y="10" width="4" height="4" rx=".6"/></svg></button>
           <button id="warehouse-view-list" type="button" title="列表视图" aria-label="列表视图"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3h8M6 8h8M6 13h8"/><path d="M2 3h.5M2 8h.5M2 13h.5"/></svg></button>
@@ -174,6 +175,7 @@
           </select>
         </label>
         <label class="scope-toggle"><input id="view-grouped" type="checkbox"> 按视频分组</label>
+        <button id="btn-export-timeline-all" type="button" class="mini-btn" title="按当前筛选和排序导出全部片段，供 Premiere / DaVinci 导入">导出全部为时间线</button>
       </div>
     </details>
     <button id="btn-save-results" class="mini-btn" title="保存当前筛选后的全部结果及搜索条件">保存到仓库</button>
@@ -191,6 +193,7 @@
         <button id="btn-clear-selection" class="mini-btn" disabled>取消全部选择</button>
         <button id="btn-selection-tag" class="mini-btn" disabled>添加标签</button>
         <button id="btn-selection-folder" class="mini-btn" disabled>添加到新文件夹</button>
+        <button id="btn-selection-timeline" type="button" class="mini-btn" disabled title="写成 FCP7 XML，记录原视频入出点，不生成新视频">导出为时间线（PR / 达芬奇）</button>
         <button id="btn-selection-exclude-folder" type="button" class="mini-btn" disabled title="仅限一个素材；本次打开内共用，不修改 Eagle 文件夹或主题">排除此素材所在的最小子文件夹</button>
       </div>
     </details>
@@ -631,8 +634,10 @@
   <script src="js/topicUndo.js"></script>
   <script src="js/coverFrame.js"></script>
   <script src="js/indexer.js"></script>
+  <script src="js/previewPlayer.js"></script>
   <script src="js/search.js"></script>
   <script src="js/mediaDrag.js"></script>
+  <script src="js/timelineExport.js"></script>
   <script src="js/frameSearch.js"></script>
   <script src="js/folderTree.js"></script>
   <script src="js/manualAdd.js"></script>

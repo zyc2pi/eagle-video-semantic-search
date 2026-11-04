@@ -41,6 +41,8 @@ const Shortcuts = (() => {
     if (isInput && !['escape', 'enter'].includes(event.key.toLowerCase())) {
       return;
     }
+    // 弹窗打开时只保留 Esc，避免在弹窗背后启动索引或切换页面。
+    if (document.querySelector('dialog[open]') && event.key.toLowerCase() !== 'escape') return;
 
     const parsed = parseEvent(event);
     const entry = handlers.get(parsed.normalized);

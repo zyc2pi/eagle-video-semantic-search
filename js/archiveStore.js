@@ -573,6 +573,25 @@ const ArchiveStore = (() => {
       return { topics, matches, data };
     }
 
+    // 只读预演：统计全库清理会移除的活动片段，不改写内存数据或磁盘。
+    async function previewMissingVideos(inventory) {
+      const data = read();
+      const missing = (match) => !(match?.eagleItemId
+        ? inventory.byId.get(match.eagleItemId) : inventory.byPath.get(normalize(match?.video_path)));
+      const affected = [];
+      let matches = 0;
+      for (const entry of data.entries) {
+        if (entry.sourceLibrary && normalize(entry.sourceLibrary) !== normalize(library)) continue;
+        await hydrateEntry(entry, ['matches']);
+        const count = (entry.matches || []).filter(missing).length;
+        if (!count) continue;
+        affected.push({ id: entry.id, name: entry.name, count, total: entry.matches.length });
+        matches += count;
+      }
+      affected.sort((a, b) => b.count - a.count);
+      return { topics: affected.length, matches, affected };
+    }
+
     function resolveCategory(data, selection) {
       if (selection && typeof selection === 'object') {
         const name = typeof selection.name === 'string' ? selection.name.trim() : '';
@@ -1248,7 +1267,7 @@ const ArchiveStore = (() => {
     const exportBundleAsync = (options) => runBundleWorker('export', undefined, options);
     const importBundleAsync = (text, options) => runBundleWorker('import', text, options);
 
-    return { list, add, copyEntry, replace, remove, removeEntries, pruneMissingVideos, removeMatches, restoreMatches, addMatches, undoMatches, setReviewed, setFavorite, category, setCategory, setCategories, setCover, restore, backups, restoreBackup, entryHistory, readEntryBackup, restoreEntryBackup, exportBundle, importBundle, exportBundleAsync, importBundleAsync, setRetention, hydrateEntry, recoverLock };
+    return { list, add, copyEntry, replace, remove, removeEntries, pruneMissingVideos, previewMissingVideos, removeMatches, restoreMatches, addMatches, undoMatches, setReviewed, setFavorite, category, setCategory, setCategories, setCover, restore, backups, restoreBackup, entryHistory, readEntryBackup, restoreEntryBackup, exportBundle, importBundle, exportBundleAsync, importBundleAsync, setRetention, hydrateEntry, recoverLock };
   }
   return { open, sceneKey, sceneLookup, updatedEntry, entryChanges, categoryTree, reconcileVideoReferences };
 })();

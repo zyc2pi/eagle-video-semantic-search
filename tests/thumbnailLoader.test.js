@@ -13,7 +13,7 @@ function fixture(lazy = true, observerAvailable = true, network = false, limits 
     unobserve(target) { this.targets.delete(target); }
   }
   class Image {
-    constructor() { this.listeners = {}; }
+    constructor() { this.listeners = {}; this.style = {}; this.dataset = {}; }
     addEventListener(type, listener) { (this.listeners[type] ||= new Set()).add(listener); }
     removeEventListener(type, listener) { this.listeners[type]?.delete(listener); }
     set src(url) { this.url = url; starts.push(url); }
@@ -34,6 +34,7 @@ function fixture(lazy = true, observerAvailable = true, network = false, limits 
   if (observerAvailable) context.IntersectionObserver = Observer;
   vm.createContext(context);
   if (lazy) vm.runInContext(fs.readFileSync(path.join(__dirname, '../js/dom.js'), 'utf8'), context);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../js/previewPlayer.js'), 'utf8'), context);
   const source = fs.readFileSync(path.join(__dirname, '../js/search.js'), 'utf8')
     .replace('let maxEntries = 5000;', `let maxEntries = ${limits.entries || 5000};`)
     .replace('let maxBytes = 128 * 1024 * 1024;', `let maxBytes = ${limits.bytes || 128 * 1024 * 1024};`)

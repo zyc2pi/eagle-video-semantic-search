@@ -651,6 +651,7 @@ const Warehouse = (() => {
 
   function init(callbacks) {
     hooks = callbacks;
+    $('warehouse-check-new')?.addEventListener('click', () => attempt(updates.checkNewMaterials));
     WarehouseNavigation.init({
       attempt, toast: hooks.toast, snapshot: () => store().list(),
       active: () => ({ page: document.body.dataset.page, topicId: current?.id,
@@ -886,7 +887,17 @@ const Warehouse = (() => {
     document.addEventListener('search-completed', () => { detachTopic(false); showSearch(); });
   }
 
-  async function pruneMissingVideos(library) {
+  function inventoryFor(videos, pathMap) {
+    return { byId: new Map(videos.map((item) => [item.id, item])), byPath: pathMap };
+  }
+
+  async function previewPrune(library, videos) {
+    if (library !== eagle.library.path) throw new Error('素材库已切换，请重新操作');
+    const pathMap = new Map(videos.map((item) => [SearchRecipe.normalize(item.filePath), item]));
+    return store().previewMissingVideos(inventoryFor(videos, pathMap));
+  }
+
+  async function pruneMissingVideos(library, { expectedCount = 0 } = {}) {
     checkIdle();
     if (library !== eagle.library.path) throw new Error('素材库已切换，请回到原库后再次索引以清理主题');
     cleaning = true;
@@ -894,6 +905,10 @@ const Warehouse = (() => {
       const archive = store();
       const videos = await Bridge.collectLibraryVideos(true);
       if (library !== eagle.library.path) throw new Error('素材库已切换，主题清理未执行');
+      // 索引期间 Eagle 返回的清单异常缩减时（库仍在加载、同步中断等）不能据此删除主题片段。
+      if (expectedCount > 0 && (!videos.length || (expectedCount >= 20 && videos.length < expectedCount * 0.7))) {
+        throw new Error(`当前读到 ${videos.length} 个视频，明显少于提交时的 ${expectedCount} 个，已跳过主题清理；确认素材库完整后再次全库索引`);
+      }
       const pathMap = await Bridge.refreshPathMap(false, videos);
       const inventory = { byId: new Map(videos.map((item) => [item.id, item])), byPath: pathMap };
       const result = await archive.pruneMissingVideos(inventory, () => library === eagle.library.path);
@@ -925,5 +940,5 @@ const Warehouse = (() => {
     return { id: current.id, library: currentLibrary, generation: navigationGeneration };
   }
 
-  return { init, open, saveCurrent: editor.saveCurrent, pruneMissingVideos, getScopeContext, getCurrentName: () => current?.name || '' };
+  return { init, open, saveCurrent: editor.saveCurrent, pruneMissingVideos, previewPrune, getScopeContext, getCurrentName: () => current?.name || '' };
 })();

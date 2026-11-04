@@ -477,7 +477,7 @@ async function main() {
       await page.locator('#results .card').nth(2).click({ button: 'right' });
       assert.strictEqual(await page.evaluate(() => Search.getSelectedMatches().length), 6, '右键已选片段保留多选');
       assert.deepStrictEqual(await page.locator('.result-context-menu button:visible').allTextContents(),
-        ['添加到主题', '取消全部选择', '添加标签', '添加到新文件夹', '排除此素材所在的最小子文件夹']);
+        ['添加到主题', '取消全部选择', '添加标签', '添加到新文件夹', '导出为时间线（PR / 达芬奇）', '排除此素材所在的最小子文件夹']);
       await page.locator('#btn-selection-tag').click();
       assert((await page.locator('#organize-summary').textContent()).includes('1 个素材'), '菜单复用原有整理处理');
       await page.locator('#organize-cancel').click();
@@ -640,7 +640,8 @@ async function main() {
     await revealControl(page, '#search-time');
     await page.locator('#search-time').selectOption('6');
     await page.locator('#btn-search').click();
-    await page.waitForFunction(() => Search.getRawMatches().length === 72);
+    // 新搜索按全库请求（73 条），近半年筛选在本地显示 72 条。
+    await page.waitForFunction(() => Search.getRawMatches().length === 73 && Search.getAllMatches().length === 72);
     assert(await page.locator('#btn-selection-tag').isDisabled());
     await closeCompactMenus(page);
     await page.locator('#results .card').nth(0).click();
@@ -693,8 +694,11 @@ async function main() {
     await page.locator('#view-min-dur').dispatchEvent('change');
     assert.strictEqual(await page.evaluate(() => Search.getAllMatches().length), 70);
     assert((await page.locator('#results .card').count()) < 70, '测试必须覆盖未加载到 DOM 的结果');
+    // 阈值现为本地显示筛选，保存新主题时写入当前阈值（模拟分数均为 20）。
     await revealControl(page, '#threshold');
-    await page.locator('#threshold').fill('25');
+    await page.locator('#threshold').fill('15');
+    await page.locator('#threshold').dispatchEvent('input');
+    await closeCompactMenus(page);
     await page.locator('#btn-save-results').click();
     await page.locator('#entry-name').fill('城市夜景精选');
     await page.locator('#entry-submit').click();
@@ -707,7 +711,7 @@ async function main() {
     await page.locator('#organize-cancel').click();
     const saved = await page.evaluate(() => ArchiveStore.open(Config.pluginPath(), eagle.library.path).list().entries[0]);
     assert.strictEqual(saved.matches.length, 70);
-    assert.strictEqual(saved.recipe.config.threshold, 11, '搜索之后拖动滑条不能污染已完成搜索的条件');
+    assert.strictEqual(saved.recipe.config.threshold, 15, '保存新主题时记录当前显示阈值');
     assert.strictEqual(saved.recipe.time.mode, '6');
     await page.locator('#topic-back').click();
     await page.locator('#warehouse-categories').click();
@@ -1720,7 +1724,7 @@ async function runRemovalSmoke(page) {
   await closeCompactMenus(page);
   await page.locator('#results .card').nth(1).click({ button: 'right' });
   assert.deepStrictEqual(await page.locator('.result-context-menu button:visible').allTextContents(),
-    ['添加到主题', '从主题移除', '调整评分', '取消全部选择', '添加标签', '添加到新文件夹', '排除此素材所在的最小子文件夹']);
+    ['添加到主题', '从主题移除', '调整评分', '取消全部选择', '添加标签', '添加到新文件夹', '导出为时间线（PR / 达芬奇）', '排除此素材所在的最小子文件夹']);
   assert.strictEqual((await persisted()).matches.length, 5, '右键不移除片段');
   assert.strictEqual(await page.evaluate(() => Search.getSelectedMatches().length), 2, '主题右键保留多选');
   await closeCompactMenus(page);
@@ -1881,8 +1885,9 @@ async function runManualAddSmoke(page) {
   await page.locator('#view-sort').selectOption('sim');
   await revealControl(page, '#view-grouped');
   await page.locator('#view-grouped').uncheck();
-  await revealControl(page, '#btn-clear-selection');
-  await page.locator('#btn-clear-selection').click({ force: true });
+  // 无选中时「整理所选」入口隐藏，直接清空选择。
+  await page.evaluate(() => Search.clearSelection());
+  await closeCompactMenus(page);
   assert(await page.locator('#btn-topic-add').isDisabled());
   await closeCompactMenus(page);
   await page.locator('#results .pick').nth(0).check();
@@ -2250,14 +2255,13 @@ async function runWarehouseUsabilitySmoke(page) {
   await page.locator('#topic-back').click();
   await openTopic('交互测试另一主题');
   await page.locator('#topic-back').click();
+  // 打开主题直接恢复上次位置（TASK-20261030-001），提示仅提供回到顶部。
   await openTopic('交互测试主主题');
-  assert.strictEqual(await page.locator('#results').evaluate((results) => results.scrollTop), 0, '打开主题先从顶部显示');
-  assert(await page.locator('#browse-position-resume').isVisible(), '提供点击回到上次浏览位置的短暂提示');
-  assert(!(await page.locator('#browse-position-top').isVisible()));
-  await page.locator('#browse-position-resume').click();
   await page.waitForFunction((top) => Math.abs(document.getElementById('results').scrollTop - top) < 2, resultTop);
   assert.strictEqual(await page.locator('#results .card').count(), 179, '恢复分批加载后的结果位置');
   assert(await page.locator('#browse-position-notice').isVisible());
+  assert(await page.locator('#browse-position-top').isVisible(), '直接恢复后提示可回到顶部');
+  assert(!(await page.locator('#browse-position-resume').isVisible()));
   for (const width of [1100, 480]) {
     await page.setViewportSize({ width, height: 740 });
     assert(await page.locator('#topic-scene-filter').evaluate((element) => element.scrollWidth <= element.clientWidth));
@@ -2268,13 +2272,13 @@ async function runWarehouseUsabilitySmoke(page) {
   await page.setViewportSize({ width: 1100, height: 740 });
   await page.locator('#topic-back').click();
   await openTopic('交互测试主主题');
-  assert(await page.locator('#browse-position-resume').isVisible());
   await page.waitForFunction(() => document.getElementById('browse-position-notice').classList.contains('hidden'), null, { timeout: 6000 });
-  assert.strictEqual(await page.locator('#results').evaluate((results) => results.scrollTop), 0, '提示超时不自动跳回历史位置');
+  // 中间调整过窗口宽度，按锚点片段恢复后像素位置可能不同，只要求不跳回顶部。
+  assert(await page.locator('#results').evaluate((results) => results.scrollTop) > 0, '提示淡出后保持恢复的位置');
   await page.locator('#results').evaluate((results) => { results.scrollTop = 400; });
   await page.locator('#topic-back').click();
   await openTopic('交互测试主主题');
-  assert(await page.locator('#browse-position-resume').isVisible());
+  assert(await page.locator('#browse-position-notice').isVisible());
   await revealControl(page, '#view-sort');
   await page.locator('#view-sort').selectOption('name');
   assert(!(await page.locator('#browse-position-notice').isVisible()), '筛选排序变化清除旧位置入口');
@@ -2310,7 +2314,8 @@ async function runOrganizingFeaturesSmoke(page) {
   const query = await page.locator('#warehouse-query').inputValue();
   const fixture = await page.evaluate(() => {
     const archive = ArchiveStore.open(Config.pluginPath(), eagle.library.path);
-    const recipe = SearchRecipe.clone(Search.getRecipe());
+    // 前一段流程结束在空的新搜索页时没有当前 recipe，按同一捕获规则构造文本条件。
+    const recipe = SearchRecipe.clone(Search.getRecipe() || SearchRecipe.capture('text', '新整理功能', null, null, 11));
     recipe.query = '新整理功能'; recipe.time = { mode: 'all' }; recipe.scope = { mode: 'all' };
     const a = archive.add({ name: '功能验证 A', recipe, view: { minDur: 0, sortBy: 'sim', grouped: false }, matches: [] });
     const b = archive.add({ name: '功能验证 B', recipe, view: a.view, matches: [] });
@@ -2449,13 +2454,23 @@ async function runOrganizingFeaturesSmoke(page) {
   await page.locator('#topic-search').click();
 }
 
+// 后续分段的夹具依赖当前搜索结果；前一段结束在空的新搜索页时重新执行一次模拟搜索。
+async function ensureSearchResults(page) {
+  if (await page.evaluate(() => Search.getRawMatches().length > 0)) return;
+  if (await page.locator('#query').isHidden()) await page.locator('#topic-search').click();
+  await page.locator('#query').fill('星空');
+  await page.locator('#btn-search').click();
+  await page.waitForFunction(() => Search.getRawMatches().length > 0 && !Search.isBusy());
+}
+
 async function runContinuousCollectionSmoke(page) {
+  await ensureSearchResults(page);
   const query = await page.locator('#warehouse-query').inputValue();
   const fixture = await page.evaluate(() => {
     const archive = ArchiveStore.open(Config.pluginPath(), eagle.library.path);
     const matches = SearchRecipe.clone(Search.getRawMatches().slice(0, 5));
     matches.forEach((match, index) => { match.similarity = 30 - index; delete match.manualScore; delete match.reviewedAt; });
-    const recipe = Search.getRecipe();
+    const recipe = (Search.getRecipe() || SearchRecipe.capture('text', '验证条件', null, null, 11));
     const entry = archive.add({ name: '连续收录来源', recipe, matches,
       view: { sortBy: 'sim', grouped: false, minDur: 0 } });
     const target = archive.add({ name: '连续收录验证', recipe, view: entry.view, matches: [matches[0]] });
@@ -2520,7 +2535,7 @@ async function runTopicHistorySmoke(page) {
   const fixture = await page.evaluate(() => {
     const archive = ArchiveStore.open(Config.pluginPath(), eagle.library.path);
     const matches = Search.getRawMatches().slice(0, 3);
-    const entry = archive.add({ name: '历史恢复验证', recipe: Search.getRecipe(),
+    const entry = archive.add({ name: '历史恢复验证', recipe: (Search.getRecipe() || SearchRecipe.capture('text', '验证条件', null, null, 11)),
       matches, view: { minDur: 0, sortBy: 'sim', grouped: false } });
     const other = archive.add({ name: '历史隔离验证', recipe: null, matches: [], view: {} });
     const edited = archive.replace({ ...entry, matches: [], summary: { matches: 0, videos: 0 }, name: '历史恢复验证当前' }, entry.updatedAt);
@@ -2613,7 +2628,7 @@ async function runTopicCopySmoke(page) {
     const match = { ...Search.getRawMatches()[0], similarity: 23.75, reviewedAt: '2026-10-20T00:00:00Z',
       manualScore: { value: 23.75, mode: 'custom', scoredAt: '2026-10-20T00:00:00Z' } };
     const removed = { ...match, original_start_frame: 99900, original_end_frame: 99950 };
-    let source = archive.add({ name: '复制完整主题验证', recipe: Search.getRecipe(),
+    let source = archive.add({ name: '复制完整主题验证', recipe: (Search.getRecipe() || SearchRecipe.capture('text', '验证条件', null, null, 11)),
       matches: [match], view: { sortBy: 'sim', grouped: false, minDur: 0 } });
     source = archive.replace({ ...source, favorite: true, cover: { dataUrl: 'data:image/jpeg;base64,YQ==' },
       removedMatches: [{ key: ArchiveStore.sceneKey(removed), match: removed, removedAt: '2026-10-20T00:00:00Z' }] }, source.updatedAt);
@@ -2733,7 +2748,7 @@ async function runCompactLayoutSmoke(page) {
       lastModified: Date.UTC(2026, 9, 1), tags: ['原标签', ...Array.from({ length: 13 }, (_, i) => `标签 ${i}`)] });
     const archive = ArchiveStore.open(Config.pluginPath(), eagle.library.path);
     const entry = archive.add({ name: '右侧主题 <测试>', matches: Search.getRawMatches().slice(0, 1),
-      recipe: Search.getRecipe(), view: Search.getView() });
+      recipe: (Search.getRecipe() || SearchRecipe.capture('text', '验证条件', null, null, 11)), view: Search.getView() });
     TopicRelations.refresh();
     return { name: entry.name, files: JSON.stringify([...window.__files]), requests: window.__requests.length };
   });
@@ -2919,9 +2934,9 @@ async function runResultRelationsSmoke(page) {
       start_frame: 70000 + i * 100, end_frame: 70100 + i * 100, fps: 25, similarity: 30 - i,
       start: '00:01', end: '00:05', duration_seconds: 4 + i }));
     const view = { sortBy: 'sim', grouped: false, minDur: 0 };
-    const a = archive.add({ name: '组合比较 A', matches: matches.slice(0, 2), view, recipe: Search.getRecipe() });
-    const b = archive.add({ name: '组合比较 B', matches: [matches[0], matches[2]], view, recipe: Search.getRecipe() });
-    await Search.loadResults(matches, '组合比较来源', Search.getRecipe(), view);
+    const a = archive.add({ name: '组合比较 A', matches: matches.slice(0, 2), view, recipe: (Search.getRecipe() || SearchRecipe.capture('text', '验证条件', null, null, 11)) });
+    const b = archive.add({ name: '组合比较 B', matches: [matches[0], matches[2]], view, recipe: (Search.getRecipe() || SearchRecipe.capture('text', '验证条件', null, null, 11)) });
+    await Search.loadResults(matches, '组合比较来源', (Search.getRecipe() || SearchRecipe.capture('text', '验证条件', null, null, 11)), view);
     return { source, a: a.id, b: b.id, matches, files: JSON.stringify([...window.__files]), requests: window.__requests.length };
   });
   await revealControl(page, '#topic-scene-query');

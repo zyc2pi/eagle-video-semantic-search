@@ -45,6 +45,7 @@ async function main() {
     el.previewRetry = document.getElementById('retry'); el.btnLocate = document.getElementById('locate');
   } };
   return {\n    bindDom,`);
+    await page.addScriptTag({ path: path.join(root, 'js/previewPlayer.js') });
     await page.addScriptTag({ content: source });
     await page.evaluate((m) => {
       window.securityFixture.setup();
@@ -54,7 +55,8 @@ async function main() {
     assert.strictEqual(await page.locator('img[onerror]').count(), 0, '导入后重开的卡片和预览不可创建注入元素');
     assert.strictEqual(await page.evaluate(() => window.__securityMarker), undefined, '无害注入标记不可执行');
     assert((await page.locator('.sub').textContent()).includes(marker), '卡片时间显示为原样文本');
-    assert((await page.locator('#info').textContent()).includes(`（${marker}）`), '预览时长显示为原样文本');
+    // 预览信息现显示片段起止时间（不再带括号时长），仍须为原样文本。
+    assert((await page.locator('#info').textContent()).includes(marker), '预览时间显示为原样文本');
     console.log('imported warehouse card and preview browser security regression passed');
   } finally {
     if (browser) await browser.close();

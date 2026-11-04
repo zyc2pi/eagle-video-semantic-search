@@ -125,7 +125,7 @@
           try {
             const library = await Bridge.resolveLibraryIdentity();
             if (library.id !== status.library_id) throw new Error('素材库已切换，请回到原库再次索引以清理主题');
-            cleanup = await Warehouse.pruneMissingVideos(library.path);
+            cleanup = await Warehouse.pruneMissingVideos(library.path, { expectedCount: libraryVideoCount(library.id) });
           } catch (error) { cleanupError = error?.message || String(error); }
         }
         $('index-progress').classList.add('hidden');
@@ -166,13 +166,76 @@
     };
   }
 
-  async function startIndexing(mode) {
+  // 每库上次确认的全库视频数，用于识别 Eagle 清单异常缩减；存储不可用时降级为本次会话。
+  const LIBRARY_COUNT_KEY = 'eagle-semantic-library-video-counts';
+  const sessionLibraryCounts = {};
+  function libraryVideoCount(libraryId) {
+    try {
+      const value = JSON.parse(localStorage.getItem(LIBRARY_COUNT_KEY) || '{}')[libraryId];
+      if (Number.isSafeInteger(value)) return value;
+    } catch { /* 使用会话记录。 */ }
+    return sessionLibraryCounts[libraryId] || 0;
+  }
+  function rememberLibraryVideoCount(libraryId, count) {
+    sessionLibraryCounts[libraryId] = count;
+    try {
+      const counts = JSON.parse(localStorage.getItem(LIBRARY_COUNT_KEY) || '{}');
+      counts[libraryId] = count;
+      localStorage.setItem(LIBRARY_COUNT_KEY, JSON.stringify(counts));
+    } catch { /* 保留会话记录。 */ }
+  }
+  function abnormalShrink(previous, current) {
+    return previous > 0 && (current === 0 || (previous >= 20 && current < previous * 0.7));
+  }
+
+  // 全库索引提交前核对：清单骤减或会清理主题片段时需要确认；自动索引遇到骤减直接放弃。
+  async function confirmFullIndex(mode, trigger, videos, library) {
+    const previous = libraryVideoCount(library.id);
+    const shrink = abnormalShrink(previous, videos.length);
+    if (trigger === 'auto') {
+      if (shrink) {
+        console.warn(`[AutoIndex] 素材清单 ${videos.length} 个，少于上次的 ${previous} 个，已跳过自动全库同步`);
+        return false;
+      }
+      rememberLibraryVideoCount(library.id, videos.length);
+      return true;
+    }
+    toast('正在核对素材清单与主题中的失效片段…', false, 2500);
+    let preview = null;
+    let previewError = '';
+    try { preview = await Warehouse.previewPrune(library.path, videos); }
+    catch (error) { previewError = error?.message || String(error); }
+    if (!shrink && !previewError && !preview?.matches && trigger !== 'shortcut') {
+      rememberLibraryVideoCount(library.id, videos.length);
+      return true;
+    }
+    const body = [`将对当前库 ${videos.length} 个视频${mode === 'rebuild' ? '全量重建' : '同步'}索引${previous ? `（上次全库 ${previous} 个）` : ''}，并清理已不在库中的素材的索引记录。`];
+    if (shrink) body.push(h('p', { className: 'form-error', text: `素材数量比上次少了 ${previous - videos.length} 个。如果 Eagle 仍在加载或同步，请取消并稍后再试，否则对应索引和主题片段会被清理。` }));
+    if (previewError) body.push(h('p', { className: 'form-error', text: `无法预先统计主题清理：${previewError}` }));
+    else if (preview.matches) {
+      body.push(`索引完成后，${preview.topics} 个主题将移除共 ${preview.matches} 个已删除素材的片段（主题可从「备份 / 回收站」恢复）：`);
+      const list = h('ul', { className: 'confirm-list' }, preview.affected.slice(0, 8)
+        .map((topic) => h('li', { text: `${topic.name}：${topic.count}/${topic.total} 个片段` })));
+      if (preview.affected.length > 8) list.append(h('li', { text: `…另有 ${preview.affected.length - 8} 个主题` }));
+      body.push(list);
+    } else body.push('主题中没有需要清理的片段。');
+    const confirmed = await Dom.confirm({ title: mode === 'rebuild' ? '确认全量重建索引' : '确认索引整个库', body,
+      confirmText: shrink ? '仍然继续' : '开始索引', danger: shrink || !!preview?.matches });
+    if (confirmed) rememberLibraryVideoCount(library.id, videos.length);
+    return confirmed;
+  }
+
+  async function startIndexing(mode, { trigger = 'button' } = {}) {
     if (Search.isBusy()) { toast('搜索进行中，请稍候再建索引'); return; }
     closeIndexModeMenu();
     await ensureIndexOutcomeBaseline();
-    const result = await Indexer.start(mode, indexHandlers());
+    const result = await Indexer.start(mode, indexHandlers(), {
+      beforeSubmit: (videos, library) => confirmFullIndex(mode, trigger, videos, library),
+    });
+    updateButtons();
     if (!result.started) {
-      toast(result.message, true);
+      if (!result.cancelled) toast(result.message, true);
+      else if (trigger === 'auto') console.warn('[AutoIndex]', result.message);
       return;
     }
     $('index-bar-fill').style.width = '0%';
@@ -645,7 +708,7 @@
         console.log(
           `[AutoIndex] 发现 ${missing} 个新视频、${stale} 个失效路径，自动同步索引`,
         );
-        await startIndexing('all');
+        await startIndexing('all', { trigger: 'auto' });
       }
     } catch (e) {
       console.warn('[AutoIndex] 检查失败', e);
@@ -900,6 +963,7 @@
     for (const id of ['btn-selection-tag', 'btn-selection-folder']) {
       $(id).disabled = organizing || Search.isBusy() || targets.ids.length === 0;
     }
+    $('btn-selection-timeline').disabled = Search.isBusy() || matches.length === 0;
     $('btn-selection-exclude-folder').disabled = organizing || excludingFolder || Search.isBusy()
       || targets.ids.length !== 1 || targets.missing > 0;
   }
@@ -1013,19 +1077,25 @@
   function initShortcuts() {
     // Ctrl+K: 聚焦搜索框
     Shortcuts.register('ctrl+k', () => {
-      $('query').focus();
-      $('query').select();
+      const focusQuery = (tries = 30) => {
+        const query = $('query');
+        if (query.offsetParent !== null) { query.focus(); query.select(); return; }
+        if (tries > 0) requestAnimationFrame(() => focusQuery(tries - 1));
+      };
+      // 主题页和仓库页隐藏搜索框，先回到新搜索（恢复原搜索会话）再聚焦。
+      if ($('query').offsetParent === null) $('topic-search').click();
+      focusQuery();
     }, { description: '聚焦搜索框' });
 
-    // Ctrl+I: 开始索引
+    // Ctrl+I: 开始索引（全库模式提交前一律确认）
     Shortcuts.register('ctrl+i', () => {
       if (!$('btn-index-primary').disabled) {
-        startIndexing(indexMode);
+        startIndexing(indexMode, { trigger: 'shortcut' });
       }
     }, { description: '开始索引' });
 
-    // Ctrl+W: 打开仓库
-    Shortcuts.register('ctrl+w', () => {
+    // Ctrl+B: 打开仓库。Ctrl+W 可能被宿主窗口当作关闭快捷键。
+    Shortcuts.register('ctrl+b', () => {
       Warehouse.open();
     }, { description: '打开仓库' });
 
@@ -1136,6 +1206,16 @@
     $('btn-selection-tag').addEventListener('click', () => openOrganize('tag'));
     $('btn-selection-folder').addEventListener('click', () => openOrganize('folder'));
     $('btn-selection-exclude-folder').addEventListener('click', excludeSelectedFolder);
+    const timelineName = () => Warehouse.getCurrentName() || Search.getLastQuery() || '语义搜索片段';
+    $('btn-selection-timeline').addEventListener('click', () => {
+      closeContextMenu();
+      selectionMenu.open = false;
+      TimelineExport.exportMatches(Search.getSelectedMatches() || [], timelineName());
+    });
+    $('btn-export-timeline-all').addEventListener('click', (event) => {
+      event.target.closest('details').open = false;
+      TimelineExport.exportMatches(Search.getAllMatches(), timelineName());
+    });
     $('organize-form').addEventListener('submit', submitOrganize);
     $('organize-cancel').addEventListener('click', () => $('organize-dialog').close());
     $('organize-dialog').addEventListener('cancel', (event) => { if (organizing) event.preventDefault(); });
@@ -1280,12 +1360,16 @@
       }
     }, 60000);
     pluginReady = true;
-    if (showPending || document.visibilityState === 'visible') showPlugin();
+    if (showPending || document.visibilityState === 'visible') showPlugin({ fromInit: true });
   });
 
-  function showPlugin() {
+  let initShowAt = 0;
+  function showPlugin({ fromInit = false } = {}) {
     if (!pluginReady) { showPending = true; return; }
     showPending = false;
+    // 初始化时窗口已可见会主动执行一次；只跳过紧随其后的那一次宿主 onPluginShow，之后的关闭重开照常重置。
+    if (!fromInit && initShowAt && Date.now() - initShowAt < 1500) { initShowAt = 0; return; }
+    initShowAt = fromInit ? Date.now() : 0;
     WarehouseNavigation.save();
     resetSearchScope();
     WarehouseNavigation.show();
@@ -1296,7 +1380,7 @@
     else if (!Indexer.isRunning()) refreshIndexHint();
   }
 
-  eagle.onPluginShow(showPlugin);
+  eagle.onPluginShow(() => showPlugin());
 
   eagle.onThemeChanged(() => applyTheme());
 

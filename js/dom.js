@@ -43,7 +43,25 @@ const Dom = (() => {
     return node;
   }
 
-  return { $, esc, toast, h };
+  /* 通用确认弹窗：body 为字符串或节点数组；确认返回 true，取消/Esc 返回 false。 */
+  function confirmDialog({ title, body = [], confirmText = '确认', danger = false } = {}) {
+    return new Promise((resolve) => {
+      let result = false;
+      const dialog = h('dialog', { className: 'warehouse-batch-dialog confirm-dialog' },
+        h('h3', { text: title }),
+        ...body.map((part) => (part instanceof Node ? part : h('p', { className: 'hint', text: part }))),
+        h('div', { className: 'dialog-actions' },
+          h('button', { type: 'button', text: '取消', onclick: () => dialog.close() }),
+          h('button', { type: 'button', className: danger ? 'primary danger' : 'primary', text: confirmText,
+            onclick: () => { result = true; dialog.close(); } })));
+      dialog.addEventListener('close', () => { dialog.remove(); resolve(result); });
+      document.body.appendChild(dialog);
+      dialog.showModal();
+      dialog.querySelector('.dialog-actions .primary').focus();
+    });
+  }
+
+  return { $, esc, toast, h, confirm: confirmDialog };
 })();
 
 /* 图片懒加载：进入视口后再交给 ThumbLoader 入队。 */

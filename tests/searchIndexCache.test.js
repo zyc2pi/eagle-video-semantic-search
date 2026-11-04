@@ -26,6 +26,7 @@ const context = {
 };
 vm.createContext(context);
 vm.runInContext(fs.readFileSync(path.join(__dirname, '../js/searchCache.js'), 'utf8'), context);
+vm.runInContext(fs.readFileSync(path.join(__dirname, '../js/previewPlayer.js'), 'utf8'), context);
 const source = fs.readFileSync(path.join(__dirname, '../js/search.js'), 'utf8')
   .replace('  return {\n    bindDom,', '  this.requestRecipe = requestRecipe;\n  return {\n    bindDom,');
 vm.runInContext(source + '\nthis.Search = Search;', context);

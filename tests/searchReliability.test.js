@@ -4,7 +4,7 @@ const vm = require('vm');
 const path = require('path');
 
 class Element {
-  constructor() { this.children = []; this.events = {}; this.dataset = {}; this.classList = { add() {}, remove() {}, toggle() {} }; }
+  constructor() { this.children = []; this.events = {}; this.dataset = {}; this.style = {}; this.classList = { add() {}, remove() {}, toggle() {} }; }
   appendChild(child) { this.children.push(child); return child; }
   addEventListener(name, fn) { this.events[name] = fn; }
   setAttribute() {}
@@ -14,7 +14,9 @@ class Element {
   remove() {}
   play() { this.playCount = (this.playCount || 0) + 1; return Promise.resolve(); }
 }
-const source = fs.readFileSync(path.join(__dirname, '..', 'js', 'search.js'), 'utf8');
+// 媒体播放已拆到 previewPlayer.js，需先于 search.js 在同一上下文加载。
+const source = fs.readFileSync(path.join(__dirname, '..', 'js', 'previewPlayer.js'), 'utf8')
+  + fs.readFileSync(path.join(__dirname, '..', 'js', 'search.js'), 'utf8');
 const deferred = [];
 const inputs = new Map(['threshold', 'threshold-val'].map((id) => [id, { value: '11', textContent: '11' }]));
 const context = {
@@ -59,7 +61,7 @@ const injection = `
       el.previewVideo = new Element(); el.previewInfo = new Element();
       el.previewStatus = new Element(); el.previewRetry = new Element();
       el.previewPanel = new Element(); el.btnLocate = new Element(); },
-    buildCard, buildGroup, computeDisplayList, openPreview, closePreview, startHoverPreview, stopHoverPreview, hover, el,
+    buildCard, buildGroup, computeDisplayList, openPreview, closePreview, startHoverPreview, stopHoverPreview, hover: player.hover, el,
     setResults(root) { el.results = root; },
     simulateRestore(total) {
       const previous = renderNextChunk;

@@ -8,30 +8,47 @@ const LayoutPanels = (() => {
     let restoring = true;
     let timer;
     let hasSavedSize = false;
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem(preferenceKey) || 'null'); } catch { /* 视为没有记录。 */ }
+    // 宿主接口未返回时不能一直停在恢复状态，否则之后的调窗都不再保存。
+    const withTimeout = (promise) => Promise.race([promise,
+      new Promise((resolve, reject) => setTimeout(() => reject(new Error('窗口接口超时')), 3000))]);
+    const isMaximized = async () => {
+      if (typeof eagle.window.isMaximized !== 'function') return false;
+      try { return !!(await withTimeout(Promise.resolve(eagle.window.isMaximized()))); } catch { return false; }
+    };
+    let maximized = false;
+    // 调窗后异步刷新最大化状态；卸载/隐藏时同步使用最近一次结果，避免页面关闭前来不及保存。
+    const refreshAndSave = async () => { maximized = await isMaximized(); save(); };
     const save = () => {
-      if (restoring || window.outerWidth < 800 || window.outerHeight < 560) return;
-      try {
-        localStorage.setItem(preferenceKey, JSON.stringify({ width: window.outerWidth, height: window.outerHeight }));
-      } catch { /* 本次窗口尺寸仍保留，存储不可用时不阻断界面。 */ }
+      if (restoring) return;
+      // 最大化时只记录状态，保留此前的普通窗口尺寸，取消最大化后仍回到原大小。
+      const normal = !maximized && window.outerWidth >= 800 && window.outerHeight >= 560
+        ? { width: window.outerWidth, height: window.outerHeight }
+        : (Number.isSafeInteger(saved?.width) ? { width: saved.width, height: saved.height } : null);
+      if (!normal && !maximized) return;
+      saved = { ...normal, maximized };
+      try { localStorage.setItem(preferenceKey, JSON.stringify(saved)); } catch { /* 本次窗口尺寸仍保留，存储不可用时不阻断界面。 */ }
     };
     window.addEventListener('resize', () => {
       if (restoring) return;
       clearTimeout(timer);
-      timer = setTimeout(save, 200);
+      timer = setTimeout(refreshAndSave, 200);
     });
     window.addEventListener('beforeunload', save);
     document.addEventListener('visibilitychange', () => { if (document.hidden) save(); });
     try {
-      const saved = JSON.parse(localStorage.getItem(preferenceKey) || 'null');
       hasSavedSize = Number.isSafeInteger(saved?.width) && saved.width >= 800
         && Number.isSafeInteger(saved?.height) && saved.height >= 560;
       if (hasSavedSize) {
         const width = Math.max(800, Math.min(saved.width, screen.availWidth || saved.width));
         const height = Math.max(560, Math.min(saved.height, screen.availHeight || saved.height));
-        await eagle.window.setSize(width, height);
+        await withTimeout(Promise.resolve(eagle.window.setSize(width, height)));
       }
+      if (saved?.maximized && typeof eagle.window.maximize === 'function') await withTimeout(Promise.resolve(eagle.window.maximize()));
     } catch (error) { console.warn('窗口尺寸恢复失败', error.message); }
     finally { restoring = false; }
+    maximized = await isMaximized();
     if (!hasSavedSize) save();
   }
 

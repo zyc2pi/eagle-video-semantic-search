@@ -5,7 +5,9 @@ const path = require('path');
 const root = path.join(__dirname, '..');
 const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
 const plugin = fs.readFileSync(path.join(root, 'js', 'plugin.js'), 'utf8');
-const search = fs.readFileSync(path.join(root, 'js', 'search.js'), 'utf8');
+// 结果渲染与媒体播放（previewPlayer.js）合并检查。
+const search = fs.readFileSync(path.join(root, 'js', 'search.js'), 'utf8')
+  + fs.readFileSync(path.join(root, 'js', 'previewPlayer.js'), 'utf8');
 const css = fs.readFileSync(path.join(root, 'css', 'style.css'), 'utf8');
 
 const navigation = fs.readFileSync(path.join(root, 'js', 'warehouseNavigation.js'), 'utf8');
