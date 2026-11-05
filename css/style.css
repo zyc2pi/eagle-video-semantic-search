@@ -990,12 +990,18 @@ dialog .dialog-actions:last-child {
 /* 4.6 批量操作类弹窗（仓库内动态创建） */
 .warehouse-batch-dialog, .topic-changes-dialog, #topic-removed-dialog, #manual-add-dialog, #topic-relations-dialog,
 .legacy-migration-dialog, .shortcuts-help-dialog, #index-jobs-dialog { padding: var(--dialog-pad); }
+/* 内边距在 dialog 自身时，sticky 的 bottom:0 从内边距内侧算起，会把吸底操作栏上推一个内边距压住末行；改为贴到外框底部。 */
+:is(.warehouse-batch-dialog, .topic-changes-dialog, #topic-removed-dialog, #manual-add-dialog, #topic-relations-dialog,
+.legacy-migration-dialog, .shortcuts-help-dialog, #index-jobs-dialog) > .dialog-actions:last-child { bottom: calc(-1 * var(--dialog-pad)); }
 .warehouse-batch-dialog { width: min(420px, calc(100vw - 32px)); }
 .warehouse-batch-dialog h3 { margin-bottom: var(--space-4); }
 .warehouse-batch-status { max-height: 220px; overflow-y: auto; overflow-wrap: anywhere; }
 .warehouse-batch-status p { margin: 0 0 var(--space-2); }
 .confirm-dialog { width: min(480px, calc(100vw - 32px)); }
 .ai-plan-dialog { width: min(560px, calc(100vw - 32px)); }
+.sequence-options { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-2) var(--space-3); margin-bottom: var(--space-3); }
+.sequence-options label { display: flex; align-items: center; gap: var(--space-2); color: var(--text-dim); }
+.sequence-options input { width: 80px; }
 .ai-plan-list { display: flex; flex-direction: column; gap: var(--space-2); margin-bottom: var(--space-3); max-height: 50vh; overflow: auto; }
 .ai-plan-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px var(--space-2); align-items: center; }
 .ai-plan-row input { grid-column: 1; }

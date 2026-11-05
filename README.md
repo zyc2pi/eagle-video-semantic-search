@@ -1,14 +1,61 @@
-# 视频语义搜索（Eagle 插件）
+<div align="center">
 
-感谢 [Auto-scenes-extraction](https://github.com/TuanAMV/Auto-scenes-extraction) 项目及其作者 [TuanAMV](https://github.com/TuanAMV) 的开源分享。
+# 🎬 视频语义搜索 · Eagle 插件
 
-用自然语言（中文/英文）在 Eagle 素材库中搜索视频画面，结果精确到**场景时间段**，并可一键在 Eagle 主窗口定位素材。
+**用一句话找到素材库里的那个镜头。**
+
+在 Eagle 中用中英文描述、参考图片或画面帧搜索视频，结果精确到场景时间段，<br>
+可直接预览、定位、整理成主题，或把原视频拖进剪辑软件。
+
+![Eagle 4.0+](https://img.shields.io/badge/Eagle-4.0%2B-1f6feb)
+![版本 1.1.0](https://img.shields.io/badge/version-1.1.0-2ea043)
+![本地运行](https://img.shields.io/badge/推理-本地运行-8250df)
+![FG-CLIP2](https://img.shields.io/badge/模型-FG--CLIP2%20%2F%20CLIP-orange)
+![MIT](https://img.shields.io/badge/license-MIT-blue)
+
+[功能](#-功能一览) · [界面](#-界面预览) · [安装](#安装开发者模式) · [AI 辅助安装](#ai-辅助安装) · [使用说明](#使用)
+
+</div>
+
+> 感谢 [Auto-scenes-extraction](https://github.com/TuanAMV/Auto-scenes-extraction) 项目及其作者 [TuanAMV](https://github.com/TuanAMV) 的开源分享。本插件的推理与索引由其本地服务扩展而来。
+
+![搜索结果与右侧素材详情](docs/images/screenshots/search-preview.png)
+
+<sub>截图使用自动生成的示例画面与虚构标题，只为展示界面；不包含真实素材。</sub>
+
+## ✨ 功能一览
+
+| | 能做什么 |
+| --- | --- |
+| 🔎 **语义搜索** | 输入「夜晚霓虹灯下的城市街道」这类中英文描述，按画面内容找镜头；支持 `-负向词`、粘贴图片以图搜视频、用预览中的当前帧找相似 |
+| 🎯 **精确到场景** | 结果是原视频中的起止时间段：悬停即播、逐帧查看、一键在 Eagle 定位、拖出完整原视频到 PR / AE / 达芬奇，或导出 FCP7 时间线 |
+| 🧲 **越搜越准** | 选几个满意的片段「找更像所选的」，再把不想要的标为「不要这类」逐轮收敛；或在结果中继续用新词搜索并调节权重 |
+| ⏱️ **时序搜索** | 输入 `推开门 → 走进房间`，找同一视频里先后出现的连续动作 |
+| 🗂️ **主题仓库** | 把搜索条件与片段保存为主题，多层分类、星标、人工评分、移除与撤销；更新前预览差异，后台自动发现新素材 |
+| 🧭 **组合筛选** | 阈值、文件夹范围、导入时间、标签、片段时长、运镜 / 景别一键筛选，全部在本地即时生效，无需重搜 |
+| 🔒 **本地优先** | 模型、索引与素材都在本机；可选 AI 查询改写（DeepSeek）可预览、可关闭 |
+
+## 🖼️ 界面预览
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/images/screenshots/warehouse.png" alt="主题仓库"><br><b>主题仓库</b>：左侧像文件夹一样按分类浏览，星标常用主题</td>
+    <td width="50%"><img src="docs/images/screenshots/filter.png" alt="组合筛选"><br><b>组合筛选</b>：运镜 / 景别标签一键筛选，与时间、时长、阈值取交集</td>
+  </tr>
+  <tr>
+    <td><img src="docs/images/screenshots/feedback-menu.png" alt="找更像所选的"><br><b>正负样本反馈</b>：多选片段后「找更像所选的」，复用已有索引向量</td>
+    <td><img src="docs/images/screenshots/sequence.png" alt="时序搜索"><br><b>时序搜索</b>：同一视频内按顺序出现的 2～4 个画面</td>
+  </tr>
+  <tr>
+    <td colspan="2"><img src="docs/images/screenshots/topic-light.png" alt="浅色主题下的主题结果"><br><b>浅色 / 夜间两套配色</b>：默认跟随 Eagle，也可在设置中固定</td>
+  </tr>
+</table>
+
+## 项目概览
 
 推理与索引由本地 Auto-scenes-extraction 服务提供（FG-CLIP2 / CLIP + Lance 向量索引），插件通过 `http://127.0.0.1:5006/api/v1/*` 调用。基础检索本地运行；可选 AI 查询增强会调用外部服务，关闭该选项即可不用云端增强。
 
 当前插件版本 **1.1.0**，配套后端使用 Eagle 协议 **2**；最近的修复与验证见 [UPDATE-20261007.md](UPDATE-20261007.md)。源码按 [MIT 许可证](LICENSE) 开源。
-
-## 项目概览
 
 面向视频剪辑与素材整理，把「记得某个画面，却找不到在哪段视频里」变成可检索的场景结果：
 

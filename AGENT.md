@@ -90,6 +90,7 @@ Eagle（素材管理软件）的窗口插件，提供视频的语义检索：中
 5. Eagle 无"文件夹视图内滚动到素材"API；`item.open()` 永远跳"全部"视图。定位=预选中+folder.open+延迟重选，已是能力上限
 6. **限高仓库网格的自动行会被压缩**：卡片有 overflow:hidden 时，三排以上会挤到约 140px 并裁掉文字和按钮。必须保留 `grid-auto-rows: max-content`；布局测试至少覆盖九张卡片。默认封面抽帧复用 Search 的缩略图队列，不能绕过 6 并发限制。
 7. **smoke 夹具不要写死数量**：搜索返回数由夹具 stub 记录在 `window.__lastSearchMatches`，期望值按夹具素材导入时间推导；夹具内关闭后台「自动检查新素材」，否则 20 秒后的探测请求会打乱请求计数断言。
+8. **内边距写在 dialog 自身时，吸底 `.dialog-actions` 必须 `bottom: calc(-1 * var(--dialog-pad))`**：Chromium 的 sticky 从滚动容器内边距内侧计算 bottom，配合负外边距会把操作栏上推一个内边距压住末行；内边距在内层表单（`.settings-form`）的弹窗不受影响。
 
 ## 验证
 

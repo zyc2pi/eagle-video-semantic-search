@@ -91,11 +91,12 @@ const ExampleSearch = (() => {
       h('h3', { text: '时序搜索' }),
       h('p', { className: 'hint', text: '在同一视频内按顺序查找：后一步的镜头在前一步镜头之后开始，且与前一步结尾的间隔不超过设定秒数。每一步都按当前阈值过滤。也可以直接在搜索框输入「开门 → 走进房间」。' }),
       steps,
-      h('button', { type: 'button', text: '＋ 添加步骤', onclick: () => {
-        if (steps.children.length >= 4) { error.textContent = '最多 4 个步骤'; return; }
-        addStep().focus();
-      } }),
-      h('label', {}, '相邻步骤最大间隔（秒） ', gap),
+      h('div', { className: 'sequence-options' },
+        h('button', { type: 'button', text: '＋ 添加步骤', onclick: () => {
+          if (steps.children.length >= 4) { error.textContent = '最多 4 个步骤'; return; }
+          addStep().focus();
+        } }),
+        h('label', {}, '相邻步骤最大间隔（秒）', gap)),
       error,
       h('div', { className: 'dialog-actions' },
         h('button', { type: 'button', text: '取消', onclick: () => dialog.close() }),
