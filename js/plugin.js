@@ -8,6 +8,7 @@
   let indexMode = 'all';
   let refineSource = null;
   let refineContextGeneration = 0;
+  let autoCheckScheduled = false;
   const INDEX_MODES = {
     all: '索引整个库',
     folder: '索引选中文件夹',
@@ -41,6 +42,10 @@
     if (serviceOnline && !wasOnline) {
       Search.retryThumbnails();
       refreshIndexHint();
+      if (!autoCheckScheduled) {
+        autoCheckScheduled = true;
+        setTimeout(() => { if (!Indexer.isRunning()) Warehouse.autoCheckNewMaterials(); }, 20000);
+      }
       Indexer.recover(indexHandlers()).then((job) => {
         if (job) {
           $('index-progress').classList.remove('hidden');
@@ -60,6 +65,7 @@
   function updateButtons() {
     const indexing = Indexer.isRunning() || Search.isBusy() || (typeof FrameSearch !== 'undefined' && FrameSearch.isBusy());
     $('btn-search').disabled = !serviceOnline || indexing;
+    $('btn-sequence-search').disabled = !serviceOnline || indexing;
     $('btn-refine-results').disabled = !serviceOnline || indexing || !Search.hasResults();
     $('result-refine-weight').disabled = indexing;
     $('refine-search-submit').disabled = !serviceOnline || indexing;
@@ -155,6 +161,8 @@
             message += '（详情见服务日志）';
           }
           toast(message, !!cleanupError, cleanupError ? 10000 : 6000);
+          // 新素材进入索引后，在后台按各主题原条件探测新命中（提示不覆盖本条索引结果）。
+          if (status.state === 'done') setTimeout(() => Warehouse.autoCheckNewMaterials(), 8000);
         }
         return cleanup !== null && !cleanupError;
       },
@@ -602,27 +610,6 @@
     } catch (error) { body.textContent = error.message; }
   }
 
-  // ---------- 动态模型列表（模型升级通道：models/ 目录放入新模型即出现在下拉） ----------
-  async function populateModelSelect() {
-    const sel = $('cfg-model');
-    try {
-      const models = await Api.listModels();
-      // 过滤掉非嵌入模型（重排/多模态大模型/工具目录）
-      const embeddable = models.filter((m) =>
-        !/reranker|minicpm|ffmpeg|shot_scale|dinov3/i.test(m.name));
-      if (embeddable.length === 0) return; // 保留静态选项
-      const current = Config.get().modelName;
-      sel.innerHTML = '';
-      embeddable.forEach((m) => {
-        const opt = document.createElement('option');
-        opt.value = m.name;
-        opt.textContent = m.name + (/fg-?clip2/i.test(m.name) ? '（中文，推荐）' : '');
-        sel.appendChild(opt);
-      });
-      sel.value = embeddable.some((m) => m.name === current) ? current : embeddable[0].name;
-    } catch { /* 服务不在线时保留静态选项 */ }
-  }
-
   // ---------- 未索引提醒 / 静默自动索引 ----------
   async function countMissingVideos() {
     const videos = await Bridge.collectLibraryVideos();
@@ -814,10 +801,27 @@
     btn.disabled = true;
     btn.textContent = '搜索中…';
     try {
-      const scope = await resolveSearchScope();
+      const cfg = Config.get();
       const threshold = parseFloat($('threshold').value);
+      const steps = ExampleSearch.parseSequence(query);
+      if (steps) {
+        // 「A → B」直接走时序搜索；每步按当前阈值在服务端过滤，不弹 AI 改写预览。
+        Config.save({ threshold });
+        const r = await ExampleSearch.sequence(steps, cfg.sequenceMaxGap ?? 5, threshold);
+        ExampleSearch.report(r);
+        if (r.ok) pushHistory(query);
+        return;
+      }
+      let aiPlan = null;
+      if (cfg.aiEnhance && cfg.aiPlanPreview && serviceOnline) {
+        btn.textContent = 'AI 改写中…';
+        aiPlan = await AiPlanReview.review(query, cfg);
+        if (aiPlan === undefined) return;
+        btn.textContent = '搜索中…';
+      }
+      const scope = await resolveSearchScope();
       Config.save({ threshold });
-      const r = await Search.run(query, threshold, scope);
+      const r = await Search.run(query, threshold, scope, aiPlan);
       if (r.cancelled || r.stale) return;
       if (!r.ok) toast(r.message, true, 5000);
       else if (r.count === 0) toast('当前筛选下没有结果，可调整筛选条件');
@@ -834,134 +838,13 @@
     }
   }
 
-  // ---------- 设置 ----------
-  function openSettings() {
-    const cfg = Config.get();
-    populateModelSelect(); // 异步刷新模型下拉（models/ 目录有什么就列什么）
-    $('cfg-project-root').value = cfg.projectRoot;
-    $('cfg-port').value = cfg.port;
-    $('cfg-model').value = cfg.modelName;
-    $('cfg-theme').value = cfg.theme || 'auto';
-    $('cfg-thumb-cache-count').value = cfg.thumbnailCacheMaxEntries ?? 5000;
-    $('cfg-thumb-cache-mb').value = cfg.thumbnailCacheMaxMB ?? 128;
-    $('cfg-visual-threshold').value = cfg.visualThreshold;
-    $('cfg-visual-margin').value = cfg.visualMargin;
-    $('cfg-visual-agg').value = cfg.visualAgg || 'mean';
-    $('cfg-visual-centered').checked = !!cfg.visualCentered;
-    $('cfg-visual-scene-frames').value = cfg.visualSceneFrames;
-    $('cfg-visual-video-frames').value = cfg.visualVideoFrames;
-    $('cfg-idx-sample-interval').value = cfg.indexSampleInterval;
-    $('cfg-idx-resolution').value = cfg.indexResolution;
-    $('cfg-idx-min-scene').value = cfg.indexMinSceneLen;
-    $('cfg-idx-batch').value = cfg.indexBatchSize;
-    $('cfg-idx-scene-threshold').value = cfg.indexSceneThreshold;
-    $('cfg-idx-localmax').value = cfg.indexLocalmaxOrder;
-    $('cfg-idx-frame-selection').value = cfg.indexFrameSelection || 'content_adaptive';
-    $('cfg-idx-content-max').value = cfg.indexContentMaxFrames ?? 12;
-    $('cfg-idx-fp16').checked = !!cfg.indexFp16;
-    $('cfg-deepseek-key').value = cfg.deepseekKey || '';
-    $('cfg-ai-enhance').checked = !!cfg.aiEnhance;
-    $('cfg-ai-expand').checked = !!cfg.aiExpand;
-    $('cfg-ai-mode').value = cfg.aiMode || 'balanced';
-    $('cfg-mini-rerank').checked = !!cfg.miniRerank;
-    $('settings-error').textContent = Config.getLoadError?.() || '';
-    $('btn-recover-settings').classList.toggle('hidden', !Config.getLoadError?.());
-    $('cfg-auto-index').checked = !!cfg.autoIndex;
-    $('settings-dialog').showModal();
-  }
+  // ---------- 设置（表单读写见 settingsPanel.js） ----------
+  const openSettings = () => SettingsPanel.open();
 
   async function rebuildIndex() {
     $('settings-dialog').close();
     toast('开始全量重建当前库索引（清理失效条目并应用当前索引参数）…', false, 5000);
     await startIndexing('rebuild');
-  }
-
-  function viewServiceLog() {
-    const lp = Service.logPath();
-    try {
-      const fs = require('fs');
-      if (!fs.existsSync(lp)) {
-        toast('日志文件还不存在（服务由插件启动后才会产生日志）', true);
-        return;
-      }
-      eagle.shell.openPath(lp);
-    } catch (e) {
-      toast(`打开日志失败：${e.message}`, true);
-    }
-  }
-
-  async function restartService() {
-    $('settings-dialog').close();
-    setServiceStatus('starting', '正在重启搜索服务…');
-    try {
-      const resp = await Api.shutdown();
-      if (!resp.ok && resp.data && resp.data.error) {
-        toast(resp.data.error, true);
-        setServiceStatus('online', '搜索服务已连接');
-        return;
-      }
-    } catch { /* 服务本来就没起来，直接走启动流程 */ }
-    await new Promise((r) => setTimeout(r, 2000));
-    Service.ensure(setServiceStatus);
-  }
-
-  function saveSettings(event, recover = false) {
-    event.preventDefault();
-    const form = $('settings-form');
-    $('settings-error').textContent = '';
-    if (!form.reportValidity()) return;
-    try {
-    const prevModel = Config.get().modelName;
-    const prevKey = Config.get().deepseekKey || '';
-    const modelName = $('cfg-model').value;
-    Config.save({
-      deepseekKey: $('cfg-deepseek-key').value.trim(),
-      projectRoot: $('cfg-project-root').value.trim(),
-      port: $('cfg-port').value === '' ? NaN : Number($('cfg-port').value),
-      modelName,
-      theme: $('cfg-theme').value,
-      thumbnailCacheMaxEntries: Number($('cfg-thumb-cache-count').value),
-      thumbnailCacheMaxMB: Number($('cfg-thumb-cache-mb').value),
-      visualThreshold: $('cfg-visual-threshold').value === '' ? NaN : Number($('cfg-visual-threshold').value),
-      visualMargin: $('cfg-visual-margin').value === '' ? NaN : Number($('cfg-visual-margin').value),
-      visualAgg: $('cfg-visual-agg').value,
-      visualCentered: $('cfg-visual-centered').checked,
-      visualSceneFrames: Number($('cfg-visual-scene-frames').value),
-      visualVideoFrames: Number($('cfg-visual-video-frames').value),
-      indexSampleInterval: Number($('cfg-idx-sample-interval').value),
-      indexResolution: Number($('cfg-idx-resolution').value),
-      indexMinSceneLen: Number($('cfg-idx-min-scene').value),
-      indexBatchSize: Number($('cfg-idx-batch').value),
-      indexSceneThreshold: Number($('cfg-idx-scene-threshold').value),
-      indexLocalmaxOrder: Number($('cfg-idx-localmax').value),
-      indexFrameSelection: $('cfg-idx-frame-selection').value,
-      indexContentMaxFrames: Number($('cfg-idx-content-max').value),
-      indexFp16: $('cfg-idx-fp16').checked,
-      aiEnhance: $('cfg-ai-enhance').checked,
-      aiExpand: $('cfg-ai-expand').checked,
-      aiMode: $('cfg-ai-mode').value || 'balanced',
-      miniRerank: $('cfg-mini-rerank').checked,
-      autoIndex: $('cfg-auto-index').checked,
-      ...(modelName !== prevModel ? { threshold: modelName.includes('fg-clip2') ? 11 : 21 } : {}),
-    }, { recover });
-    applyTheme();
-    Search.configureThumbnailCache(Config.get());
-    applyAutoIndexSetting();
-    if (modelName !== prevModel) {
-      const suggested = modelName.includes('fg-clip2') ? 11 : 21;
-      $('threshold').value = suggested;
-      $('threshold-val').textContent = suggested;
-      toast(`已切换模型，阈值建议调整为 ${suggested}，请对库重新建索引`);
-    }
-    if (Config.get().deepseekKey !== prevKey) {
-      toast('DeepSeek Key 已更新，点击设置里的「重启搜索服务」后生效', false, 5000);
-    }
-    setServiceStatus('offline', '配置已更新，正在重新连接…');
-    $('settings-dialog').close();
-    Service.ensure(setServiceStatus);
-    } catch (error) {
-      $('settings-error').textContent = error.message;
-    }
   }
 
   let organizeSelection = null;
@@ -979,6 +862,7 @@
     $('btn-selection-timeline').disabled = Search.isBusy() || matches.length === 0;
     $('btn-selection-exclude-folder').disabled = organizing || excludingFolder || Search.isBusy()
       || targets.ids.length !== 1 || targets.missing > 0;
+    ExampleSearch.updateButtons();
   }
 
   async function excludeSelectedFolder() {
@@ -1270,9 +1154,9 @@
       option.addEventListener('click', () => selectIndexMode(option.dataset.indexMode));
     });
     $('btn-stop-index').addEventListener('click', stopIndexing);
-    $('btn-restart-service').addEventListener('click', restartService);
+    $('btn-restart-service').addEventListener('click', SettingsPanel.restartService);
     $('btn-rebuild-index').addEventListener('click', rebuildIndex);
-    $('btn-view-log').addEventListener('click', viewServiceLog);
+    $('btn-view-log').addEventListener('click', SettingsPanel.viewServiceLog);
     $('btn-index-jobs').addEventListener('click', openIndexJobs);
     $('btn-refresh-library').addEventListener('click', async () => {
       try { Bridge.invalidateCache(); await Bridge.refreshPathMap(true); toast('素材缓存已刷新，下次搜索使用最新素材范围'); }
@@ -1315,8 +1199,8 @@
     $('btn-scope-cancel').addEventListener('click', () => $('scope-dialog').close());
     document.addEventListener('paste', handlePaste);
     $('btn-settings').addEventListener('click', openSettings);
-    $('settings-form').addEventListener('submit', saveSettings);
-    $('btn-recover-settings').addEventListener('click', (event) => saveSettings(event, true));
+    $('settings-form').addEventListener('submit', (event) => SettingsPanel.save(event));
+    $('btn-recover-settings').addEventListener('click', (event) => SettingsPanel.save(event, true));
     $('btn-cancel-settings').addEventListener('click', () => $('settings-dialog').close());
     document.addEventListener('click', (e) => {
       if (!$('index-mode-menu').classList.contains('hidden')
@@ -1346,6 +1230,28 @@
       canSearch: () => serviceOnline && !Indexer.isRunning(),
       resolveScope: resolveSearchScope,
     });
+    SettingsPanel.init({
+      setServiceStatus,
+      applied: () => {
+        applyTheme();
+        Search.configureThumbnailCache(Config.get());
+        applyAutoIndexSetting();
+      },
+    });
+    ExampleSearch.init({
+      isServiceOnline: () => serviceOnline && !Indexer.isRunning(),
+      resolveScope: async () => { hideResolvedIndexHintForSearch(); return resolveSearchScope(); },
+      closeMenus: () => {
+        const menu = $('result-selection-menu');
+        const content = menu.querySelector('.menu-content');
+        menu.open = false;
+        content.classList.remove('result-context-menu');
+        content.style.removeProperty('left');
+        content.style.removeProperty('top');
+      },
+      afterSearch: () => updateButtons(),
+    });
+    EvalRecorder.init({ pluginPath: Config.pluginPath(), isServiceOnline: () => serviceOnline && !Indexer.isRunning() });
     initShortcuts();
 
     const cfg = Config.get();

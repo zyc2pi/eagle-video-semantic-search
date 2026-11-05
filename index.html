@@ -59,11 +59,12 @@
   <!-- 顶栏：新搜索显示搜索框，主题页显示主题标题与操作；筛选在两种页面共用。 -->
   <section class="search-row app-bar">
     <div class="query-wrap">
-      <input id="query" type="text" placeholder="用自然语言描述画面，如：夜晚的城市街道 / 人物特写（支持 -负向词）" autocomplete="off" autofocus>
+      <input id="query" type="text" placeholder="用自然语言描述画面，如：夜晚的城市街道 / 人物特写（支持 -负向词；开门 → 进屋 为时序搜索）" autocomplete="off" autofocus>
       <button id="btn-history" class="history-toggle" title="搜索历史" tabindex="-1">▾</button>
       <div id="history-panel" class="history-panel hidden"></div>
     </div>
     <button id="btn-search" class="primary" disabled>搜索</button>
+    <button id="btn-sequence-search" type="button" class="mini-btn" title="时序搜索：同一视频内先出现 A 画面、随后出现 B 画面">时序</button>
     <section id="warehouse-topic" class="warehouse-topic hidden">
       <button id="topic-back" type="button">← 仓库</button>
       <div class="topic-heading"><h2 id="topic-name"></h2><p id="topic-meta" class="hint"></p></div>
@@ -120,6 +121,7 @@
           <input id="topic-scene-query" type="search" placeholder="视频名包含…" aria-label="查找主题中的视频名">
           <label for="result-tags">素材标签</label>
           <input id="result-tags" type="search" placeholder="标签，逗号分隔（全部满足）" aria-label="筛选素材标签" title="完整标签名，多个标签用中英文逗号分隔，全部满足">
+          <div id="result-tag-chips" class="tag-chips hidden" role="group" aria-label="运镜与景别快捷筛选"></div>
           <label>片段 ≤ <input id="result-max-dur" type="number" min="0" step="0.5" placeholder="不限" aria-label="片段时长上限"> 秒</label>
           <select id="topic-scene-source" aria-label="按人工评分筛选片段">
             <option value="all">全部片段</option><option value="manual">人工评分</option><option value="auto">未人工评分</option>
@@ -190,6 +192,11 @@
         <button id="btn-topic-add" type="button" class="mini-btn" disabled>添加到主题</button>
         <button id="btn-topic-remove" type="button" class="mini-btn hidden" disabled>从主题移除</button>
         <button id="btn-topic-score" type="button" class="mini-btn hidden" disabled>调整评分</button>
+        <button id="btn-selection-similar" type="button" class="mini-btn" disabled title="用所选片段在索引中已存的向量作为正例，找画面更像的片段">找更像所选的</button>
+        <button id="btn-selection-more" type="button" class="mini-btn hidden" disabled title="把所选加入正例后重新搜索">加入正例并重搜</button>
+        <button id="btn-selection-less" type="button" class="mini-btn hidden" disabled title="把所选设为负例（不要这类画面）后重新搜索">不要这类，重搜</button>
+        <button id="btn-eval-relevant" type="button" class="mini-btn hidden" disabled title="评测记录模式：把所选片段标为与本次查询相关">评测：标为相关</button>
+        <button id="btn-eval-irrelevant" type="button" class="mini-btn hidden" disabled title="评测记录模式：把所选片段标为与本次查询不相关">评测：标为不相关</button>
         <button id="btn-clear-selection" class="mini-btn" disabled>取消全部选择</button>
         <button id="btn-selection-tag" class="mini-btn" disabled>添加标签</button>
         <button id="btn-selection-folder" class="mini-btn" disabled>添加到新文件夹</button>
@@ -557,6 +564,12 @@
             <option value="dinov3_cses">智能选帧（DINOv3 + CSES）</option>
           </select>
         </label>
+        <label>镜头切分方式
+          <select id="cfg-idx-shot-detection">
+            <option value="cosine">画面向量相似度（默认，最快）</option>
+            <option value="transnetv2">TransNetV2 高精度（渐变/叠化更准，需额外逐帧解码）</option>
+          </select>
+        </label>
         <label>内容选帧上限（每镜头，重复画面会提前停止）
           <input id="cfg-idx-content-max" type="number" min="1" max="32" step="1">
         </label>
@@ -593,6 +606,7 @@
       </label>
       <label class="check-row"><input id="cfg-ai-enhance" type="checkbox"> AI 查询增强（deepseek-v4-flash 中英双语改写）</label>
       <label class="check-row"><input id="cfg-ai-expand" type="checkbox"> AI 语义扩展（在双语之外再生成同义/场景变体查询，多路合并检索，召回更全）</label>
+      <label class="check-row"><input id="cfg-ai-plan-preview" type="checkbox"> 搜索前预览 AI 改写（可修改、删除或补充查询后再搜索）</label>
       <label>AI 增强档位（变体数量与耗时权衡）
         <select id="cfg-ai-mode">
           <option value="fast">fast — 变体少，最快</option>
@@ -601,6 +615,8 @@
         </select>
       </label>
       <label class="check-row"><input id="cfg-mini-rerank" type="checkbox"> 二阶段精搜（MiniCPM 复核，明显更慢、占显存大）</label>
+      <label class="check-row"><input id="cfg-eval-mode" type="checkbox"> 评测记录模式（每次搜索把排名结果和耗时记到插件 evaluation 目录，可在“整理所选”里标注相关/不相关）</label>
+      <label class="check-row"><input id="cfg-auto-check-new" type="checkbox"> 自动检查主题新素材（开窗及索引完成后在后台按各主题条件探测新命中，只在左侧标数量，不改写主题；开始搜索时自动让路）</label>
       <label class="check-row"><input id="cfg-auto-index" type="checkbox"> 静默自动索引（插件随 Eagle 后台运行，每 10 分钟检查新素材并自动增量索引）</label>
       <div class="btn-row">
         <button id="btn-restart-service" type="button">重启搜索服务</button>
@@ -612,6 +628,9 @@
       <div class="btn-row">
         <button id="btn-stats" type="button" title="素材库统计：标签分布、时长分布、索引覆盖率">库统计</button>
         <button id="btn-dedup-scan" type="button" title="用现有索引的场景向量找出语义重复的视频，分组展示并可在 Eagle 中选中处理">查重扫描</button>
+        <button id="btn-perf-check" type="button" title="在当前素材库上只读测量素材清单、仓库读取与搜索耗时">性能自检</button>
+        <button id="btn-eval-summary" type="button" title="汇总评测记录模式下的查询与人工标注（P@10、标注子集召回、耗时）">评测汇总</button>
+        <button id="btn-index-admin" type="button" title="查看当前库各模型索引的场景数、占用和失败数，可把不用的索引移到回收目录">索引管理</button>
         <button id="btn-export-indexes" type="button" title="使用后端离线维护工具导出一致备份">离线导出说明</button>
         <button id="btn-import-indexes" type="button" title="使用后端离线维护工具校验导入并保留回滚备份">离线导入说明</button>
       </div>
@@ -644,6 +663,9 @@
   <script src="js/mediaDrag.js"></script>
   <script src="js/timelineExport.js"></script>
   <script src="js/frameSearch.js"></script>
+  <script src="js/aiPlanReview.js"></script>
+  <script src="js/exampleSearch.js"></script>
+  <script src="js/evalRecorder.js"></script>
   <script src="js/folderTree.js"></script>
   <script src="js/manualAdd.js"></script>
   <script src="js/topicRelations.js"></script>
@@ -656,6 +678,7 @@
   <script src="js/warehouse.js"></script>
   <script src="js/layoutPanels.js"></script>
   <script src="js/libraryTools.js"></script>
+  <script src="js/settingsPanel.js"></script>
   <script src="js/plugin.js"></script>
 </body>
 </html>

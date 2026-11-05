@@ -28,7 +28,9 @@
 本仓库采用 single-context 布局：
 
 - `AGENTS.md`：协作规则、近期任务记录和验证要求；历史任务见 `TASKS-ARCHIVE.md`。
-- `AGENT.md`：项目领域、架构、关键契约及已知问题。
+- `AGENT.md`：项目领域、架构、关键契约索引及已知问题。
+- `docs/contracts/`：AGENT.md 关键契约的分模块详情（search / ui-preview / warehouse /
+  index-service）；改动相关行为时在对应文件更新契约。
 - `docs/adr/`：需要长期保留的重要架构决策；目录不存在时，仅在确有 ADR
   需要写入时创建。
 - 不使用 `CONTEXT-MAP.md`，也不要为当前单一插件拆分多套上下文。
@@ -40,6 +42,15 @@
 
 较早的任务（TASK-20261031-001 及以前）已原样移至 `TASKS-ARCHIVE.md`，
 需要追溯旧决策或验证边界时查阅；新任务继续记录在本章节顶部。
+
+### TASK-20261105-003 — 组合检索、索引管理、TransNetV2、评测工具与结构整理
+
+- 状态：ready-for-human
+- 目标：按用户要求实现复查建议中除美学评分外的全部功能与优化。
+- 修改（插件）：运镜/景别快捷筛选按钮；搜索前 AI 改写预览（precomputed_plan 随 recipe 保存）；正负样本反馈检索（feedback 检索种类，整理所选菜单三入口）；时序组合查询（`A → B` 语法与「时序」对话框，sequence 检索种类）；后台自动检查新素材（开窗/索引完成后探测，左栏 +N，搜索开始即中止）；设置页索引管理；TransNetV2 镜头切分选项及能力检查；评测记录模式、评测汇总与性能自检。新增 aiPlanReview / exampleSearch / evalRecorder / settingsPanel 模块，设置页改为声明式字段表，plugin.js 1503→1313 行。AGENT.md 契约按模块原样迁至 docs/contracts/（逐行核对无遗漏）。smoke 搜索计数与已移除列表计数改为从夹具推导，夹具内关闭后台自动检查。
+- 修改（后端）：`/api/v1/search_feedback`、`/api/v1/search_sequence`（scene_query_service）、`/api/v1/index/stats`、`/api/v1/index/trash`（index_admin，移入 indexes/.trash）；`shot_detection=transnetv2` 索引选项（transnet_shots + 原样引入的 MIT 模型代码，失败回退余弦）；health 新增 index_admin/search_feedback/search_sequence/transnetv2_shots；`.` 开头目录不视为模型目录；tools/prepare_transnetv2.py。经用户同意下载 TransNetV2 权重到 models/transnetv2（HF Sn4kehead/TransNetV2@db6ceab，SHA256 与 LFS 记录一致，models/ 已 gitignore）。
+- 验证：插件全部 JS node --check、32 个单元测试文件通过；完整默认 warehouse.smoke.js（Edge headless）全程通过，另跑设置/筛选/布局/范围等分段。后端全量 unittest 通过（含新增 test_scene_query、test_transnet_shots）；TransNetV2 在合成 3 镜头视频上 CUDA 2.2 秒切出正确边界（帧 100、175）。
+- 边界：未重启 5006，后端新接口需在设置中「重启搜索服务」后生效；未在真实 Eagle 宿主及真实素材上验收新入口、反馈/时序检索质量、TransNetV2 真实切分质量与耗时、自动检查的后台负载。评测基线仍需人工标注。新提交前已先提交上一轮验收改动（91a8fc8）；本轮未提交或推送。
 
 ### TASK-20261105-002 — 修复 API 单元及完整 smoke 的过期夹具
 

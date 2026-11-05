@@ -93,10 +93,14 @@ const Api = (() => {
 
   async function startIndex(videoPaths, indexName, modelName, rebuild = false, pruneMissing = false, metadata = {}) {
     const cfg = Config.get();
-    if (pruneMissing || ['dinov3_cses', 'content_adaptive'].includes(cfg.indexFrameSelection)) {
+    const transnet = cfg.indexShotDetection === 'transnetv2';
+    if (pruneMissing || transnet || ['dinov3_cses', 'content_adaptive'].includes(cfg.indexFrameSelection)) {
       try {
         const info = await healthInfo();
         if (pruneMissing && !info?.capabilities?.library_prune) throw new Error('当前搜索服务需要重启，以支持全库失效项清理');
+        if (transnet && !info?.capabilities?.transnetv2_shots) {
+          throw new Error('后端未就绪 TransNetV2：请重启搜索服务；若仍不可用，在后端运行 python\\python.exe tools\\prepare_transnetv2.py 准备权重');
+        }
         if (['dinov3_cses', 'content_adaptive'].includes(cfg.indexFrameSelection)) {
           const capability = cfg.indexFrameSelection === 'content_adaptive' ? 'content_adaptive_frames' : 'smart_frame_selection';
           if (!info?.capabilities?.[capability]) throw new Error('当前搜索服务尚不支持所选选帧方式，请更新并重启配套后端');
@@ -125,6 +129,8 @@ const Api = (() => {
         localmax_order: cfg.indexLocalmaxOrder,
         frame_selection: cfg.indexFrameSelection || 'triplet',
         content_max_frames: cfg.indexContentMaxFrames ?? 12,
+        // 旧后端不认识该字段时会被白名单丢弃；默认余弦时不发送，保持旧请求完全一致。
+        ...(transnet ? { shot_detection: 'transnetv2' } : {}),
         use_fp16: !!cfg.indexFp16,
       },
     }, 10000);
@@ -184,7 +190,24 @@ const Api = (() => {
       ai_enhance: !!cfg.aiExpand,
       ai_mode: cfg.aiMode || 'balanced',
       use_mini_rerank: !!cfg.miniRerank,
+      // 用户在搜索前确认/编辑过的 AI 计划；后端校验后直接复用，不再调用 AI。
+      ...(cfg.aiEnhance && requestOptions.aiPlan ? { precomputed_plan: requestOptions.aiPlan } : {}),
     }, allowedVideoPaths), cfg.miniRerank ? LONG_TIMEOUT_MS : DEFAULT_TIMEOUT_MS, requestOptions);
+  }
+
+  /* AI 查询计划预览：只调用改写，不扫描索引。返回 { mode, queries:[{id,text,lang,source,reason,weight}], warnings } */
+  async function aiSearchPlan(query, cfg = Config.get(), requestOptions = {}) {
+    const r = await post('/ai_search_plan', {
+      query,
+      index_model: cfg.modelName,
+      bilingual_search: !!cfg.aiEnhance,
+      ai_enhance: !!cfg.aiExpand,
+      ai_mode: cfg.aiMode || 'balanced',
+    }, 60000, requestOptions);
+    if (!r.ok || r.data?.success !== true || !Array.isArray(r.data.query_plan?.queries)) {
+      throw new Error(r.data?.error || 'AI 改写计划获取失败');
+    }
+    return r.data.query_plan;
   }
 
   function shutdown() {
@@ -212,6 +235,50 @@ const Api = (() => {
       start_frame_offset: -2,
       end_frame_offset: 2,
     }, allowedVideoPaths), DEFAULT_TIMEOUT_MS, requestOptions);
+  }
+
+  /* 索引管理：当前库各模型 v2 索引的只读统计（不加载向量） */
+  async function indexStats(libraryId) {
+    const r = await fetchJson(`${Config.baseUrl()}/api/v1/index/stats?library_id=${encodeURIComponent(libraryId)}`, {}, 60000);
+    if (!r.ok || r.data?.success !== true || !Array.isArray(r.data.indexes)) throw new Error(r.data?.error || '索引统计读取失败');
+    return r.data.indexes;
+  }
+
+  /* 把当前库的一个索引移到后端 indexes/.trash（可手动移回）；任务运行中会被拒绝。 */
+  async function trashIndex(libraryId, name) {
+    const r = await post('/api/v1/index/trash', { library_id: libraryId, name, confirm: true }, 60000);
+    if (!r.ok || r.data?.success !== true) throw new Error(r.data?.error || '索引删除失败');
+    return r.data;
+  }
+
+  /* 正负样本反馈：positives/negatives 为 [{video_path, start_frame(原始起始帧)}] */
+  function searchFeedback(examples, indices, allowedVideoPaths = null, cfg = Config.get(), requestOptions = {}) {
+    return post('/api/v1/search_feedback', withSearchScope({
+      positives: examples.positives,
+      negatives: examples.negatives || [],
+      negative_weight: examples.negativeWeight ?? 0.5,
+      indices,
+      threshold: 0,
+      relative_margin: cfg.visualMargin,
+      scene_aggregation: cfg.visualAgg || 'mean',
+      top_k: 200,
+    }, allowedVideoPaths), DEFAULT_TIMEOUT_MS, requestOptions);
+  }
+
+  /* 时序组合查询：steps 为 2～4 个文本，按原始帧顺序在同一视频内串联。 */
+  function searchSequence(sequence, indices, threshold, allowedVideoPaths = null, cfg = Config.get(), requestOptions = {}) {
+    return post('/api/v1/search_sequence', withSearchScope({
+      steps: sequence.steps,
+      max_gap_seconds: sequence.maxGap,
+      indices,
+      threshold,
+      start_frame_offset: -2,
+      end_frame_offset: 2,
+      ai_search_enabled: !!cfg.aiEnhance,
+      bilingual_search: !!cfg.aiEnhance,
+      ai_enhance: !!cfg.aiExpand,
+      ai_mode: cfg.aiMode || 'balanced',
+    }, allowedVideoPaths), cfg.aiEnhance ? LONG_TIMEOUT_MS : DEFAULT_TIMEOUT_MS, requestOptions);
   }
 
   /* 语义查重：场景向量 → 视频级相似分组（纯 CPU，不加载模型） */
@@ -251,7 +318,8 @@ const Api = (() => {
 
   return {
     health, healthInfo, resolveLibrary, associateLibrary, listIndexJobs, listIndexes, listModels, startIndex, indexStatus, cancelIndex, retryIndex,
-    search, searchVisual, searchHybrid, describeFrame, shutdown,
+    search, aiSearchPlan, searchVisual, searchHybrid, describeFrame, shutdown,
     dedupScan, indexCoverage, indexContents, previewUrl,
+    indexStats, trashIndex, searchFeedback, searchSequence,
   };
 })();

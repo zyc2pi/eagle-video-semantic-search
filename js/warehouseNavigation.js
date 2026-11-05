@@ -121,6 +121,14 @@ const WarehouseNavigation = (() => {
           state.page !== 'warehouse' && state.topicId === entry.id);
         topic.classList.add('library-topic'); topic.dataset.navId = `topic:${entry.id}`;
         topic.dataset.favorite = String(!!entry.favorite);
+        const hit = hooks.newHits?.(entry);
+        if (hit) {
+          const badge = document.createElement('span');
+          badge.className = 'library-nav-new';
+          badge.textContent = `+${hit.hits}`;
+          badge.title = `上次更新后加入的素材中可能有 ${hit.hits} 个新命中片段（${hit.videos} 个素材），打开后点「更新结果」预览`;
+          topic.append(badge);
+        }
         content.append(topic);
       }
       if (expanded) group.append(content);

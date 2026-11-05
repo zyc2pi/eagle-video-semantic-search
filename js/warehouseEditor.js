@@ -43,8 +43,11 @@ const WarehouseEditor = (() => {
       $('entry-folders').classList.toggle('hidden', recipe.scope.mode === 'all');
       $('entry-extra-exclusions').textContent = recipe.scope.excludeFolderIds?.length
         ? `此条件另排除了 ${recipe.scope.excludeFolderIds.length} 个文件夹；改为“整个库”可清除这些排除。` : '';
-      $('entry-replace-source').classList.toggle('hidden', recipe.kind === 'text');
-      $('entry-source').textContent = recipe.kind === 'text' ? '文本搜索'
+      $('entry-replace-source').classList.toggle('hidden', !['visual', 'hybrid'].includes(recipe.kind));
+      $('entry-source').textContent = recipe.kind === 'text'
+        ? (recipe.payload?.aiPlan ? `文本搜索 · 使用已确认的 AI 改写（${recipe.payload.aiPlan.queries.length} 条，改搜索词或 AI 设置后重新生成）` : '文本搜索')
+        : recipe.kind === 'sequence' ? `时序组合搜索 · 步骤用 → 分隔，相邻步骤间隔 ≤ ${recipe.payload.sequence.maxGap} 秒；阈值对每一步生效`
+        : recipe.kind === 'feedback' ? `正负样本反馈搜索 · 正例 ${recipe.payload.feedback.positives.length} 个、负例 ${recipe.payload.feedback.negatives?.length || 0} 个（负例权重 ${recipe.payload.feedback.negativeWeight ?? 0.5}）`
         : `${recipe.kind === 'hybrid' ? '文本 × 视觉混合搜索' : '视觉搜索'} · ${recipe.payload?.video_path || '已保存查询图片'}`;
       if (recipe.refinement) $('entry-source').textContent += ` · 在「${recipe.refinement.label}」的 ${recipe.refinement.scenes.length} 个固定候选镜头中搜索；上一轮权重 ${10 - recipe.refinement.weight} / 新词权重 ${recipe.refinement.weight}`;
       $('entry-refine-controls').classList.toggle('hidden', !recipe.refinement);
@@ -128,6 +131,7 @@ const WarehouseEditor = (() => {
           recipe.scope = context.scope;
           recipe.time = context.time;
           if (recipe.kind === 'text') recipe.config.threshold = Search.getArchiveFilter().minScore ?? 0;
+          // 时序查询的阈值在服务端按步骤生效，沿用本次请求时的值。
         }
         savingMatches = SearchRecipe.clone(Search.getAllMatches());
         savingView = Search.getView();
@@ -156,6 +160,12 @@ const WarehouseEditor = (() => {
       recipe.config = SearchRecipe.options(recipe.config);
       recipe.query = $('entry-query').value.trim();
       if (!recipe.query) throw new Error('请输入搜索词');
+      if (recipe.kind === 'sequence') {
+        const steps = recipe.query.split(/\s*(?:→|->)\s*/).map((step) => step.trim()).filter(Boolean);
+        if (steps.length < 2 || steps.length > 4) throw new Error('时序查询用 → 分隔 2～4 个步骤');
+        recipe.payload = { sequence: { ...recipe.payload.sequence, steps } };
+        recipe.query = steps.join(' → ');
+      }
       recipe.config.threshold = Number($('entry-threshold').value);
       recipe.config.modelName = $('entry-model').value.trim();
       boolKeys.forEach((key) => { recipe.config[key] = $(`entry-${key}`).checked; });
@@ -164,6 +174,11 @@ const WarehouseEditor = (() => {
       });
       recipe.config.visualAgg = $('entry-visualAgg').value;
       recipe.config.aiMode = $('entry-aiMode').value;
+      // 已确认的 AI 改写只属于原搜索词和原 AI 设置；任一改动后交回后端重新生成。
+      if (recipe.kind === 'text' && recipe.payload?.aiPlan && (recipe.query !== draft.query
+          || ['aiEnhance', 'aiExpand', 'aiMode'].some((key) => recipe.config[key] !== draft.config?.[key]))) {
+        recipe.payload = null;
+      }
       recipe.time = SearchRecipe.readTime('entry-time');
       const ids = [...$('entry-folders').querySelectorAll('input:checked')].map((input) => input.value);
       const scopeMode = $('entry-scope').value;

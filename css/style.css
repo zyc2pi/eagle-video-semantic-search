@@ -453,6 +453,7 @@ dialog .dialog-actions:last-child {
 .library-sidebar .library-nav-row[aria-current="page"] { background: var(--accent); color: var(--accent-text); }
 .library-nav-label { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .library-nav-count { font-size: var(--font-xs); opacity: 0.65; }
+.library-nav-new { margin-left: auto; padding: 0 6px; border-radius: var(--radius-pill); background: var(--accent-soft); color: var(--accent); font-size: var(--font-xs); line-height: 16px; flex-shrink: 0; }
 .library-nav-row svg { display: block; width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.3; stroke-linejoin: round; opacity: 0.8; }
 .library-group { margin-top: 3px; }
 .library-group-heading { display: flex; align-items: center; }
@@ -617,6 +618,10 @@ dialog .dialog-actions:last-child {
 .topic-scene-filter { display: flex; flex-direction: column; align-items: stretch; gap: 9px; padding-top: var(--space-3); border-top: 1px solid var(--border); font-size: var(--font-sm); }
 .topic-scene-filter input { width: 100%; }
 .topic-scene-filter input[type="number"] { width: 72px; }
+.tag-chips { display: flex; flex-wrap: wrap; gap: var(--space-1); }
+.tag-chip { height: 24px; padding: 0 var(--space-2); border: 0; border-radius: var(--radius-pill); background: var(--bg-input); color: var(--text-dim); font-size: var(--font-xs); cursor: pointer; }
+.tag-chip:hover { color: var(--text); }
+.tag-chip[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); }
 .topic-scene-filter label { display: flex; align-items: center; gap: var(--space-1h); white-space: nowrap; color: var(--text-dim); }
 #topic-time-filter .warehouse-time-control { padding: 0; min-width: 0; max-width: none; }
 #topic-time-filter .warehouse-time-dates input { width: 100%; }
@@ -709,7 +714,7 @@ dialog .dialog-actions:last-child {
 
 /* 3.5 视图状态：页面切换只由 body[data-page] / body[data-topic] 驱动 */
 [data-page="warehouse"] .main-workspace > :is(.search-row, .result-workspace) { display: none !important; }
-[data-topic="true"] .search-row > :is(.query-wrap, #btn-search) { display: none; }
+[data-topic="true"] .search-row > :is(.query-wrap, #btn-search, #btn-sequence-search) { display: none; }
 [data-topic="true"] .time-filter, [data-topic="true"] #new-search-filter { display: none; }
 [data-topic="true"] #topic-result-filter { display: flex; }
 
@@ -990,6 +995,12 @@ dialog .dialog-actions:last-child {
 .warehouse-batch-status { max-height: 220px; overflow-y: auto; overflow-wrap: anywhere; }
 .warehouse-batch-status p { margin: 0 0 var(--space-2); }
 .confirm-dialog { width: min(480px, calc(100vw - 32px)); }
+.ai-plan-dialog { width: min(560px, calc(100vw - 32px)); }
+.ai-plan-list { display: flex; flex-direction: column; gap: var(--space-2); margin-bottom: var(--space-3); max-height: 50vh; overflow: auto; }
+.ai-plan-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px var(--space-2); align-items: center; }
+.ai-plan-row input { grid-column: 1; }
+.ai-plan-row .hint { grid-column: 1; grid-row: 2; font-size: var(--font-xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ai-plan-row button { grid-column: 2; grid-row: 1; width: 28px; padding: 0; }
 .confirm-dialog p { margin: 0 0 var(--space-3); overflow-wrap: anywhere; }
 .confirm-list { max-height: 180px; overflow-y: auto; margin: 0 0 var(--space-3); padding-left: var(--space-5); overflow-wrap: anywhere; }
 .confirm-dialog button.primary.danger { background: var(--danger); border-color: var(--danger); }
@@ -1091,7 +1102,10 @@ dialog .dialog-actions:last-child {
 /* 4.10 设置、范围、统计与查重 */
 #settings-dialog, #scope-dialog, #refine-search-dialog { width: min(640px, calc(100vw - 32px)); }
 #organize-status { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 240px; overflow-y: auto; }
-#stats-dialog, #dedup-dialog { width: min(640px, calc(100vw - 32px)); }
+#stats-dialog, #dedup-dialog, .index-admin-dialog { width: min(640px, calc(100vw - 32px)); }
+.index-admin-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.index-admin-info .hint { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.danger-text { color: var(--danger); }
 .stats-body { max-height: 420px; overflow-y: auto; }
 .stats-body h4 { margin: var(--space-3) 0 var(--space-1h); }
 .stat-summary { padding: var(--space-2) 10px; border: 1px solid var(--border); border-radius: 7px; }

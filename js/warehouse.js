@@ -679,6 +679,7 @@ const Warehouse = (() => {
     $('warehouse-check-new')?.addEventListener('click', () => attempt(updates.checkNewMaterials));
     WarehouseNavigation.init({
       attempt, toast: hooks.toast, snapshot: () => store().list(),
+      newHits: (entry) => updates.newHitsFor(entry),
       active: () => ({ page: document.body.dataset.page, topicId: current?.id,
         category: $('warehouse-category').value, favoritesOnly: cards.state.favoritesOnly }),
       openCollection: (category, favorites) => open({ category, favoritesOnly: favorites }),
@@ -808,6 +809,18 @@ const Warehouse = (() => {
     $('topic-scene-source').addEventListener('change', () => { clearTimeout(sceneQueryTimer); applySceneFilter(); });
     $('result-tags').addEventListener('input', () => {
       clearTimeout(sceneQueryTimer); sceneQueryTimer = setTimeout(applySceneFilter, 120);
+    });
+    $('result-tag-chips').addEventListener('click', (event) => {
+      const tag = event.target.closest('.tag-chip')?.dataset.tag;
+      if (!tag) return;
+      const input = $('result-tags');
+      const parts = input.value.split(/[,，]/).map((part) => part.trim()).filter(Boolean);
+      const lower = tag.toLocaleLowerCase();
+      const next = parts.some((part) => part.toLocaleLowerCase() === lower)
+        ? parts.filter((part) => part.toLocaleLowerCase() !== lower) : [...parts, tag];
+      input.value = next.join(', ');
+      clearTimeout(sceneQueryTimer);
+      applySceneFilter();
     });
     ['result-max-dur'].forEach((id) => $(id).addEventListener('change', () => {
       clearTimeout(sceneQueryTimer); applySceneFilter();
@@ -965,5 +978,6 @@ const Warehouse = (() => {
     return { id: current.id, library: currentLibrary, generation: navigationGeneration };
   }
 
-  return { init, open, saveCurrent: editor.saveCurrent, pruneMissingVideos, previewPrune, getScopeContext, getCurrentName: () => current?.name || '' };
+  return { init, open, saveCurrent: editor.saveCurrent, pruneMissingVideos, previewPrune, getScopeContext, getCurrentName: () => current?.name || '',
+    autoCheckNewMaterials: () => updates.autoCheckNewMaterials() };
 })();

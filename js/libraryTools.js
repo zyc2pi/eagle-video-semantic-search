@@ -129,6 +129,83 @@ const LibraryTools = (() => {
     runDedupScan();
   }
 
+  // ---------- 索引管理：统计 + 移入后端回收目录 ----------
+  function formatBytes(bytes) {
+    if (!Number.isFinite(bytes)) return '?';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let value = bytes; let unit = 0;
+    while (value >= 1024 && unit < units.length - 1) { value /= 1024; unit += 1; }
+    return `${value >= 10 || unit === 0 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`;
+  }
+
+  async function renderIndexAdmin(body, generation) {
+    body.replaceChildren(h('p', { className: 'hint', text: '读取索引统计…' }));
+    const health = await Api.healthInfo();
+    if (!health?.capabilities?.index_admin) throw new Error('搜索服务版本较旧，请在设置中重启搜索服务后再试');
+    const library = await Bridge.resolveLibraryIdentity();
+    const indexes = await Api.indexStats(library.id);
+    if (generation !== indexAdminGeneration) return;
+    const libraryPath = eagle.library.path;
+    if (!indexes.length) {
+      body.replaceChildren(h('p', { className: 'hint', text: '当前素材库还没有新版索引。' }));
+      return;
+    }
+    const current = Config.get().modelName;
+    body.replaceChildren(
+      h('p', { className: 'hint', text: '统计只读取场景元数据，不加载向量。删除会把索引移到后端 indexes/.trash，可在服务停止后手动移回；索引任务排队或运行时不能删除。' }),
+      ...indexes.map((item) => {
+        const stats = item.error ? `读取失败：${item.error}`
+          : `${item.video_count} 个视频 · ${item.scene_count} 个场景 · ${item.vector_count} 个向量`;
+        const extra = [`占用 ${formatBytes(item.size_bytes)}`,
+          item.skipped_count ? `无有效场景 ${item.skipped_count}` : '',
+          item.failed_count ? `处理失败 ${item.failed_count}` : '',
+          item.updated_at ? `更新于 ${new Date(item.updated_at * 1000).toLocaleString()}` : ''].filter(Boolean).join(' · ');
+        const remove = h('button', { type: 'button', className: 'danger-text', text: '删除', onclick: async () => {
+          const confirmed = await Dom.confirm({ title: '删除这个索引？', danger: true, confirmText: '移到回收目录',
+            body: [`${item.model} / ${item.name}`, item.model === current
+              ? '这是当前检索模型的索引，删除后搜索会提示未建索引，需要重新建索引。' : '其他模型的索引，删除不影响当前模型的搜索。',
+            '已保存的主题和片段不受影响。'] });
+          if (!confirmed) return;
+          remove.disabled = true;
+          try {
+            if (eagle.library.path !== libraryPath) throw new Error('素材库已切换，请重新打开索引管理');
+            const result = await Api.trashIndex(library.id, item.name);
+            SearchCache.clear();
+            toast(`已移到回收目录：${result.trash_path}`, false, 6000);
+            await renderIndexAdmin(body, ++indexAdminGeneration);
+          } catch (error) {
+            remove.disabled = false;
+            toast(`删除失败：${error.message}`, true, 6000);
+          }
+        } });
+        return h('div', { className: 'archive-row index-admin-row' },
+          h('div', { className: 'index-admin-info' },
+            h('b', { text: item.model + (item.model === current ? '（当前模型）' : '') }),
+            h('span', { className: 'hint', text: stats, title: item.path }),
+            h('span', { className: 'hint', text: extra })),
+          remove);
+      }));
+  }
+
+  let indexAdminGeneration = 0;
+  function openIndexAdmin() {
+    if (!isServiceOnline()) { toast('搜索服务未连接', true); return; }
+    const body = h('div', { className: 'stats-body' });
+    const dialog = h('dialog', { className: 'index-admin-dialog' },
+      h('div', { className: 'settings-form stats-form' },
+        h('h3', { text: '索引管理' }), body,
+        h('div', { className: 'dialog-actions' },
+          h('button', { type: 'button', text: '刷新', onclick: () => load() }),
+          h('button', { type: 'button', text: '关闭', onclick: () => dialog.close() }))));
+    const load = () => renderIndexAdmin(body, ++indexAdminGeneration).catch((error) => {
+      body.replaceChildren(h('p', { className: 'hint form-error', text: `读取失败：${error.message}` }));
+    });
+    dialog.addEventListener('close', () => { indexAdminGeneration += 1; dialog.remove(); });
+    document.body.appendChild(dialog);
+    dialog.showModal();
+    load();
+  }
+
   // 在线目录不能直接覆盖；离线维护工具会校验进程锁、包清单并保存回滚记录。
   function exportIndexes() {
     toast('索引导出已改为安全离线维护：关闭 5006/5007 服务后，使用后端 tools/index_package.py export；详见更新说明。不会压缩运行中的索引。', true, 10000);
@@ -199,6 +276,7 @@ const LibraryTools = (() => {
     if (typeof options.isServiceOnline === 'function') isServiceOnline = options.isServiceOnline;
     $('btn-stats').addEventListener('click', openStats);
     $('btn-dedup-scan').addEventListener('click', openDedupScan);
+    $('btn-index-admin').addEventListener('click', openIndexAdmin);
     $('btn-dedup-rescan').addEventListener('click', runDedupScan);
     $('btn-close-dedup').addEventListener('click', () => $('dedup-dialog').close());
     $('btn-close-stats').addEventListener('click', () => $('stats-dialog').close());
@@ -206,5 +284,5 @@ const LibraryTools = (() => {
     $('btn-import-indexes').addEventListener('click', importIndexes);
   }
 
-  return { init, openStats, openDedupScan, runDedupScan, exportIndexes, importIndexes, showLegacyMigration };
+  return { init, openStats, openDedupScan, runDedupScan, openIndexAdmin, exportIndexes, importIndexes, showLegacyMigration };
 })();

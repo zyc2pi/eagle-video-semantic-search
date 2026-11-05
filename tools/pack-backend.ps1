@@ -80,6 +80,12 @@ Write-Host "== 2/4 复制必需模型：ffmpeg + FG-CLIP2 =="
 Invoke-Robocopy (Join-Path $Source 'models\ffmpeg') (Join-Path $backend 'models\ffmpeg')
 Invoke-Robocopy (Join-Path $Source 'models\qihoo360-fg-clip2-base') (Join-Path $backend 'models\qihoo360-fg-clip2-base')
 
+$transnet = Join-Path $Source 'models\transnetv2'
+if (Test-Path $transnet) {
+    Write-Host "== 复制 TransNetV2 权重（约 30MB，高精度镜头切分可选项）=="
+    Invoke-Robocopy $transnet (Join-Path $backend 'models\transnetv2')
+}
+
 if ($IncludeCLIP) {
     Write-Host "== 复制 openai-clip（剔除冗余权重，只留 safetensors）=="
     Invoke-Robocopy (Join-Path $Source 'models\openai-clip-vit-large-patch14') `

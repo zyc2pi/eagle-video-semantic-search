@@ -30,6 +30,7 @@ const Config = (() => {
     indexSceneThreshold: 0.85,   // 场景切分余弦阈值，越高切得越碎
     indexLocalmaxOrder: 2,       // 边界检测局部极小值阶数
     indexFrameSelection: 'content_adaptive', // 复用现有向量，自适应数量；仅影响新索引
+    indexShotDetection: 'cosine', // 镜头切分：cosine 余弦极小值 / transnetv2 高精度（需后端权重）
     indexContentMaxFrames: 12,
     indexFp16: true,             // FP16 推理（仅 NVIDIA GPU 生效）
     // 搜索范围只在本次打开中共用，不写入配置；重新打开恢复整库。
@@ -47,6 +48,10 @@ const Config = (() => {
     aiEnhance: false,   // AI 查询增强总开关：双语改写（需配置 DeepSeek key）
     aiExpand: false,    // AI 语义扩展：额外生成同义/场景变体查询（最多 8 条，多路合并）
     aiMode: 'balanced', // AI 查询增强档位 fast/balanced/quality（变体数量与质量权衡）
+    aiPlanPreview: false, // 搜索前展示 AI 改写计划，确认/编辑后以 precomputed_plan 搜索
+    sequenceMaxGap: 5,  // 时序搜索相邻步骤的最大间隔（秒）
+    autoCheckNew: true, // 开窗及索引完成后在后台检查各主题的新素材命中，只做提示不写入
+    evalMode: false,    // 评测记录模式：搜索结果与耗时写入 evaluation/<日期>.json，供人工标注
     miniRerank: false,  // MiniCPM 二阶段精搜（慢，占显存大）
     history: [],        // 最近搜索词
   };
@@ -63,7 +68,7 @@ const Config = (() => {
     indexSampleInterval: [1, 30, true], indexResolution: [128, 512, true],
     indexMinSceneLen: [1, 120, true], indexBatchSize: [8, 128, true],
     indexSceneThreshold: [0.5, 0.99], indexLocalmaxOrder: [1, 5, true],
-    indexContentMaxFrames: [1, 32, true],
+    indexContentMaxFrames: [1, 32, true], sequenceMaxGap: [0, 120],
     thumbnailCacheMaxEntries: [0, 50000, true], thumbnailCacheMaxMB: [0, 1024, true],
   };
 
@@ -84,7 +89,8 @@ const Config = (() => {
     if (!['mean', 'max'].includes(value.visualAgg) || !['fast', 'balanced', 'quality'].includes(value.aiMode)
         || !['auto', 'dark', 'light'].includes(value.theme)
         || !['all', 'selected', 'custom', 'exclude'].includes(value.scopeMode)
-        || !['triplet', 'dinov3_cses', 'content_adaptive'].includes(value.indexFrameSelection)) throw new Error('配置选项无效');
+        || !['triplet', 'dinov3_cses', 'content_adaptive'].includes(value.indexFrameSelection)
+        || !['cosine', 'transnetv2'].includes(value.indexShotDetection)) throw new Error('配置选项无效');
     if (!Array.isArray(value.history) || !value.history.every((v) => typeof v === 'string')
         || !Array.isArray(value.scopeFolderIds) || !value.scopeFolderIds.every((v) => typeof v === 'string')
         || !Array.isArray(value.scopeExcludeFolderIds) || !value.scopeExcludeFolderIds.every((v) => typeof v === 'string')) throw new Error('配置列表格式无效');

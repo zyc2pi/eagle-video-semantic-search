@@ -155,6 +155,8 @@ async function main() {
             if (m.original_start_frame === window.__scoreBoostFrame) m.similarity = 40;
           });
           if (body.allowed_video_paths) matches = matches.filter((m) => body.allowed_video_paths.includes(m.video_path.replace(/\//g, '\\').toLowerCase()));
+          // 断言从夹具推导，不写死数量：记录本次返回的全部片段，供用例按素材导入时间计算期望。
+          window.__lastSearchMatches = matches.map((m) => ({ ...m }));
           result = { success: true, matches };
         } else result = { success: true };
         return { ok: true, status: 200, json: async () => result };
@@ -169,7 +171,10 @@ async function main() {
     }
     await page.evaluate(async (delay) => {
       window.__delayService = delay;
-      window.__create({ path: '/fixture-plugin' }); await window.__show();
+      window.__create({ path: '/fixture-plugin' });
+      // 后台“自动检查新素材”会在开窗 20 秒后发探测请求；夹具断言请求计数，统一关闭（仅内存，不写盘）。
+      Config.get().autoCheckNew = false;
+      await window.__show();
     }, !!process.env.WAREHOUSE_LAYOUT_ONLY);
     // 无浏览历史时默认打开全部主题；以下用例从新搜索开始。
     await page.waitForFunction(() => document.body.dataset.page === 'warehouse');
@@ -477,7 +482,7 @@ async function main() {
       await page.locator('#results .card').nth(2).click({ button: 'right' });
       assert.strictEqual(await page.evaluate(() => Search.getSelectedMatches().length), 6, '右键已选片段保留多选');
       assert.deepStrictEqual(await page.locator('.result-context-menu button:visible').allTextContents(),
-        ['添加到主题', '取消全部选择', '添加标签', '添加到新文件夹', '导出为时间线（PR / 达芬奇）', '排除此素材所在的最小子文件夹']);
+        ['添加到主题', '找更像所选的', '取消全部选择', '添加标签', '添加到新文件夹', '导出为时间线（PR / 达芬奇）', '排除此素材所在的最小子文件夹']);
       await page.locator('#btn-selection-tag').click();
       assert((await page.locator('#organize-summary').textContent()).includes('1 个素材'), '菜单复用原有整理处理');
       await page.locator('#organize-cancel').click();
@@ -646,8 +651,14 @@ async function main() {
     await revealControl(page, '#search-time');
     await page.locator('#search-time').selectOption('6');
     await page.locator('#btn-search').click();
-    // 新搜索按全库请求（73 条），近半年筛选在本地显示 72 条。
-    await page.waitForFunction(() => Search.getRawMatches().length === 73 && Search.getAllMatches().length === 72);
+    // 新搜索按全库请求全部返回；近半年筛选在本地只显示夹具中 6 个月内导入素材的片段。
+    await page.waitForFunction(() => {
+      const returned = window.__lastSearchMatches || [];
+      const since = Date.now() - 183 * 86400000;
+      const recent = returned.filter((m) => window.__items.find((item) => item.filePath === m.video_path)?.importedAt >= since);
+      return returned.length > recent.length && recent.length > 0
+        && Search.getRawMatches().length === returned.length && Search.getAllMatches().length === recent.length;
+    });
     assert(await page.locator('#btn-selection-tag').isDisabled());
     await closeCompactMenus(page);
     await page.locator('#results .card').nth(0).click();
@@ -1740,7 +1751,7 @@ async function runRemovalSmoke(page) {
   await closeCompactMenus(page);
   await page.locator('#results .card').nth(1).click({ button: 'right' });
   assert.deepStrictEqual(await page.locator('.result-context-menu button:visible').allTextContents(),
-    ['添加到主题', '从主题移除', '调整评分', '取消全部选择', '添加标签', '添加到新文件夹', '导出为时间线（PR / 达芬奇）', '排除此素材所在的最小子文件夹']);
+    ['添加到主题', '从主题移除', '调整评分', '找更像所选的', '取消全部选择', '添加标签', '添加到新文件夹', '导出为时间线（PR / 达芬奇）', '排除此素材所在的最小子文件夹']);
   assert.strictEqual((await persisted()).matches.length, 5, '右键不移除片段');
   assert.strictEqual(await page.evaluate(() => Search.getSelectedMatches().length), 2, '主题右键保留多选');
   await closeCompactMenus(page);
@@ -1816,18 +1827,20 @@ async function runRemovalSmoke(page) {
   await page.locator('#view-min-dur').fill('0');
   await revealControl(page, '#view-min-dur');
   await page.locator('#view-min-dur').dispatchEvent('change');
-  await page.evaluate((id) => {
+  const removedTotal = await page.evaluate((id) => {
     const archive = ArchiveStore.open(Config.pluginPath(), eagle.library.path);
     const source = archive.list().entries.find((entry) => entry.id === id);
     const entry = archive.add({ name: '人工整理大列表', recipe: source.recipe, view: source.view, matches: source.matches });
     archive.removeMatches(entry.id, entry.matches.map(ArchiveStore.sceneKey), entry.updatedAt, entry.revision || 0);
+    return entry.matches.length;
   }, fixture.id);
+  assert(removedTotal > 60, '夹具需超过一批（60）才能覆盖分批渲染');
   await openTopic('人工整理大列表');
   await revealControl(page, '#topic-removed');
   await page.locator('#topic-removed').click();
   assert.strictEqual(await page.locator('#topic-removed-list input').count(), 60, '已移除列表分批渲染');
   await page.locator('.removed-scene-more').click();
-  assert.strictEqual(await page.locator('#topic-removed-list input').count(), 73);
+  assert.strictEqual(await page.locator('#topic-removed-list input').count(), removedTotal);
   await page.locator('#topic-removed-all').check();
   for (const width of [1100, 480]) {
     await page.setViewportSize({ width, height: 740 });
@@ -1839,7 +1852,7 @@ async function runRemovalSmoke(page) {
   }
   await page.setViewportSize({ width: 1100, height: 740 });
   await page.locator('#topic-removed-restore').click();
-  assert.strictEqual(await page.evaluate(() => Search.getRawMatches().length), 73, '全选恢复包含整份已移除列表');
+  assert.strictEqual(await page.evaluate(() => Search.getRawMatches().length), removedTotal, '全选恢复包含整份已移除列表');
   await page.locator('#topic-removed-close').click();
   await page.evaluate(() => {
     const archive = ArchiveStore.open(Config.pluginPath(), eagle.library.path);

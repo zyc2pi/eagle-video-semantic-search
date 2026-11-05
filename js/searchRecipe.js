@@ -199,6 +199,17 @@ const SearchRecipe = (() => {
     if (payload.video_path && !require('fs').existsSync(payload.video_path)) {
       throw new Error('查询来源视频已失效，原结果仍保留');
     }
+    // 反馈样例按素材 ID 跟随移动；已删除的样例丢弃，正例全部失效时无法重放。
+    if (payload.feedback) {
+      const refresh = async (examples = []) => (await Promise.all(examples.map(async (example) => {
+        if (!example.itemId) return example;
+        const item = await eagle.item.getById(example.itemId);
+        return item && !item.isDeleted ? { ...example, video_path: item.filePath } : null;
+      }))).filter(Boolean);
+      payload.feedback = { ...payload.feedback, positives: await refresh(payload.feedback.positives),
+        negatives: await refresh(payload.feedback.negatives) };
+      if (!payload.feedback.positives.length) throw new Error('反馈搜索的正例素材都已失效，原结果仍保留');
+    }
     return { ...resolved, payload };
   }
 

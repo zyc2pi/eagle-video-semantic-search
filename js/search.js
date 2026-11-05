@@ -356,6 +356,33 @@ const Search = (() => {
     return idxs;
   }
 
+  /* 运镜/景别快捷筛选：只列当前完整结果中素材已有的 analyze_shot 标签，点击切换标签筛选条件。 */
+  const SHOT_TAG_PREFIXES = ['运镜:', '景别:'];
+  function renderShotTagChips() {
+    const box = document.getElementById('result-tag-chips');
+    if (!box) return;
+    const counts = new Map();
+    const seenVideos = new Set();
+    lastMatches.forEach((match) => {
+      const key = Bridge.normalizePath(match.video_path);
+      if (seenVideos.has(key)) return;
+      seenVideos.add(key);
+      (Bridge.itemForPath(match.video_path)?.tags || []).forEach((tag) => {
+        tag = String(tag);
+        if (SHOT_TAG_PREFIXES.some((prefix) => tag.startsWith(prefix))) counts.set(tag, (counts.get(tag) || 0) + 1);
+      });
+    });
+    const active = new Set(String(archiveFilter.tags || '').split(/[,，]/)
+      .map((tag) => tag.trim().toLocaleLowerCase()).filter(Boolean));
+    const tags = [...counts.keys()].sort((a, b) => a.localeCompare(b, 'zh'));
+    box.classList.toggle('hidden', !tags.length);
+    box.replaceChildren(...tags.map((tag) => Dom.h('button', {
+      type: 'button', className: 'tag-chip', dataset: { tag },
+      attrs: { 'aria-pressed': String(active.has(tag.toLocaleLowerCase())) },
+      title: `${counts.get(tag)} 个视频带此标签，点击切换`,
+    }, `${tag.replace(/^(运镜|景别):/, '')} ${counts.get(tag)}`)));
+  }
+
   function computeGroups() {
     const map = new Map(); // normalizedPath -> group
     const list = [];
@@ -462,7 +489,8 @@ const Search = (() => {
     });
   }
 
-  async function requestRecipe(recipe, context, signal) {
+  async function requestRecipe(recipe, context, signal, { quiet = false } = {}) {
+    const phaseOf = quiet ? () => {} : setPhase;
     const snapshot = await prepare(recipe.config.modelName);
     if (signal?.aborted) { const error = new Error('已取消等待'); error.name = 'AbortError'; throw error; }
     if (!snapshot) throw new Error(NO_INDEX.message);
@@ -497,19 +525,24 @@ const Search = (() => {
       const cached = SearchCache.get(cacheParams);
       if (cached) {
         console.log('[搜索缓存] 命中缓存，跳过请求');
-        setPhase('从缓存加载结果…');
-        resp = { ok: true, data: { success: true, matches: cached } };
+        phaseOf('从缓存加载结果…');
+        resp = { ok: true, fromCache: true, data: { success: true, matches: cached } };
       }
     }
 
     if (!resp) {
-      setPhase('等待服务返回结果…');
+      phaseOf('等待服务返回结果…');
       if (recipe.kind === 'visual') {
         resp = await Api.searchVisual(payload, indices, cfg.visualThreshold, context.paths, cfg, { signal });
       } else if (recipe.kind === 'hybrid') {
         resp = await Api.searchHybrid(recipe.query, payload, indices, cfg.threshold, context.paths, cfg, { signal });
+      } else if (recipe.kind === 'feedback') {
+        resp = await Api.searchFeedback(payload.feedback, indices, context.paths, cfg, { signal });
+      } else if (recipe.kind === 'sequence') {
+        resp = await Api.searchSequence(payload.sequence, indices, cfg.threshold, context.paths, cfg, { signal });
       } else {
-        resp = await Api.search(recipe.query, indices, cfg.threshold, context.paths, cfg, { signal });
+        resp = await Api.search(recipe.query, indices, cfg.threshold, context.paths, cfg,
+          { signal, aiPlan: payload?.aiPlan || null });
       }
 
       // 缓存原始新词分数；候选镜头交集与权重在命中缓存后也要重新计算。
@@ -547,13 +580,22 @@ const Search = (() => {
       }
       // 新搜索保留全库候选；显示条件不进入请求和缓存键，主题更新仍按原 recipe 重放。
       const request = { ...recipe, config: { ...recipe.config, ...(kind === 'text' ? { threshold: 0 } : {}) } };
+      const started = Date.now();
       const resp = await requestRecipe(request, { ...context, paths: null }, controller.signal);
+      const latencyMs = Date.now() - started;
       if (generation !== requestGeneration) return { ok: false, cancelled: true, stale: true };
       if (SearchRecipe.normalize(recipe.library) !== SearchRecipe.normalize(eagle.library.path)) {
         throw new Error('素材库已切换，已忽略旧搜索结果');
       }
       setPhase('渲染结果…');
-      return finishSearch(resp, query, recipe, standalone && !refinement ? { time: archiveTime, filter: archiveFilter } : filters);
+      const result = finishSearch(resp, query, recipe, standalone && !refinement ? { time: archiveTime, filter: archiveFilter } : filters);
+      // 评测记录与性能诊断订阅：耗时为请求往返（含缓存命中），不含渲染。
+      if (result.ok && typeof CustomEvent === 'function') {
+        document.dispatchEvent?.(new CustomEvent('search-complete', { detail: {
+          recipe: SearchRecipe.clone(recipe), latencyMs, fromCache: !!resp.fromCache,
+          timings: resp.data?.timings || null, library: recipe.library } }));
+      }
+      return result;
     } catch (error) {
       if (generation !== requestGeneration || error.name === 'AbortError') return { ok: false, cancelled: true, stale: generation !== requestGeneration };
       throw error;
@@ -562,8 +604,9 @@ const Search = (() => {
     }
   }
 
-  function run(query, threshold, context) {
-    return runCaptured('text', query, null, context, threshold);
+  // aiPlan：搜索前确认的 AI 改写计划，存入 recipe.payload，主题更新时按同一计划重放。
+  function run(query, threshold, context, aiPlan = null) {
+    return runCaptured('text', query, aiPlan ? { aiPlan } : null, context, threshold);
   }
 
   async function refine(query, threshold, context, source, weight) {
@@ -607,6 +650,25 @@ const Search = (() => {
     return runCaptured('hybrid', query, payload, context, textThreshold);
   }
 
+  /* 正负样本反馈：examples = { positives, negatives, negativeWeight }，片段用原始帧边界与素材 ID 固定。 */
+  function exampleFromMatch(match) {
+    return { video_path: match.video_path,
+      itemId: match.eagleItemId || Bridge.itemForPath(match.video_path)?.id || null,
+      start_frame: match.original_start_frame ?? match.start_frame,
+      end_frame: match.original_end_frame ?? match.end_frame };
+  }
+
+  function runFeedback(examples, context, label) {
+    if (!examples.positives?.length) throw new Error('至少需要一个正例片段');
+    if (examples.positives.length > 50 || (examples.negatives?.length || 0) > 50) throw new Error('正例、负例各最多 50 个片段');
+    return runCaptured('feedback', label, { feedback: examples }, context);
+  }
+
+  /* 时序组合：sequence = { steps: [2～4 个文本], maxGap: 秒 }；每步阈值由服务端按当前阈值过滤。 */
+  function runSequence(sequence, context, threshold) {
+    return runCaptured('sequence', sequence.steps.join(' → '), { sequence }, context, threshold);
+  }
+
   /* 仓库更新只返回候选；持久化成功后才改变当前显示。 */
   async function replay(recipe) {
     if (busy) throw new Error('已有搜索正在进行，请稍候');
@@ -633,8 +695,18 @@ const Search = (() => {
   }
 
   /* 新素材探测：按主题已存条件只在 candidatePaths（新加入的视频）内重放，只返回候选，不改变显示或写入主题。 */
-  async function probe(recipe, candidatePaths) {
+  async function probe(recipe, candidatePaths, { signal: backgroundSignal } = {}) {
     if (busy) throw new Error('已有搜索正在进行，请稍候');
+    // 后台探测：不占用搜索忙碌状态、不显示阶段文字，用户开始任何搜索时由调用方中止。
+    if (backgroundSignal) {
+      const context = await SearchRecipe.resolve(recipe);
+      const paths = new Set([...candidatePaths].filter((path) => context.paths == null || context.paths.has(path)));
+      if (!paths.size) return { matches: [], candidates: 0 };
+      const resp = await requestRecipe(recipe, { ...context, paths }, backgroundSignal, { quiet: true });
+      if (backgroundSignal.aborted) { const error = new Error('已取消检查'); error.name = 'AbortError'; throw error; }
+      if (!resp.ok || !resp.data?.success) throw new Error(resp.data?.error || '搜索失败');
+      return { matches: identifyMatches(applyScope(resp.data.matches || [], paths)), candidates: paths.size };
+    }
     const generation = ++requestGeneration;
     const controller = new AbortController();
     activeRequest = controller;
@@ -945,6 +1017,7 @@ const Search = (() => {
         if (input) input.value = value;
       });
       document.getElementById('result-filter-error').textContent = '';
+      renderShotTagChips();
     }
     const hasLocalFilter = archiveFilter.query.trim() || archiveFilter.source !== 'all'
       || archiveFilter.tags?.trim() || (archiveFilter.orientation || 'all') !== 'all' || archiveFilter.maxDur != null
@@ -1328,7 +1401,7 @@ const Search = (() => {
   }
 
   return {
-    bindDom, run, refine, setRefinementWeight, runVisual, runFrameText, runHybrid, setView, findLibraryIndexes, loadResults, captureState, restoreState, pruneMissingVideos,
+    bindDom, run, refine, setRefinementWeight, runVisual, runFeedback, runSequence, exampleFromMatch, runFrameText, runHybrid, setView, findLibraryIndexes, loadResults, captureState, restoreState, pruneMissingVideos,
     configureThumbnailCache: (cfg) => ThumbLoader.configure(cfg),
     retryThumbnails: () => ThumbLoader.retryFailed(),
     clearThumbnailCache() { ThumbLoader.resetCache(); render(); },
