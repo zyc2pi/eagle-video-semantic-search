@@ -254,9 +254,21 @@
 
   // ---------- 搜索范围选择器（整库 / 跟随 Eagle 选中 / 指定 / 排除，均递归子文件夹）----------
   let scopeDialogChecked = new Set(); // 对话框内当前勾选的文件夹 id
-  let scopeDialogExpanded = new Set(); // 对话框每次打开时默认全部折叠
+  let scopeDialogExpanded = new Set(); // 展开状态按素材库记在本机，重新打开沿用
   let scopeFolderRoots = [];
   let scopeDialogTarget = null;
+  const scopeExpandedKey = () => `scopeFolderExpanded:${SearchRecipe.normalize(eagle.library.path)}`;
+
+  function loadScopeExpanded() {
+    try {
+      const ids = JSON.parse(localStorage.getItem(scopeExpandedKey()) || '[]');
+      return new Set(Array.isArray(ids) ? ids.filter((id) => typeof id === 'string') : []);
+    } catch { return new Set(); }
+  }
+
+  function saveScopeExpanded() {
+    try { localStorage.setItem(scopeExpandedKey(), JSON.stringify([...scopeDialogExpanded])); } catch { /* 仅为便利，失败不影响范围 */ }
+  }
   let scopeOperation = 0;
   let scopeContextGeneration = 0;
   let excludingFolder = false;
@@ -342,6 +354,7 @@
         toggle.addEventListener('click', () => {
           if (r.expanded) scopeDialogExpanded.delete(r.id);
           else scopeDialogExpanded.add(r.id);
+          saveScopeExpanded();
           renderFolderTree(container);
         });
         row.appendChild(toggle);
@@ -384,7 +397,7 @@
     const target = scopeDialogTarget = scopeContext();
     const cfg = Config.get();
     scopeDialogChecked = new Set(cfg.scopeFolderIds || []);
-    scopeDialogExpanded = new Set();
+    scopeDialogExpanded = loadScopeExpanded();
     scopeFolderRoots = [];
     document.querySelectorAll('input[name="scope-mode"]').forEach((r) => {
       r.checked = r.value === (cfg.scopeMode || 'all');
@@ -1318,6 +1331,7 @@
 
   eagle.onPluginCreate((plugin) => {
     Config.init(plugin.path);
+    ThumbDiskCache.init(require('path').join(plugin.path, 'cache', 'thumbnails'));
     Search.configureThumbnailCache(Config.get());
     Config.onError?.((message) => toast(message, true, 7000));
     if (Config.getLoadError?.()) toast(Config.getLoadError(), true, 10000);
@@ -1363,13 +1377,13 @@
     if (showPending || document.visibilityState === 'visible') showPlugin({ fromInit: true });
   });
 
-  let initShowAt = 0;
+  let skipInitialShow = false;
   function showPlugin({ fromInit = false } = {}) {
     if (!pluginReady) { showPending = true; return; }
+    // 已收到过宿主显示事件时，初始化只是重放它，不再等待第二次事件。
+    if (fromInit) skipInitialShow = !showPending;
+    else if (skipInitialShow) { skipInitialShow = false; return; }
     showPending = false;
-    // 初始化时窗口已可见会主动执行一次；只跳过紧随其后的那一次宿主 onPluginShow，之后的关闭重开照常重置。
-    if (!fromInit && initShowAt && Date.now() - initShowAt < 1500) { initShowAt = 0; return; }
-    initShowAt = fromInit ? Date.now() : 0;
     WarehouseNavigation.save();
     resetSearchScope();
     WarehouseNavigation.show();
@@ -1380,6 +1394,8 @@
     else if (!Indexer.isRunning()) refreshIndexHint();
   }
 
+  // 窗口隐藏后，下一次显示一定是重开，不能当作初始化的重复事件。
+  document.addEventListener('visibilitychange', () => { if (document.hidden) skipInitialShow = false; });
   eagle.onPluginShow(() => showPlugin());
 
   eagle.onThemeChanged(() => applyTheme());

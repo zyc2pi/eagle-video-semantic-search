@@ -82,6 +82,8 @@ const Search = (() => {
       // 保留原始压缩图片字节，不持有离屏 DOM/解码位图；按双字节字符串保守计费。
       const bytes = (url.length + source.length) * 2;
       if (!maxEntries || bytes > maxBytes) return;
+      // 同时写入磁盘缓存，下次打开插件可不等搜索服务直接显示。
+      if (typeof ThumbDiskCache !== 'undefined') ThumbDiskCache.write(url, source);
       if (cache.has(url)) cacheBytes -= cache.get(url).bytes;
       cache.delete(url);
       cache.set(url, { source, bytes });
@@ -153,7 +155,10 @@ const Search = (() => {
             && typeof fetch === 'function' && typeof FileReader !== 'undefined') {
           request = pending.get(url);
           if (!request) {
-            request = readImage(url);
+            // 内存未命中时先读磁盘缓存，缺失或已失效再请求服务。
+            request = typeof ThumbDiskCache !== 'undefined'
+              ? ThumbDiskCache.read(url).then((data) => data || readImage(url))
+              : readImage(url);
             pending.set(url, request);
           }
           request.then((data) => {
@@ -174,6 +179,7 @@ const Search = (() => {
         maxEntries = cfg.thumbnailCacheMaxEntries ?? 5000;
         maxBytes = (cfg.thumbnailCacheMaxMB ?? 128) * 1024 * 1024;
         trim();
+        if (typeof ThumbDiskCache !== 'undefined') ThumbDiskCache.configure(cfg);
       },
       load(img, url, onError) {
         img.style.visibility = 'hidden';
@@ -1251,6 +1257,7 @@ const Search = (() => {
 
   function pruneMissingVideos(inventory) {
     ThumbLoader.resetCache();
+    if (typeof ThumbDiskCache !== 'undefined') ThumbDiskCache.prune(inventory);
     const state = captureState();
     if (ArchiveStore.reconcileVideoReferences(state, inventory)) state.selected = [];
     restoreState(state);

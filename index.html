@@ -476,12 +476,16 @@
 
   <dialog id="warehouse-category-dialog">
     <form id="warehouse-category-form" class="settings-form">
-      <h3>管理分类</h3><p class="hint">分类像文件夹一样可多层嵌套。修改名称或上级后点击保存；删除时，直属主题移到“未分类”，子文件夹提升一级。</p>
+      <h3>管理分类</h3><p class="hint">分类可多层嵌套。名称在回车或离开输入框时保存，改上级立即移动；删除后直属主题移到“未分类”，子分类提升一级。</p>
+      <div class="category-head" aria-hidden="true"><span>名称</span><span>上级分类</span><span></span></div>
       <div id="category-list"></div>
-      <label>新分类的上级文件夹<select id="category-parent"><option value="">根目录</option></select></label>
-      <label>新分类名称<input id="category-name" maxlength="60" required></label>
+      <div class="category-new">
+        <input id="category-name" maxlength="60" placeholder="新分类名称" aria-label="新分类名称">
+        <select id="category-parent" aria-label="新分类的上级分类"><option value="">根目录</option></select>
+        <button class="primary" type="submit">新建</button>
+      </div>
       <p id="category-error" class="form-error" role="alert"></p>
-      <div class="dialog-actions"><button id="category-close" type="button">关闭</button><button class="primary" type="submit">新建分类</button></div>
+      <div class="dialog-actions"><button id="category-close" type="button">完成</button></div>
     </form>
   </dialog>
 
@@ -518,7 +522,7 @@
             <input id="cfg-thumb-cache-mb" type="number" min="0" max="1024" step="1" required>
           </label>
         </div>
-        <p class="hint">主题和搜索共用，优先保留最近浏览的图片；任一上限设为 0 可关闭。保存后立即生效。此处限制图片缓存数据，不含页面显示和解码占用；重载插件会清空会话缓存，已生成的磁盘预览图仍保留。</p>
+        <p class="hint">主题和搜索共用，优先保留最近浏览的图片；任一上限设为 0 可关闭。保存后立即生效。此处限制图片缓存数据，不含页面显示和解码占用。看过的预览图同时按相同张数与容量（按文件大小计）保存在插件目录 cache/thumbnails，重开插件时不等搜索服务即可显示；原视频被替换后自动重新获取。</p>
       </details>
       <label>以图/以片搜相似阈值
         <input id="cfg-visual-threshold" type="number" min="0" max="120" step="1">
@@ -634,6 +638,7 @@
   <script src="js/topicUndo.js"></script>
   <script src="js/coverFrame.js"></script>
   <script src="js/indexer.js"></script>
+  <script src="js/thumbDiskCache.js"></script>
   <script src="js/previewPlayer.js"></script>
   <script src="js/search.js"></script>
   <script src="js/mediaDrag.js"></script>

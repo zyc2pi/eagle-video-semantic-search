@@ -5,6 +5,7 @@ const vm = require('vm');
 
 const requests = [];
 let supportsSmartFrames = true;
+let supportsLibraryPrune = true;
 const context = {
   AbortController,
   clearTimeout,
@@ -30,7 +31,8 @@ const context = {
   fetch: async (url, options) => {
     requests.push({ url, options, body: options.body ? JSON.parse(options.body) : null });
     return { ok: true, status: 200, json: async () => ({ success: true, matches: [],
-      capabilities: { smart_frame_selection: supportsSmartFrames, content_adaptive_frames: supportsSmartFrames } }) };
+      capabilities: { library_prune: supportsLibraryPrune,
+        smart_frame_selection: supportsSmartFrames, content_adaptive_frames: supportsSmartFrames } }) };
   },
   setTimeout,
 };
@@ -50,6 +52,11 @@ async function main() {
     true,
     '整库增量索引必须请求清理已不在 Eagle 库中的旧路径',
   );
+  supportsLibraryPrune = false;
+  await assert.rejects(api.startIndex(['D:/library/a.mp4'], 'library', 'model', false, true),
+    (error) => error.indexNotSubmitted === true && /全库失效项清理/.test(error.message));
+  assert(requests.at(-1).url.endsWith('/health'), '缺少清理能力时不能提交全库索引');
+  supportsLibraryPrune = true;
 
   await api.startIndex(['D:/library/a.mp4'], 'library', 'model', false, false);
   assert.strictEqual(

@@ -601,11 +601,11 @@ const Warehouse = (() => {
     }
   }
 
-  function confirmButton(button, action) {
+  function confirmButton(button, action, label = '再次点击确认删除') {
     if (button.dataset.confirming === '1') { action(); return; }
     const original = button.textContent;
     button.dataset.confirming = '1';
-    button.textContent = '再次点击确认删除';
+    button.textContent = label;
     setTimeout(() => { button.dataset.confirming = ''; button.textContent = original; }, 4000);
   }
 
@@ -622,29 +622,54 @@ const Warehouse = (() => {
     };
     fillParents($('category-parent'), $('category-parent').value);
     $('category-list').replaceChildren();
+    if (!hierarchy.items.length) $('category-list').appendChild(node('p', 'hint category-empty', '还没有分类，在下方新建。'));
     hierarchy.items.forEach((category) => {
       const row = node('div', 'category-row');
-      row.style.marginLeft = `${Math.min(category.depth, 6) * 12}px`;
+      const name = node('div', 'category-name-cell');
+      name.style.paddingLeft = `${Math.min(category.depth, 6) * 16}px`;
       const input = node('input');
       input.value = category.name; input.maxLength = 60;
-      input.setAttribute('aria-label', '分类名称');
-      const parent = node('select'); parent.setAttribute('aria-label', `${category.path}的上级文件夹`);
-      fillParents(parent, category.parentId, category.ids);
-      const rename = node('button', '', '保存'); rename.type = 'button';
-      const remove = node('button', '', '删除'); remove.type = 'button';
+      input.dataset.focusKey = `${category.id}:name`;
+      input.setAttribute('aria-label', `${category.path}的名称`);
+      name.appendChild(input);
+      const parent = node('select'); parent.setAttribute('aria-label', `${category.path}的上级分类`);
+      parent.dataset.focusKey = `${category.id}:parent`;
+      fillParents(parent, category.parentId || '', category.ids);
+      const remove = node('button', 'category-remove', '删除'); remove.type = 'button';
+      remove.dataset.focusKey = `${category.id}:remove`;
       const change = (action) => {
         try {
           if (categoryLibrary !== eagle.library.path) throw new Error('素材库已切换，请重新打开管理分类');
+          if (action === 'rename' && input.value.trim() === category.name && parent.value === (category.parentId || '')) {
+            input.value = category.name;
+            return;
+          }
           store().category(action, category.id, input.value, parent.value);
           $('category-error').textContent = '';
-          renderCategories();
           categoryOptions($('warehouse-category'), true, $('warehouse-category').value);
           renderCards();
-        } catch (error) { $('category-error').textContent = error.message; }
+        } catch (error) {
+          $('category-error').textContent = error.message;
+          input.value = category.name; parent.value = category.parentId || '';
+          return;
+        }
+        // 等焦点移到下一个控件后再重绘，并把焦点放回同一位置。
+        setTimeout(() => {
+          const key = document.activeElement?.dataset?.focusKey;
+          renderCategories();
+          if (key) $('category-list').querySelector(`[data-focus-key="${CSS.escape(key)}"]`)?.focus();
+        });
       };
-      rename.addEventListener('click', () => change('rename'));
-      remove.addEventListener('click', () => confirmButton(remove, () => change('remove')));
-      row.append(input, rename, remove, parent);
+      input.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') { event.preventDefault(); input.blur(); }
+        else if (event.key === 'Escape' && input.value !== category.name) {
+          event.preventDefault(); event.stopPropagation(); input.value = category.name; input.blur();
+        }
+      });
+      input.addEventListener('change', () => change('rename'));
+      parent.addEventListener('change', () => change('rename'));
+      remove.addEventListener('click', () => confirmButton(remove, () => change('remove'), '确认删除'));
+      row.append(name, parent, remove);
       $('category-list').appendChild(row);
     });
   }

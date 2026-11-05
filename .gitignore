@@ -12,6 +12,7 @@ service.log
 *.log
 saves/
 warehouse/
+cache/
 
 # 打包产物：Pack Plugin 会把 config.json（含 key）一起打进去
 *.eagleplugin

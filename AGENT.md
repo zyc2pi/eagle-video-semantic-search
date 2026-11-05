@@ -27,6 +27,7 @@ Eagle（素材管理软件）的窗口插件，提供视频的语义检索：中
 | `js/eagleBridge.js` | Eagle API 桥：filePath↔item 映射、文件夹树/递归、定位（folder.open+select）、找/建文件夹 |
 | `js/indexer.js` | 建索引：收集视频 → POST /index → 轮询 /index/status（服务端队列）|
 | `js/search.js` | 结果渲染核心：分批渲染+缩略图限流(6并发)、分组/排序/过滤视图、右侧预览面板及主题/标签/评分/基本信息详情、勾选；媒体播放交给 PreviewPlayer |
+| `js/thumbDiskCache.js` | 预览图磁盘缓存（ThumbLoader 第二层）：插件目录 `cache/thumbnails`，键为规范化视频路径+帧号，记录素材 size:lastModified 指纹，沿用缓存张数/MB 上限按文件字节 LRU 淘汰；缺少 fs/Buffer 能力时自动停用 |
 | `js/previewPlayer.js` | `PreviewPlayer.create(el, …)`：悬停小窗播放、预览面板原视频接管/定位/停滞恢复/逐帧与截图代次；与 Search 共用同一个 `el`，接管时替换 `el.previewVideo`；须先于 search.js 加载 |
 | `js/searchRecipe.js` | 搜索参数白名单快照、导入日期边界及文件夹交集、视觉查询来源持久化和重放 |
 | `js/archiveStore.js` | 按库隔离的搜索仓库 JSON、原子替换、旧 saves 迁移、片段新增比较与分类持久化 |
@@ -84,7 +85,7 @@ Eagle（素材管理软件）的窗口插件，提供视频的语义检索：中
 - 全库索引（all/rebuild）提交前经 `Indexer.start(mode, handlers, { beforeSubmit })` 交由 plugin.js 核对：`Warehouse.previewPrune` → `ArchiveStore.previewMissingVideos` 只读统计将被清理的活动片段；每库上次确认的视频数存于 localStorage `eagle-semantic-library-video-counts`。清单为 0 或（上次≥20 且）少于上次 70% 视为骤减；按钮触发在骤减、有主题片段将被清理时确认，Ctrl+I 一律确认，自动索引骤减直接放弃。完成后 `pruneMissingVideos(library, { expectedCount })` 再次读到骤减清单时跳过主题清理并报错，后端索引清理以提交时确认的清单为准。
 - 时间线导出只写 FCP7 XML：`end_frame` 为包含帧，xmeml `out` 为不包含帧（end+1）；入出点优先 original_* 原始帧，片段帧率取 match.fps（缺省 25），序列帧率取第一个片段，NTSC 以整数 timebase+ntsc 表示。路径按段 encodeURIComponent，盘符保留。
 - 「检查新素材」用 `Search.probe(recipe, paths)`：按主题 recipe 解析范围后只与主题 updatedAt 之后 importedAt 的视频取交集，跳过 refinement 与无 recipe 主题；结果按 sceneLookup 排除已有及已移除片段，只展示，不写入。应用仍走「更新结果」的变化预览。
-- 快捷键在弹窗打开时只响应 Esc；仓库为 Ctrl+B（Ctrl+W 可能被宿主当作关闭窗口）。初始化时窗口可见会主动 showPlugin({fromInit:true})，只跳过其后 1.5 秒内的那一次宿主 onPluginShow；之后关闭重开照常重置范围。窗口尺寸记录 `{width,height,maximized}`，最大化时保留此前普通尺寸，宿主窗口接口 3 秒无响应即放弃恢复。
+- 快捷键在弹窗打开时只响应 Esc；仓库为 Ctrl+B（Ctrl+W 可能被宿主当作关闭窗口）。初始化时窗口可见会主动 showPlugin({fromInit:true})；仅在尚未收到宿主显示事件时跳过随后的一次重复事件，窗口隐藏即取消跳过，关闭重开照常重置范围。窗口尺寸记录 `{width,height,maximized}`，最大化时保留此前普通尺寸，宿主窗口接口 3 秒无响应即放弃恢复。
 - 配置验证、临时文件替换完成后才更新内存；失败抛错并通知 UI。损坏原件只能在明确恢复操作下另存备份后替换，不记录密钥值。配置备份同样必须排除打包与 Git。
 - 外观设置 `theme` 为 `auto`（默认跟随 Eagle）/`dark`（夜间）/`light`（浅色），配置成功保存后立即应用；宿主主题事件仅在 auto 模式决定配色。统一通过根元素 data-theme 与 CSS 变量切换，并同步原生控件 color-scheme；不重建结果或播放器。
 - 仓库 schema v3：路径哈希清单与 `<hash>-assets/` 不可变资源，旧 v1/v2 兼容，正常保存前备份；列表用 summary，打开主题异步 hydrate。修改展示 view 不调用搜索。回收站与备份默认 30 天/10 份，未知文件保留；写锁及 fingerprint/revision 防止覆盖并发修改。恢复、复制和导出必须保留资源引用完整性。
@@ -111,7 +112,7 @@ Eagle（素材管理软件）的窗口插件，提供视频的语义检索：中
 - 搜索取消仅取消等待，通过 AbortSignal 与代次丢弃迟到响应；不等同后端推理停止。分组每批60，最高分对整组计算。原视频预览失败可重试，重试重新初始化代次，不再请求转码。
 - 文本搜索已移除跨视频去重：设置及主题编辑不再提供该选项，Api.search 不传 use_dedup/dedup_threshold，使用后端默认关闭行为；旧配置字段读取时丢弃，旧主题更新按当前参数白名单忽略。已有主题结果不自动重搜或改写。手动「查重扫描」与拖出文件按路径合并仍独立保留。
 - 普通搜索和主题可通过「在结果中搜索」对当前筛选后的全部镜头继续文本语义搜索（含未滚动加载项）。`recipe.refinement={label,scenes,weight}` 固定候选素材 ID/路径、原始帧边界及上一轮分数，不依赖来源主题仍存在；按来源模型查询候选视频，再以 `sceneLookup` 精确取镜头交集。新词请求阈值为 0，缓存原始新词分数，缓存命中后仍重新取交集并加权；更新主题的阈值在加权后执行。weight 为 0～10，0 只用上一轮、10 只用新词，合成分数 `(previous*(10-weight)+current*weight)/10`；每个机器结果的 `refinementScore` 保留两份原分，滑条即时重算显示/排序，人工评分保持原值。成功后成为独立搜索，原主题不写入，失败/取消保留来源；可继续搜索、筛选、整理、保存，保存/复制/备份随 recipe 和 matches 保留候选与权重。连续搜索以上一轮当时的合成分数为旧分；主题更新仅在固定候选内重搜，已失效素材排除，素材移动先按 ID 更新候选路径。主题内拖动权重只改当前浏览副本，保存为新主题保留该权重；编辑原主题条件可修改已存权重。
-- 缩略图统一走 ThumbLoader：HTTP 图片成功解码后保留原始压缩字节的 data URL；完整 URL（服务地址/视频路径/帧号）作键，同 URL 在途共享。主题/搜索重绘不清缓存，命中立即赋 src，未命中懒加载并保持 6 并发。默认 5000 张与 128 MiB 双上限，按 URL/data URL 双字节字符串保守计费，LRU 淘汰；不持有离屏 DOM/解码位图，预算不代表整个进程内存。Config 的 thumbnailCacheMaxEntries（0～50000）/thumbnailCacheMaxMB（0～1024）经设置保存后立即应用、缩小时淘汰，任一为0关闭；重载保留设置但清空会话缓存，后端磁盘缓存沿用。fetch失败走原生加载及已有备用图，失败不缓存；换页仅取消未开始请求，已开始请求仍占槽直到完成，旧失败不回退。时间/时长及错误消息不可直接插入 HTML。
+- 缩略图统一走 ThumbLoader：HTTP 图片成功解码后保留原始压缩字节的 data URL；完整 URL（服务地址/视频路径/帧号）作键，同 URL 在途共享。主题/搜索重绘不清缓存，命中立即赋 src，未命中懒加载并保持 6 并发。默认 5000 张与 128 MiB 双上限，按 URL/data URL 双字节字符串保守计费，LRU 淘汰；不持有离屏 DOM/解码位图，预算不代表整个进程内存。Config 的 thumbnailCacheMaxEntries（0～50000）/thumbnailCacheMaxMB（0～1024）经设置保存后立即应用、缩小时淘汰，任一为0关闭；重载清空内存缓存；成功解码的图片同时交给 ThumbDiskCache 持久保存（同上限、按文件字节），内存未命中时先读磁盘再请求服务，素材指纹变化即失效；Search.pruneMissingVideos 只删除已不在库中的视频的磁盘预览图。后端磁盘缓存沿用。fetch失败走原生加载及已有备用图，失败不缓存；换页仅取消未开始请求，已开始请求仍占槽直到完成，旧失败不回退。时间/时长及错误消息不可直接插入 HTML。
 - 索引列表提供 `revision: string|null`；搜索缓存键包含对应版本及服务地址，缺版本时禁缓存，缓存 5 分钟到期且读取不续期。历史失败项重试接入 Indexer 监视，全部终态、服务切换/重连清缓存；覆盖查询失败是未知状态，不能视为空库或触发自动索引。
 - 仓库备份目录 `revision-clock` 保留每库已使用版本高水位，写锁内先更新再提交清单，恢复不能回退版本；失败可留下版本间隙。主题导航用代次丢弃迟到读取，loadResults 的 `options.shouldApply` 在映射读取前后检查。
 - 关闭 5006 使用启动时生成的 `state/search-control-<port>.json` 凭据及 `X-Eagle-Control-Token`，不从 health 返回令牌；默认 loopback 的请求来源、Host、Origin 必须通过校验。凭据不可读时明确报错，不自动降级无授权关闭。发行包排除 state、个人根配置/备份/日志并使用无个人信息的默认配置模板。

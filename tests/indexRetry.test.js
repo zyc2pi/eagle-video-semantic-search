@@ -31,7 +31,7 @@ async function main() {
     setTimeout: (callback, ms) => { scheduled = { callback, ms }; return 1; },
     Config: { get: () => ({ scopeMode: 'all', scopeFolderIds: [], scopeExcludeFolderIds: [], modelName: 'model' }) },
     Search: { isBusy: () => false },
-    document: { getElementById: node, querySelectorAll: () => [], body: new Element(), createElement: tag => new Element(tag), createTextNode: text => ({ textContent: text }) },
+    document: { addEventListener() {}, getElementById: node, querySelectorAll: () => [], body: new Element(), createElement: tag => new Element(tag), createTextNode: text => ({ textContent: text }) },
     eagle: { library: { path: library.path }, onPluginCreate() {}, onPluginShow() {}, onThemeChanged() {}, onLibraryChanged() {} },
     Bridge: {
       resolveLibraryIdentity: async () => library,

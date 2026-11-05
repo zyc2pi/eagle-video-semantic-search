@@ -546,6 +546,12 @@ async function main() {
       console.log('result left/Ctrl/Shift selection, context actions and topic removal smoke passed');
       return;
     }
+    if (process.env.WAREHOUSE_COLLECTION_ONLY) {
+      await runContinuousCollectionSmoke(page);
+      assert.deepStrictEqual(errors, []);
+      console.log('continuous collection, duplicate protection and recent target smoke passed');
+      return;
+    }
     if (process.env.WAREHOUSE_CATEGORY_ONLY) {
       await runCategoryPickerSmoke(page);
       assert.deepStrictEqual(errors, []);
@@ -1353,6 +1359,7 @@ async function main() {
       document.dispatchEvent(new CustomEvent('search-completed'));
     });
     await page.locator('#btn-archives').click();
+    await page.locator('#warehouse-query').fill('导航主题 A');
     await navCard('导航主题 A').locator('.warehouse-card-open').click();
     await page.locator('#topic-search').click();
     assert.strictEqual(await page.locator('#query').inputValue(), '', '没有历史搜索时恢复空搜索页');
@@ -1376,6 +1383,7 @@ async function main() {
     });
     await page.locator('#warehouse-recovery').click();
     const recovery = page.locator('#warehouse-recovery-dialog');
+    await recovery.locator('summary').filter({ hasText: '导入、导出与维护' }).click();
     await recovery.getByRole('button', { name: '导出仓库包', exact: true }).click();
     assert.strictEqual(await recovery.getAttribute('aria-busy'), 'true');
     assert(await recovery.getByRole('button', { name: '关闭', exact: true }).isDisabled());
@@ -1421,6 +1429,14 @@ async function main() {
       editorError: document.getElementById('warehouse-editor-error')?.textContent,
       requests: window.__requests,
       dialogs: [...document.querySelectorAll('dialog[open]')].map((dialog) => dialog.id),
+      manualAdd: {
+        target: document.getElementById('manual-add-target')?.value,
+        status: document.getElementById('manual-add-status')?.textContent,
+        impact: document.getElementById('manual-add-impact')?.textContent,
+        progress: document.getElementById('manual-add-progress')?.textContent,
+        score: document.getElementById('manual-add-score')?.value,
+        position: document.getElementById('manual-add-position')?.textContent,
+      },
       focus: document.activeElement?.id,
       describeAborted: window.__describeAborted,
       frameBusy: typeof FrameSearch !== 'undefined' ? FrameSearch.isBusy() : null,
@@ -2491,12 +2507,15 @@ async function runContinuousCollectionSmoke(page) {
   };
   await open();
   // Continuous collection: protect the target's existing score and remember it.
-  await revealControl(page, '#btn-clear-selection');
-  await page.locator('#btn-clear-selection').click({ force: true });
+  // 无选择时整理入口隐藏，不能强制点击隐藏按钮（会误点到下方卡片）。
+  await page.evaluate(() => Search.clearSelection());
   await closeCompactMenus(page);
+  assert.strictEqual(await page.evaluate(() => Search.getSelectedMatches()?.length || 0), 0, '收录前清空选择');
   await page.locator('#results .pick').nth(0).check();
   await closeCompactMenus(page);
+  assert.strictEqual(await page.evaluate(() => Search.getSelectedMatches()?.length || 0), 1, '仅勾选第一个片段');
   await page.locator('#results .pick').nth(1).check();
+  assert.strictEqual(await page.evaluate(() => Search.getSelectedMatches()?.length || 0), 2, '仅勾选两个片段');
   await revealControl(page, '#btn-topic-add');
   await page.locator('#btn-topic-add').click();
   await page.locator('#manual-add-target').selectOption(fixture.targetId);
@@ -2532,6 +2551,7 @@ async function runContinuousCollectionSmoke(page) {
 }
 
 async function runTopicHistorySmoke(page) {
+  await ensureSearchResults(page);
   const fixture = await page.evaluate(() => {
     const archive = ArchiveStore.open(Config.pluginPath(), eagle.library.path);
     const matches = Search.getRawMatches().slice(0, 3);
@@ -2623,6 +2643,7 @@ async function runTopicHistorySmoke(page) {
 }
 
 async function runTopicCopySmoke(page) {
+  await ensureSearchResults(page);
   const fixture = await page.evaluate(() => {
     const archive = ArchiveStore.open(Config.pluginPath(), eagle.library.path);
     const match = { ...Search.getRawMatches()[0], similarity: 23.75, reviewedAt: '2026-10-20T00:00:00Z',

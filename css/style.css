@@ -112,6 +112,14 @@ body {
   overflow: hidden;
 }
 
+/* 全局细滚动条：透明轨道、低对比圆角滑块，悬停区域时加深 */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: var(--radius-pill); }
+:hover::-webkit-scrollbar-thumb { background: var(--border-strong); }
+::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
+::-webkit-scrollbar-button { display: none; }
+
 .hidden { display: none !important; }
 .hint { color: var(--text-dim); font-size: var(--font-sm); }
 .hint-inline { color: var(--text-dim); font-size: var(--font-xs); }
@@ -425,12 +433,6 @@ dialog .dialog-actions:last-child {
 .library-status button, .library-sidebar-footer button:not(.icon-btn) { background: var(--bg-panel); box-shadow: var(--shadow-card); }
 .library-status button:hover:not(:disabled), .library-sidebar-footer button:not(.icon-btn):hover:not(:disabled) { background: var(--bg-panel); border-color: var(--border-strong); }
 .library-tree { flex: 1; min-height: 0; overflow: auto; padding: 0 7px var(--space-4); }
-.library-tree::-webkit-scrollbar { width: 6px; height: 6px; }
-.library-tree::-webkit-scrollbar-track { background: transparent; }
-.library-tree::-webkit-scrollbar-thumb { background: var(--border); border-radius: var(--radius-pill); }
-.library-tree:hover::-webkit-scrollbar-thumb { background: var(--border-strong); }
-.library-tree::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
-.library-tree::-webkit-scrollbar-button { display: none; }
 .library-sidebar .library-nav-row {
   display: flex;
   align-items: center;
@@ -957,9 +959,16 @@ dialog .dialog-actions:last-child {
 .entry-advanced { border-top: 1px solid var(--border); padding-top: 10px; }
 .entry-advanced summary { cursor: pointer; color: var(--text-dim); margin-bottom: 10px; }
 .entry-advanced > label, .entry-advanced > div { margin-bottom: 10px; }
-.category-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin-bottom: var(--space-2); }
-.category-row input { flex: 1; }
-.category-row select, #category-parent { width: 100%; min-width: 0; }
+/* 管理分类：名称 | 上级 | 操作 三列对齐，层级用名称列缩进表示 */
+.category-head, .category-row, .category-new { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) 80px; align-items: center; gap: var(--space-2); }
+.category-head { color: var(--text-dim); font-size: var(--font-xs); margin-bottom: calc(-1 * var(--space-2)); }
+#category-list { display: flex; flex-direction: column; gap: var(--space-1h); max-height: 50vh; overflow-y: auto; }
+.category-name-cell { min-width: 0; }
+.category-row :is(input, select), .category-new :is(input, select) { width: 100%; min-width: 0; }
+.category-remove:not([data-confirming="1"]) { color: var(--text-dim); }
+.category-remove[data-confirming="1"] { white-space: nowrap; color: var(--danger); }
+.category-new { padding-top: var(--space-3); border-top: 1px solid var(--border); }
+.category-empty { padding: var(--space-2) 0; }
 #warehouse-category-dialog { width: min(560px, calc(100vw - 32px)); }
 .category-picker { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; margin-bottom: var(--space-3); }
 .category-picker-input { width: 100%; }
