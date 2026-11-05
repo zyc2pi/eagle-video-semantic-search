@@ -1278,6 +1278,8 @@ const Search = (() => {
 
   function stepPreviewFrame(direction) { player.stepFrame(activeMatch, direction); }
 
+  function getPreviewSourceFrame() { return player.sourceFrameAt(activeMatch); }
+
   /* ---------- 结果存档载入 ---------- */
   function captureBrowsePosition() {
     if (!el.results?.getBoundingClientRect) return null;
@@ -1483,7 +1485,7 @@ const Search = (() => {
     },
     replay, probe, cancel, getPhase: () => phase, isBusy: () => busy,
     pausePreview() { closePreview(); stopHoverPreview(); },
-    captureCover, captureFrame, stepPreviewFrame,
+    captureCover, captureFrame, stepPreviewFrame, getPreviewSourceFrame,
     loadThumbnail: (img, url, onError) => ThumbLoader.load(img, url, onError),
     setArchiveTime(time) {
       SearchRecipe.bounds(time);

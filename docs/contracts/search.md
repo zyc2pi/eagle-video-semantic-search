@@ -6,6 +6,7 @@
 
 - 相似度分数 = cosine × logit_scale(≈100)。文本阈值 fgclip2≈11 / clip≈21；视觉检索独立阈值(≈40)+相对落差截断
 - 单帧来源经 Search.captureFrame()/CoverFrame.capture() 固定 JPEG，携带 image_base64/source_video_path/source_frame/source_fps/source_name。单帧视觉 recipe.config.visualAgg 固定 max，不改全局设置。后端先排除包含源帧的自身镜头，再相对截断及 Top100。同视频其他镜头保留。
+- 找接续画面（2026-11-05）：FrameSearch.continuation 发 kind=`visual`、`payload={video_path,start_frame,end_frame,source_name,source_fps,continuation}`（原始帧，含两端），不截图；后端按 visualSceneFrames 均匀采样、均值池化，只排除与该区间重叠的自身镜头，同视频后续镜头保留。`Config.continuationMode` 为 `end`（片段 original_end_frame 往前 N 秒，不早于片段起点）或 `playhead`（播放头源帧往前 N 秒，不早于 0），`continuationSeconds` 0.2～10，由预览区下拉直接保存。recipe.config.visualAgg 固定 max，不改全局设置；保存为主题后按 sourceItemId 跟随素材移动重放。查询参考区以区间末帧预览图（经 ThumbLoader）显示。只按画面内容匹配，不含运动方向/速度。
 - 历史单帧文字主题仍保留 runFrameText 及最终 query/payload 的重放兼容，不重新生成描述。当前页面不再提供描述生成弹窗或触发 /describe。
 - 单帧主题保存截图及文本最终查询；sourceVideoItemId 仅用于在素材移动时更新排除路径，来源缺失不阻止已存截图重放；历史 video_path/sourceItemId 查询仍须来源有效。
 - 工具栏不提供以 Eagle 选中素材搜相似入口；保留剪贴板以图搜索及已有视觉主题重放。搜索缓存键必须包含 kind/query/payload/config/library/indexNames/allowedVideoPaths，null 整库与 [] 空范围不同，不能仅用显示名称或遗漏起止帧。

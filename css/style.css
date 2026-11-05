@@ -895,6 +895,13 @@ dialog .dialog-actions:last-child {
 .inspector .preview-more-menu .menu-content button { width: 100%; padding: 6px var(--space-2); font-size: var(--font-sm); text-align: left; color: var(--text); background: transparent; box-shadow: none; }
 .inspector .preview-more-menu .menu-content button:hover:not(:disabled) { background: var(--bg-input); }
 body:not([data-topic="true"]) .preview-more-menu .topic-only { display: none; }
+/* 「找接续画面」与取帧设置下拉组成一组 */
+.split-action { display: inline-flex; flex-shrink: 0; align-items: center; gap: 2px; }
+.continuation-menu > summary { font-size: var(--font-xs); letter-spacing: 0; }
+.continuation-menu .menu-content { width: 210px; font-size: var(--font-sm); color: var(--text); }
+.continuation-menu .menu-content label { display: flex; align-items: center; gap: var(--space-1); padding: 4px var(--space-1); }
+.continuation-menu .menu-content input[type="number"] { width: 64px; }
+.continuation-menu .menu-content .hint { margin: var(--space-half) var(--space-1) 0; font-size: var(--font-xs); line-height: 1.5; }
 
 .inspector .preview-panel { flex-direction: column; padding: 14px; border: 0; gap: 10px; }
 .inspector .preview-panel video { width: 100%; height: auto; aspect-ratio: 16 / 9; max-height: none; object-fit: contain; }

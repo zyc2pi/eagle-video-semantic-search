@@ -74,6 +74,7 @@
     });
     if (indexing) closeIndexModeMenu();
     $('btn-frame-visual').disabled = !serviceOnline || indexing;
+    $('btn-frame-continue').disabled = !serviceOnline || indexing;
     if (typeof Warehouse !== 'undefined') Warehouse.syncBatchUpdate?.();
   }
 
@@ -1122,19 +1123,19 @@
     $('btn-preview-tag').addEventListener('click', () => openOrganize('tag', previewMatches()));
     $('btn-preview-exclude-folder').addEventListener('click', () => excludeSelectedFolder(previewMatches));
     // 预览区「⋯」：预览区会裁剪溢出，菜单 fixed 定位贴在按钮下方（空间不足时翻到上方）。
-    const previewMenu = $('preview-more-menu');
-    document.addEventListener('preview-change', () => { previewMenu.open = false; updateSelectionActions(); });
-    previewMenu.addEventListener('toggle', () => {
-      if (!previewMenu.open) return;
-      const content = previewMenu.querySelector('.menu-content');
-      const anchor = previewMenu.querySelector('summary').getBoundingClientRect();
+    const previewMenus = [$('preview-more-menu'), $('continuation-menu')];
+    const closePreviewMenu = () => previewMenus.forEach((menu) => { menu.open = false; });
+    document.addEventListener('preview-change', () => { closePreviewMenu(); updateSelectionActions(); });
+    previewMenus.forEach((menu) => menu.addEventListener('toggle', () => {
+      if (!menu.open) return;
+      const content = menu.querySelector('.menu-content');
+      const anchor = menu.querySelector('summary').getBoundingClientRect();
       const box = content.getBoundingClientRect();
       const below = anchor.bottom + 6;
       const top = below + box.height > window.innerHeight - 8 ? Math.max(8, anchor.top - 6 - box.height) : below;
       content.style.left = `${Math.max(8, Math.min(anchor.left, window.innerWidth - box.width - 8))}px`;
       content.style.top = `${top}px`;
-    });
-    const closePreviewMenu = () => { previewMenu.open = false; };
+    }));
     $('preview-panel').addEventListener('scroll', closePreviewMenu, { passive: true });
     $('inspector').addEventListener('scroll', closePreviewMenu, { passive: true });
     window.addEventListener('resize', closePreviewMenu);

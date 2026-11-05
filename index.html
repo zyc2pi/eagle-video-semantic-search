@@ -252,6 +252,18 @@
       </div>
       <div class="preview-actions">
         <button id="btn-frame-visual" type="button">以当前帧找相似</button>
+        <span class="split-action">
+          <button id="btn-frame-continue" type="button">找接续画面</button>
+          <details id="continuation-menu" class="compact-menu preview-more-menu continuation-menu">
+            <summary title="接续画面的取帧位置与时长" aria-label="接续取帧设置">▾</summary>
+            <div class="menu-content">
+              <label><input id="continuation-mode-end" type="radio" name="continuation-mode" value="end"> 片段结尾</label>
+              <label><input id="continuation-mode-playhead" type="radio" name="continuation-mode" value="playhead"> 播放头之前</label>
+              <label class="continuation-seconds">取 <input id="continuation-seconds" type="number" min="0.2" max="10" step="0.1"> 秒画面</label>
+              <p class="hint">多帧画面平均后找相似，按画面内容匹配，不区分运动方向。</p>
+            </div>
+          </details>
+        </span>
         <button id="btn-preview-more" type="button" title="把这个片段加入正例，找画面更像的片段">更多这类</button>
         <button id="btn-preview-less" type="button" class="hidden" title="把这个片段设为负例（不要这类画面）后重新搜索">不要这类</button>
       </div>

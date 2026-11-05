@@ -43,6 +43,15 @@
 较早的任务（TASK-20261031-001 及以前）已原样移至 `TASKS-ARCHIVE.md`，
 需要追溯旧决策或验证边界时查阅；新任务继续记录在本章节顶部。
 
+### TASK-20261105-008 — 预览区「找接续画面」
+
+- 状态：ready-for-human
+- 目标：用户提出在预览中取片段最后几帧或一段画面，找可以衔接的相似镜头。
+- 方案：经用户选择，取帧范围两种都提供（片段结尾 / 播放头之前，0.2～10 秒，默认结尾 1 秒），并接受这一版只按画面内容匹配（CLIP 类图像向量不含运动方向/速度，动作匹配需视频模型，另行授权）。
+- 修改：预览区「以当前帧找相似」旁新增「找接续画面」及 ▾ 取帧设置下拉（与「⋯」共用 fixed 定位与关闭逻辑）。FrameSearch.continuation 以 video_path+起止原始帧发视觉检索，复用后端已有的区间采样、均值池化及「只排除重叠自身镜头」，聚合固定 max；查询参考区显示区间末帧和时间段。新增 Config.continuationMode / continuationSeconds，PreviewPlayer.sourceFrameAt 与 Search.getPreviewSourceFrame 读取播放头源帧。后端未改。README、AGENT.md、docs/contracts/search.md、ui-preview.md 同步；frameSearch.test 补 Config/style 桩及区间计算、两种模式请求和无预览报错用例。
+- 验证：全部 JS node --check 与 32 个单元测试通过；Edge headless PREVIEW、LAYOUT、SETTINGS 分段及完整默认 warehouse.smoke.js 通过，截图核对 1100px 预览区按钮排布。
+- 边界：未在真实 Eagle 与真实素材上验收接续效果；下拉菜单展开样式未截图核对。未提交或推送。
+
 ### TASK-20261105-007 — 清理仓库目录多余文件
 
 - 状态：ready-for-human

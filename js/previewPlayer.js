@@ -347,6 +347,15 @@ const PreviewPlayer = (() => {
       return cover;
     }
 
+    /* 播放头所在的源帧号（预览视频播放的是完整原视频），不截图。 */
+    function sourceFrameAt(match) {
+      const video = el.previewVideo;
+      if (!match || video.readyState < 1 || video.seeking || video.error) {
+        throw new Error('请等待视频加载或拖动定位完成');
+      }
+      return CoverFrame.sourceFrame(video.currentTime, Number(match.fps) || 25);
+    }
+
     function stepFrame(match, direction) {
       const video = el.previewVideo;
       if (!match || video.readyState < 2 || video.seeking || video.error) {
@@ -360,7 +369,7 @@ const PreviewPlayer = (() => {
     }
 
     return { hover, clearPreviewMediaEvents, stopHoverPreview, startHoverPreview, bindHover,
-      prepare, start, close, teardown, captureFrame, stepFrame, cancel: () => cancelPreviewLoad() };
+      prepare, start, close, teardown, captureFrame, sourceFrameAt, stepFrame, cancel: () => cancelPreviewLoad() };
   }
 
   return { create };

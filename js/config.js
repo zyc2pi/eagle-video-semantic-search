@@ -50,6 +50,8 @@ const Config = (() => {
     aiMode: 'balanced', // AI 查询增强档位 fast/balanced/quality（变体数量与质量权衡）
     aiPlanPreview: false, // 搜索前展示 AI 改写计划，确认/编辑后以 precomputed_plan 搜索
     sequenceMaxGap: 5,  // 时序搜索相邻步骤的最大间隔（秒）
+    continuationMode: 'end', // 找接续画面取帧位置：end 片段结尾 / playhead 播放头之前
+    continuationSeconds: 1,  // 找接续画面取帧时长（秒）
     autoCheckNew: true, // 开窗及索引完成后在后台检查各主题的新素材命中，只做提示不写入
     evalMode: false,    // 评测记录模式：搜索结果与耗时写入 evaluation/<日期>.json，供人工标注
     miniRerank: false,  // MiniCPM 二阶段精搜（慢，占显存大）
@@ -68,7 +70,7 @@ const Config = (() => {
     indexSampleInterval: [1, 30, true], indexResolution: [128, 512, true],
     indexMinSceneLen: [1, 120, true], indexBatchSize: [8, 128, true],
     indexSceneThreshold: [0.5, 0.99], indexLocalmaxOrder: [1, 5, true],
-    indexContentMaxFrames: [1, 32, true], sequenceMaxGap: [0, 120],
+    indexContentMaxFrames: [1, 32, true], sequenceMaxGap: [0, 120], continuationSeconds: [0.2, 10],
     thumbnailCacheMaxEntries: [0, 50000, true], thumbnailCacheMaxMB: [0, 1024, true],
   };
 
@@ -90,7 +92,8 @@ const Config = (() => {
         || !['auto', 'dark', 'light'].includes(value.theme)
         || !['all', 'selected', 'custom', 'exclude'].includes(value.scopeMode)
         || !['triplet', 'dinov3_cses', 'content_adaptive'].includes(value.indexFrameSelection)
-        || !['cosine', 'transnetv2'].includes(value.indexShotDetection)) throw new Error('配置选项无效');
+        || !['cosine', 'transnetv2'].includes(value.indexShotDetection)
+        || !['end', 'playhead'].includes(value.continuationMode)) throw new Error('配置选项无效');
     if (!Array.isArray(value.history) || !value.history.every((v) => typeof v === 'string')
         || !Array.isArray(value.scopeFolderIds) || !value.scopeFolderIds.every((v) => typeof v === 'string')
         || !Array.isArray(value.scopeExcludeFolderIds) || !value.scopeExcludeFolderIds.every((v) => typeof v === 'string')) throw new Error('配置列表格式无效');

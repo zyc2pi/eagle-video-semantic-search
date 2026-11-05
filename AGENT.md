@@ -32,7 +32,7 @@ Eagle（素材管理软件）的窗口插件，提供视频的语义检索：中
 | `js/searchRecipe.js` | 搜索参数白名单快照、导入日期边界及文件夹交集、视觉查询来源与反馈样例的持久化和重放 |
 | `js/archiveStore.js` | 按库隔离的搜索仓库 JSON、原子替换、旧 saves 迁移、片段新增比较与分类持久化 |
 | `js/coverFrame.js` | 原视频逐帧定位、源帧号换算、封面 JPEG 截图 |
-| `js/frameSearch.js` | 固定当前画面进行视觉单帧查询、取消及查询画面展示；历史文字主题仍由 Search 重放 |
+| `js/frameSearch.js` | 固定当前画面进行视觉单帧查询、找接续画面（片段结尾/播放头之前一段多帧查询）、取消及查询画面展示；历史文字主题仍由 Search 重放 |
 | `js/aiPlanReview.js` | 搜索前 AI 改写预览对话框：取计划、编辑/删除/补充查询，返回 precomputed_plan |
 | `js/exampleSearch.js` | 正负样本反馈（找更像所选/加入正例/不要这类）与时序组合查询的入口、对话框和按钮状态 |
 | `js/evalRecorder.js` | 评测记录模式（搜索结果/耗时写 evaluation/<日期>.json、人工相关性标注、评测汇总）与性能自检 |
