@@ -38,11 +38,12 @@ const ExampleSearch = (() => {
   }
 
   /* mode: new = 以所选为正例重新开始；more = 追加正例；less = 追加负例（后两者需当前为反馈结果）。 */
-  async function feedback(mode) {
+  /* matches 省略时取已选片段；预览区按钮传入当前预览的片段，不改动选择。 */
+  async function feedback(mode, matches = Search.getSelectedMatches()) {
     hooks.closeMenus();
     try {
       if (!hooks.isServiceOnline() || Search.isBusy()) throw new Error('搜索服务未就绪或正在处理其他任务');
-      const selected = (Search.getSelectedMatches() || []).map(Search.exampleFromMatch);
+      const selected = (matches || []).map(Search.exampleFromMatch);
       if (!selected.length) throw new Error('请先选中片段');
       const recipe = Search.getRecipe();
       const previous = mode !== 'new' && recipe?.kind === 'feedback' ? recipe.payload.feedback
@@ -130,10 +131,21 @@ const ExampleSearch = (() => {
       $(id).classList.toggle('hidden', !feedbackActive);
       $(id).disabled = disabled;
     });
+    // 预览区：「更多这类」在非反馈结果中等同「找更像这个」，「不要这类」仅在反馈结果中出现。
+    const previewDisabled = !hooks.isServiceOnline() || Search.isBusy() || !Search.getActiveMatch();
+    $('btn-preview-more').disabled = previewDisabled;
+    $('btn-preview-less').classList.toggle('hidden', !feedbackActive);
+    $('btn-preview-less').disabled = previewDisabled;
   }
+
+  const previewMatches = () => [Search.getActiveMatch()].filter(Boolean);
 
   function init(options) {
     hooks = { ...hooks, ...options };
+    $('btn-preview-more').addEventListener('click', () =>
+      feedback(Search.getRecipe()?.kind === 'feedback' ? 'more' : 'new', previewMatches()));
+    $('btn-preview-less').addEventListener('click', () => feedback('less', previewMatches()));
+    document.addEventListener('preview-change', updateButtons);
     $('btn-selection-similar').addEventListener('click', () => feedback('new'));
     $('btn-selection-more').addEventListener('click', () => feedback('more'));
     $('btn-selection-less').addEventListener('click', () => feedback('less'));

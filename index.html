@@ -94,7 +94,7 @@
           </div>
           <button id="btn-scope" class="scope-btn" title="设置搜索范围（含子文件夹）">范围: 整个库</button>
           <div class="time-filter" role="group" aria-label="素材加入时间">
-            <label for="search-time">素材加入时间</label>
+            <label for="search-time">加入时间</label>
             <select id="search-time" aria-label="搜索时间范围">
               <option value="all">不限时间</option><option value="6">近半年</option>
               <option value="12">近 1 年</option><option value="24">近 2 年</option>
@@ -112,7 +112,7 @@
           <h3>已存结果范围</h3>
           <label>阈值 <input id="topic-filter-threshold" type="number" min="0" step="0.5" placeholder="不限" aria-label="主题结果阈值"></label>
           <button id="topic-filter-scope" class="scope-btn" type="button">范围: 整个库</button>
-          <span class="hint">素材加入时间</span>
+          <span class="filter-label">加入时间</span>
           <div id="topic-time-filter"></div>
         </section>
         <section id="topic-scene-filter" class="topic-scene-filter" aria-label="结果内组合筛选">
@@ -122,11 +122,17 @@
           <label for="result-tags">素材标签</label>
           <input id="result-tags" type="search" placeholder="标签，逗号分隔（全部满足）" aria-label="筛选素材标签" title="完整标签名，多个标签用中英文逗号分隔，全部满足">
           <div id="result-tag-chips" class="tag-chips hidden" role="group" aria-label="运镜与景别快捷筛选"></div>
-          <label>片段 ≤ <input id="result-max-dur" type="number" min="0" step="0.5" placeholder="不限" aria-label="片段时长上限"> 秒</label>
+          <label for="topic-scene-source">评分</label>
           <select id="topic-scene-source" aria-label="按人工评分筛选片段">
             <option value="all">全部片段</option><option value="manual">人工评分</option><option value="auto">未人工评分</option>
           </select>
-          <label>片段 ≥ <input id="view-min-dur" type="number" min="0" max="600" step="0.5" value="0" title="只显示不短于此秒数的场景"> 秒</label>
+          <span class="filter-label">片段时长</span>
+          <div class="dur-row">
+            <input id="view-min-dur" type="number" min="0" max="600" step="0.5" value="0" title="只显示不短于此秒数的场景" aria-label="片段时长下限">
+            <span>–</span>
+            <input id="result-max-dur" type="number" min="0" step="0.5" placeholder="不限" aria-label="片段时长上限">
+            <span>秒</span>
+          </div>
           <button id="result-filter-clear" type="button">清除结果筛选</button>
           <span id="result-filter-error" class="form-error" role="status"></span>
         </section>
@@ -145,6 +151,7 @@
         <select id="warehouse-category" aria-label="按分类筛选"></select>
         <button id="warehouse-favorites" type="button" aria-pressed="false" title="只显示已星标的常用主题">★ 常用</button>
         <button id="warehouse-check-new" type="button" title="在各主题上次更新后加入的视频中按原条件搜索，提示可能的新命中，不写入主题">检查新素材</button>
+        <button id="warehouse-update-all" type="button" disabled>全部更新</button>
         <div class="warehouse-view-toggle" role="group" aria-label="视图方式">
           <button id="warehouse-view-card" type="button" class="active" title="卡片视图" aria-label="卡片视图"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="2" width="4" height="4" rx=".6"/><rect x="10" y="2" width="4" height="4" rx=".6"/><rect x="2" y="10" width="4" height="4" rx=".6"/><rect x="10" y="10" width="4" height="4" rx=".6"/></svg></button>
           <button id="warehouse-view-list" type="button" title="列表视图" aria-label="列表视图"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3h8M6 8h8M6 13h8"/><path d="M2 3h.5M2 8h.5M2 13h.5"/></svg></button>
@@ -235,20 +242,40 @@
   <section id="preview-panel" class="preview-panel hidden" aria-label="当前片段详情">
     <video id="preview-video" controls preload="auto"></video>
     <div class="preview-side">
-      <div id="preview-info"></div>
+      <div id="preview-info" title="← / → 切换结果，Esc 收起"></div>
+      <div id="preview-summary" class="preview-summary" aria-live="polite"></div>
       <div id="preview-feedback" class="preview-feedback"></div>
       <div id="preview-timeline" class="preview-timeline" title="此视频的全部命中场景，点击跳转"></div>
       <div class="preview-frame-actions">
-        <button id="btn-cover-prev-frame" type="button" title="暂停并回退一帧">上一帧</button>
-        <button id="btn-cover-next-frame" type="button" title="暂停并前进一帧">下一帧</button>
+        <button id="btn-cover-prev-frame" type="button" class="icon-btn" title="暂停并回退一帧" aria-label="上一帧">上一帧</button>
+        <button id="btn-cover-next-frame" type="button" class="icon-btn" title="暂停并前进一帧" aria-label="下一帧">下一帧</button>
       </div>
       <div class="preview-actions">
-        <button id="btn-locate">在 Eagle 中定位</button>
         <button id="btn-frame-visual" type="button">以当前帧找相似</button>
-        <div id="preview-cover-actions" class="preview-cover-actions hidden">
-          <button id="btn-set-topic-cover" type="button" class="primary">当前帧设为封面</button>
-        </div>
-        <button id="btn-close-preview">收起预览</button>
+        <button id="btn-preview-more" type="button" title="把这个片段加入正例，找画面更像的片段">更多这类</button>
+        <button id="btn-preview-less" type="button" class="hidden" title="把这个片段设为负例（不要这类画面）后重新搜索">不要这类</button>
+      </div>
+      <div class="preview-secondary-actions">
+        <button id="btn-reveal-all" type="button" title="在 Eagle「全部」中显示，并自动滚到这个素材">在全部中显示</button>
+        <button id="btn-locate" type="button" title="打开素材所在文件夹并选中；Eagle 不支持在文件夹内自动滚动，需要自行查找">打开所在文件夹</button>
+        <button id="btn-preview-exclude-folder" type="button" title="本次打开内共用，不修改 Eagle 文件夹或主题">排除该子文件夹</button>
+        <details id="preview-more-menu" class="compact-menu preview-more-menu">
+          <summary title="更多操作（只作用于当前预览片段）" aria-label="更多操作">⋯</summary>
+          <div class="menu-content">
+            <div id="preview-cover-actions" class="preview-cover-actions hidden">
+              <button id="btn-set-topic-cover" type="button">当前帧设为封面</button>
+            </div>
+            <button id="btn-preview-topic-add" type="button">添加到主题</button>
+            <button id="btn-preview-topic-remove" type="button" class="topic-only">从主题移除</button>
+            <button id="btn-preview-topic-score" type="button" class="topic-only">调整评分</button>
+            <button id="btn-preview-tag" type="button">添加标签</button>
+            <button id="btn-preview-folder" type="button">添加到新文件夹</button>
+            <button id="btn-preview-timeline" type="button" title="写成 FCP7 XML，记录原视频入出点，不生成新视频">导出为时间线（PR / 达芬奇）</button>
+            <button id="btn-preview-eval-relevant" type="button" class="hidden" title="评测记录模式：把这个片段标为与本次查询相关">评测：标为相关</button>
+            <button id="btn-preview-eval-irrelevant" type="button" class="hidden" title="评测记录模式：把这个片段标为与本次查询不相关">评测：标为不相关</button>
+          </div>
+        </details>
+        <button id="btn-close-preview" type="button" class="preview-close" title="收起预览（Esc）；← / → 切换结果">收起预览</button>
       </div>
       <section class="inspector-section"><h3>所属主题</h3><div id="preview-membership" class="inspector-chips" aria-live="polite"></div></section>
       <section class="inspector-section inspector-tags-section"><h3>标签</h3><div id="preview-tags" class="preview-tags"></div></section>

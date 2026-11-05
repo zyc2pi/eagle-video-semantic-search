@@ -33,6 +33,7 @@
 ## 更新、新素材、历史与副本
 
 - 更新主题先计算 `updatedEntry` 候选，用 `entryChanges` 按统一身份规则对比新增、消失、未命中的人工保留；确认才 `replace`。取消不保存、不加载候选，条件编辑器保留输入；写失败只重试提交，保持原候选与预期 revision，不能自动吞掉冲突。确认前及提交后装载前均检查库/导航，落盘后界面刷新失败须明确告知已保存。
+- 批量更新（2026-11-05）：仓库工具栏 `#warehouse-update-all`，全部分类显示「全部更新」，选中分类显示「更新该分类全部主题」；范围与仓库分类筛选一致（含子分类，`''` 为未分类直属），不受名称查找与常用筛选影响，只含当前库主题（`sourceLibrary` 不同者排除）。`batchUpdate({label,include})` 与单主题共用 `computeUpdate`（`Search.replay` + `updatedEntry`），串行计算、显示 n/m、可停止（`Search.cancel`，已算出的仍可应用）；每轮前校验导航代次与 `canSearch`。全部算完后按 `entryChanges` 列出新增或消失非零的主题供勾选，确认才逐个 `replace(updated, entry.updatedAt)`：各自原子提交、版本冲突或写失败只记该主题，不自动重试；无变化、未勾选、缺 recipe（跳过）的主题不写盘，updatedAt 不变。结束汇总成功/无变化/失败/跳过/未写入/未计算，成功后刷新仓库列表。服务离线或建索引、已有搜索/更新/保存时入口禁用（plugin `updateButtons` 与 `syncSceneActions` 同步）；批量期间 `updating` 为真，阻止其他仓库写入与后台自动检查。
 - 「检查新素材」用 `Search.probe(recipe, paths)`：按主题 recipe 解析范围后只与主题 updatedAt 之后 importedAt 的视频取交集，跳过 refinement 与无 recipe 主题；结果按 sceneLookup 排除已有及已移除片段，只展示，不写入。应用仍走「更新结果」的变化预览。
 - 自动检查新素材（2026-11-05）：设置 `autoCheckNew`（默认开）时，服务首次上线 20 秒后及索引任务成功完成 8 秒后在后台运行同一 `scanNewMaterials`；`Search.probe(recipe, paths, { signal })` 后台模式不占用搜索忙碌状态、不显示阶段文字，任何搜索开始（search-busy 变为忙碌）或手动检查都会中止它。结果按库存于内存 `newHits`，左侧导航主题行显示 `+N`，只在主题 updatedAt 未变时显示（更新后自然消失），不写入主题。
 - 单主题历史使用 `entryHistory/readEntryBackup/restoreEntryBackup` 复用整库备份，不另建历史库。同 revision 去重，无 revision 以快照摘要去重；只校验目标，不因其他历史主题损坏阻断读取。预览与提交均完整校验目标资源，提交核对历史 fingerprint、当前 updatedAt/revision、库/导航及写锁内清单 fingerprint。只替换目标，缺失分类归未分类；`_restoringEntryId` 在锁内结合被替换 revision 与 revision-clock 分配新版本，其他主题 revision 不变。保留历史搜索 updatedAt，恢复前自动备份；保留范围仍为整库备份策略。

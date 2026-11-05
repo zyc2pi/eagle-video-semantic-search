@@ -46,7 +46,7 @@ Eagle（素材管理软件）的窗口插件，提供视频的语义检索：中
 | `js/warehouseCards.js` | 仓库卡片/列表、分页缩略图、框选、右键批量分类与删除，持有列表视图和选择状态 |
 | `js/warehouseCategories.js` | 共用分类选择器、现场新建及按库记忆最近使用顺序 |
 | `js/warehouseEditor.js` | 保存/编辑主题表单、条件回填、文件夹读取与提交，持有编辑草稿及异步回填代次 |
-| `js/warehouseUpdates.js` | 更新变化预览、新素材检查（手动/后台自动及导航 +N 提示）、单主题历史恢复与完整副本 |
+| `js/warehouseUpdates.js` | 更新变化预览、按全部/分类批量更新主题、新素材检查（手动/后台自动及导航 +N 提示）、单主题历史恢复与完整副本 |
 | `js/warehouseRecovery.js` | 备份/回收站弹窗、整库恢复、仓库包导入导出及遗留锁维护 |
 | `js/warehouseNavigation.js` | 全高左侧分类/主题导航、拖拽栏宽及按库持久化最近浏览位置 |
 | `js/dom.js` | 共用 DOM 工具 `Dom`（`$`/`esc`/`toast`/`h()` 元素构建/`confirm`）与图片懒加载 `LazyLoad`；最先加载 |
@@ -87,7 +87,7 @@ Eagle（素材管理软件）的窗口插件，提供视频的语义检索：中
 2. **aspect-ratio 在 Eagle 环境曾失效**——缩略图用 padding-bottom:56.25% 占位盒，别改回去
 3. **原生 datalist 在 Electron 定位/收起坏**——历史下拉是自绘的 `.history-panel`
 4. 缩略图在服务端磁盘缓存未命中时需要 ffmpeg 抽帧，**未缓存请求必须走 ThumbLoader 限流**，且入队发生在插入 DOM 前（不能用 isConnected 过滤）
-5. Eagle 无"文件夹视图内滚动到素材"API；`item.open()` 永远跳"全部"视图。定位=预选中+folder.open+延迟重选，已是能力上限
+5. Eagle 无"文件夹视图内滚动到素材"API；`item.open()` 永远跳"全部"视图。「打开所在文件夹」=预选中+folder.open+延迟重选，已是能力上限；需要滚到素材时用「在全部中显示」（item.open）
 6. **限高仓库网格的自动行会被压缩**：卡片有 overflow:hidden 时，三排以上会挤到约 140px 并裁掉文字和按钮。必须保留 `grid-auto-rows: max-content`；布局测试至少覆盖九张卡片。默认封面抽帧复用 Search 的缩略图队列，不能绕过 6 并发限制。
 7. **smoke 夹具不要写死数量**：搜索返回数由夹具 stub 记录在 `window.__lastSearchMatches`，期望值按夹具素材导入时间推导；夹具内关闭后台「自动检查新素材」，否则 20 秒后的探测请求会打乱请求计数断言。
 8. **内边距写在 dialog 自身时，吸底 `.dialog-actions` 必须 `bottom: calc(-1 * var(--dialog-pad))`**：Chromium 的 sticky 从滚动容器内边距内侧计算 bottom，配合负外边距会把操作栏上推一个内边距压住末行；内边距在内层表单（`.settings-form`）的弹窗不受影响。

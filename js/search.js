@@ -243,6 +243,7 @@ const Search = (() => {
     el.previewVideo = document.getElementById('preview-video');
     el.previewInfo = document.getElementById('preview-info');
     el.btnLocate = document.getElementById('btn-locate');
+    el.btnRevealAll = document.getElementById('btn-reveal-all');
     el.btnClosePreview = document.getElementById('btn-close-preview');
     el.viewBar = document.getElementById('view-bar');
     el.resultCount = document.getElementById('result-count');
@@ -272,9 +273,28 @@ const Search = (() => {
     document.getElementById('preview-feedback').appendChild(el.previewRetry);
 
     el.btnClosePreview.addEventListener('click', closePreview);
-    el.btnLocate.addEventListener('click', async () => {
+    const previewItem = () => {
       const item = activeMatch && Bridge.itemForPath(activeMatch.video_path);
-      if (item) await Bridge.locateInEagle([item.id]);
+      if (!item) Dom.toast('这个素材已不在当前 Eagle 库中', true);
+      return item;
+    };
+    el.btnLocate.addEventListener('click', async () => {
+      const item = previewItem();
+      if (!item) return;
+      try {
+        await Bridge.locateInEagle([item.id]);
+      } catch (e) {
+        Dom.toast(`打开所在文件夹失败：${e.message || e}`, true);
+      }
+    });
+    el.btnRevealAll.addEventListener('click', async () => {
+      const item = previewItem();
+      if (!item) return;
+      try {
+        await Bridge.revealInAll(item.id);
+      } catch (e) {
+        Dom.toast(`在全部中显示失败：${e.message || e}`, true);
+      }
     });
 
     // 键盘：Esc 收起预览；预览打开时 ←/→ 切换上一个/下一个结果
@@ -1083,10 +1103,8 @@ const Search = (() => {
     box.innerHTML = '';
     const item = Bridge.itemForPath(match.video_path);
     const tags = (item && Array.isArray(item.tags)) ? item.tags : [];
-    if (!tags.length) {
-      const empty = document.createElement('span');
-      empty.className = 'hint'; empty.textContent = '暂无标签'; box.appendChild(empty);
-    }
+    // 没有标签时整段隐藏，不占行。
+    box.closest('.inspector-tags-section')?.classList.toggle('hidden', !tags.length);
     tags.forEach((tag) => {
       const chip = document.createElement('button');
       chip.type = 'button';
@@ -1103,13 +1121,47 @@ const Search = (() => {
     });
   }
 
+  /* 顶部预览的摘要胶囊：相似度/人工评分 + 所属主题（点击打开主题）。 */
+  function renderPreviewSummary(topics, library) {
+    const box = document.getElementById('preview-summary');
+    if (!box) return;
+    box.replaceChildren();
+    if (!activeMatch) return;
+    const score = document.createElement('span');
+    score.className = 'preview-score';
+    score.textContent = activeMatch.manualScore
+      ? `人工 ${activeMatch.manualScore.value} 分` : `相似度 ${Number(activeMatch.similarity).toFixed(2)}`;
+    box.appendChild(score);
+    if (!topics) return;
+    if (!topics.length) {
+      const none = document.createElement('span');
+      none.textContent = '未收录到主题';
+      box.appendChild(none);
+      return;
+    }
+    const shown = topics.slice(0, 3);
+    shown.forEach((topic) => {
+      const button = document.createElement('button');
+      button.type = 'button'; button.textContent = `主题：${topic.name}`; button.title = `打开主题「${topic.name}」`;
+      button.addEventListener('click', () => TopicRelations.openTopic(topic.id, library));
+      box.appendChild(button);
+    });
+    if (topics.length > shown.length) {
+      const more = document.createElement('span');
+      more.textContent = `+${topics.length - shown.length}`;
+      more.title = topics.slice(shown.length).map((topic) => topic.name).join('、');
+      box.appendChild(more);
+    }
+  }
+
   function renderInspectorMembership() {
     const box = document.getElementById('preview-membership');
     if (!box) return;
     box.replaceChildren();
-    if (!activeMatch) return;
+    if (!activeMatch) { renderPreviewSummary(null, null); return; }
     const topics = topicMembership?.(activeMatch);
     const library = eagle.library.path;
+    renderPreviewSummary(topics, library);
     if (!topics || !topics.length) {
       const empty = document.createElement(topics ? 'span' : 'button');
       empty.className = 'hint';
@@ -1199,9 +1251,9 @@ const Search = (() => {
     el.previewInfo.innerHTML =
       `<b>${esc(match.video_name)}</b><br>`
       + `片段：${esc(fmtTime(match.start))} – ${esc(fmtTime(match.end))}${hybridInfo}${mqList}`
-      + (item ? '' : '<br><span style="color:var(--danger)">素材已不在 Eagle 库中</span>')
-      + '<br><span class="hint-inline">←/→ 切换结果，Esc 收起</span>';
+      + (item ? '' : '<br><span style="color:var(--danger)">素材已不在 Eagle 库中</span>');
     el.btnLocate.disabled = !item;
+    if (el.btnRevealAll) el.btnRevealAll.disabled = !item;
     renderInspectorInfo(match, item);
     renderInspectorMembership();
     document.getElementById('inspector-empty')?.classList.add('hidden');

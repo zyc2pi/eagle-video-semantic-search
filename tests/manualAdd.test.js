@@ -61,7 +61,7 @@ const context = {
   Search: { getSelectedMatches: () => selected, pausePreview() {}, loadThumbnail() {}, clearSelection() { events.push('clear'); } },
 };
 const source = fs.readFileSync(path.join(__dirname, '../js/manualAdd.js'), 'utf8')
-  .replace('  return { init, editScores };', '  this.inspectSession = () => session;\n  return { init, editScores };');
+  .replace('  return { init, editScores, openFor };', '  this.inspectSession = () => session;\n  return { init, editScores, openFor };');
 vm.runInNewContext(source + '\nthis.Manual = ManualAdd;', context);
 context.Manual.init({ checkIdle() {}, validateSource() {}, toast() {}, onCommitted(entry, token, metadata) {
   events.push('commit-hook'); assert.strictEqual(token, undoToken); assert.strictEqual(metadata.undoBytes, 123);

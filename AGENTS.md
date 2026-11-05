@@ -43,6 +43,39 @@
 较早的任务（TASK-20261031-001 及以前）已原样移至 `TASKS-ARCHIVE.md`，
 需要追溯旧决策或验证边界时查阅；新任务继续记录在本章节顶部。
 
+### TASK-20261105-006 — 仓库按全部/分类批量更新主题
+
+- 状态：ready-for-human
+- 目标：仓库「全部主题」一键全部更新，选中分类时一键更新该分类（含子分类）的全部主题。
+- 修改：仓库工具栏新增 `#warehouse-update-all`，随分类筛选切换「全部更新」/「更新该分类全部主题」，服务离线、建索引或已有搜索/更新/保存时禁用。warehouseUpdates 抽出 `computeUpdate` 供单主题与批量共用；`batchUpdate` 串行重放并显示 n/m，可停止，算完后列出有变化的主题勾选，一次「应用所选」逐个 `replace`（各自版本校验与原子提交），失败不中断其余，结束汇总成功/无变化/失败/跳过/未写入/未计算。交互方式（先汇总再一次确认）经用户选择。范围按分类不受名称查找与常用筛选影响；缺搜索条件的旧主题跳过。README、docs/contracts/warehouse.md、AGENT.md 同步；smoke 新增 WAREHOUSE_BATCH_ONLY 分段（范围含子分类、确认前不写入、只写勾选、版本冲突、停止不写入、离线禁用）。
+- 验证：全部 JS node --check 与 32 个单元测试通过（indexRetry 测试桩无 Warehouse，plugin 调用加存在判断）；Edge headless 的 BATCH、CATEGORY、SELECTION、SETTINGS、LAYOUT、THEME、COLLECTION 分段及完整默认 warehouse.smoke.js 通过。
+- 边界：需在 Eagle 中重载插件，用真实主题验收批量耗时与结果；未提交或推送。
+
+### TASK-20261105-005 — 「在 Eagle 中定位」拆为两个入口
+
+- 状态：ready-for-human
+- 目标：解决定位后文件夹视图停在顶部、需手动翻找素材的问题。
+- 背景：Eagle 插件 API 只有 folder.open、item.select、item.open，没有文件夹视图内滚动到素材的接口；选中后右侧详情会变，但列表不滚动。
+- 修改：预览区次要操作改为「在全部中显示」（新增 Bridge.revealInAll，调用 eagle.item.open 后 app.show，由 Eagle 原生滚到素材，会离开当前文件夹）与「打开所在文件夹」（保留 locateInEagle 原逻辑，悬停提示说明不会自动滚动）。两者在素材不在库时禁用，失败弹出提示。重复检测的「在 Eagle 中选中」不变。README、AGENT.md、docs/contracts/ui-preview.md 同步。
+- 验证：全部 JS node --check 与 32 个单元测试通过；Edge headless PREVIEW、LAYOUT smoke 分段通过。
+- 边界：本会话没有电脑操控工具，未在真实 Eagle 中实测；item.open 是否在当前 Eagle 版本中滚到素材、是否保留文件夹上下文，需重载插件后人工确认。未提交或推送。
+
+### TASK-20261105-005 — 筛选弹层与设置弹窗紧凑排布
+
+- 状态：ready-for-human
+- 目标：用户反馈筛选和设置空隙过多，改为更紧凑的排布。
+- 修改：筛选弹层各分区改为两列网格（左侧短标签、右侧控件），「素材加入时间」简为「加入时间」，评分下拉补标签，片段时长上下限合并为一行「[≥] – [≤] 秒」，自定义日期放入控件列，空提示/错误不占行距。设置弹窗（仅 #settings-form）改为标签在左、控件在右，数字框定宽，成对字段逐行排列，提示文字紧贴上一项、字号缩小，分组内边距与行距收紧；640px 以下回到上下排列。只改 index.html 结构顺序与 style.css，ID 与事件不变。
+- 验证：ui.test 通过；Edge headless 的 FILTER、SETTINGS、LAYOUT、THEME、SCOPE、RELATIONS 分段及完整默认 warehouse.smoke.js 通过；本地静态页截图核对设置弹窗、主题/新搜索两种筛选弹层（含自定义日期）。
+- 边界：需在 Eagle 中重载插件验收；未提交或推送。
+
+### TASK-20261105-004 — 预览区操作分层改版
+
+- 状态：ready-for-human
+- 目标：按用户逐项确认的方案整理预览区右侧，突出找相似，收纳偶尔使用的操作。
+- 修改：「以当前帧找相似」改为唯一蓝色主按钮（离线/索引中照旧禁用变灰）；新增「更多这类／不要这类」，只作用于当前预览片段，不改动选择（非反馈结果时「更多这类」以该片段新开反馈检索，「不要这类」仅在反馈结果出现）。「在 Eagle 中定位」「当前帧设为封面」（仅主题）「添加标签」「排除所在子文件夹」先试「⋯」菜单，用户看后要求铺开，改为一行轻量次要按钮（淡阴影描边），「收起」在该行最右端（顶部预览中位于右下角）；随后按用户要求在该行加「⋯」菜单，收纳设为封面及「整理所选」中的添加到主题、从主题移除、调整评分（仅主题）、添加到新文件夹、导出为时间线、评测标记（仅评测模式），均只作用于当前预览片段且不清除选择；「排除所在子文件夹」改名「排除该子文件夹」；右下角按钮改名「收起预览」，浅蓝底蓝字、字号略大以便连续查看时找到；「添加标签」随后也收进「⋯」。最终按用户要求调整轻重：「以当前帧找相似」去掉实心蓝，与「更多这类」及下方操作行同为白底淡阴影按钮，「收起预览」改为预览区唯一实心蓝按钮。ManualAdd 新增 openFor、editScores 可传片段，EvalRecorder.judge 可传片段；manualAdd.test 注入点同步。逐帧改为箭头图标；快捷键说明改为悬停提示；顶部预览各行不再被压缩，空间不足时滚动；无标签时隐藏标签区；顶部预览新增相似度/人工评分与所属主题胶囊。ExampleSearch.feedback、openOrganize、排除子文件夹改为可传入目标片段。smoke 中封面按钮可见性断言改为按新位置判断。README 与 docs/contracts/ui-preview.md 同步。
+- 验证：全部 JS node --check 与 32 个单元测试通过；Edge headless 完整默认 warehouse.smoke.js 通过，PREVIEW/LAYOUT/SELECTION/THEME/FILTER/DRAG 分段通过；临时脚本截图核对顶部预览与右侧详情两种布局、深浅色。
+- 边界：需在 Eagle 中重载插件验收；预览区「更多这类／不要这类」、添加标签及排除文件夹的真实检索效果未在真实库上验证。未提交或推送。
+
 ### TASK-20261105-003 — 组合检索、索引管理、TransNetV2、评测工具与结构整理
 
 - 状态：ready-for-human

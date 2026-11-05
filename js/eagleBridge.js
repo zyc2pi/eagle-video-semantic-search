@@ -396,6 +396,13 @@ const Bridge = (() => {
     }
   }
 
+  /** 在 Eagle「全部」视图中显示并滚动到该素材（item.open 的原生行为），会离开当前文件夹。 */
+  async function revealInAll(itemId) {
+    if (!itemId) return;
+    await eagle.item.open(itemId);
+    await eagle.app.show();
+  }
+
   function isWebPlayable(item) {
     const ext = String(item.ext || '').toLowerCase().replace(/^\./, '');
     return WEB_PLAYABLE.has(ext);
@@ -427,6 +434,7 @@ const Bridge = (() => {
     smallestItemFolders,
     organizeItems,
     locateInEagle,
+    revealInAll,
     isWebPlayable,
   };
 })();

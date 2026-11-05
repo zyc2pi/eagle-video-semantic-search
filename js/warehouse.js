@@ -46,14 +46,34 @@ const Warehouse = (() => {
     editEntry: (entry) => editor.editEntry(entry), toggleFavorite,
     refreshEntry: (...args) => updates.refreshEntry(...args), detachTopic });
   const updates = WarehouseUpdates.create({ ...shared,
-    requireTopic, syncSceneActions, editEntry: (entry) => editor.editEntry(entry),
+    requireTopic, syncSceneActions, editEntry: (entry) => editor.editEntry(entry), renderCards: () => renderCards(),
     warnings: () => data?.warnings || [], canSearch: () => hooks.canSearch() });
   const editor = WarehouseEditor.create({ ...shared,
     reloadData: () => { data = store().list(); },
     isUpdating: updates.isUpdating, refreshEntry: updates.refreshEntry, copyTopic: updates.copyTopic,
     renderCards, confirmButton, detachTopic, open });
 
-  function renderCards(position = null) { cards.render(position); }
+  function renderCards(position = null) { cards.render(position); syncBatchUpdate(); }
+
+  /* 批量更新范围与仓库分类筛选一致：全部分类或所选分类（含子分类）；不受名称查找与常用筛选影响。 */
+  function batchScope() {
+    const category = $('warehouse-category').value;
+    if (category === '*') return { label: '全部主题', include: () => true };
+    const ids = ArchiveStore.categoryTree(data.categories).byId.get(category)?.ids || new Set([category]);
+    return { label: `分类「${categoryName(category)}」`, include: (entry) => ids.has(entry.categoryId || '') };
+  }
+
+  function syncBatchUpdate() {
+    const button = $('warehouse-update-all');
+    if (!button) return;
+    const all = $('warehouse-category').value === '*';
+    button.textContent = all ? '全部更新' : '更新该分类全部主题';
+    const ready = !!hooks?.canSearch();
+    const busy = cleaning || updates.isBusy() || coverSaving || scenesSaving || Search.isBusy();
+    button.disabled = !ready || busy;
+    button.title = !ready ? '搜索服务未就绪或正在建索引，暂不能更新'
+      : `按各主题保存的搜索条件依次重新搜索${all ? '全部主题' : '该分类（含子分类）的主题'}，汇总变化后勾选写入`;
+  }
   function recoveryDialog() { WarehouseRecovery.open({ ...shared, detachTopic, open }); }
 
   function filteredMatches(entry) {
@@ -347,6 +367,7 @@ const Warehouse = (() => {
     const hasTopic = !!current && currentLibrary === eagle.library.path && document.body.dataset.topic === 'true';
     const saving = updates.isBusy() || coverSaving || scenesSaving || Search.isBusy();
     syncUndoActions();
+    syncBatchUpdate();
     $('btn-topic-add').disabled = saving || !(Search.getSelectedMatches() || []).length;
     $('btn-topic-remove').classList.toggle('hidden', !hasTopic);
     $('btn-topic-remove').disabled = !hasTopic || saving || !(Search.getSelectedMatches() || []).length;
@@ -677,6 +698,8 @@ const Warehouse = (() => {
   function init(callbacks) {
     hooks = callbacks;
     $('warehouse-check-new')?.addEventListener('click', () => attempt(updates.checkNewMaterials));
+    $('warehouse-update-all')?.addEventListener('click', () => attempt(() => updates.batchUpdate(batchScope())));
+    $('warehouse-category').addEventListener('change', syncBatchUpdate);
     WarehouseNavigation.init({
       attempt, toast: hooks.toast, snapshot: () => store().list(),
       newHits: (entry) => updates.newHitsFor(entry),
@@ -788,6 +811,10 @@ const Warehouse = (() => {
     $('topic-removed').addEventListener('click', () => attempt(showRemovedMatches));
     $('btn-topic-remove').addEventListener('click', () => attempt(() => removeTopicMatches(Search.getSelectedMatches())));
     $('btn-topic-score').addEventListener('click', () => attempt(() => { requireTopic(); ManualAdd.editScores(current); }));
+    // 预览区「⋯」：只作用于当前预览片段，不改动已选片段。
+    const previewMatches = () => [Search.getActiveMatch()].filter(Boolean);
+    $('btn-preview-topic-remove').addEventListener('click', () => attempt(() => removeTopicMatches(previewMatches())));
+    $('btn-preview-topic-score').addEventListener('click', () => attempt(() => { requireTopic(); ManualAdd.editScores(current, previewMatches()); }));
     const applySceneFilter = () => attempt(() => {
       checkIdle();
       if (current) requireTopic();
@@ -979,5 +1006,5 @@ const Warehouse = (() => {
   }
 
   return { init, open, saveCurrent: editor.saveCurrent, pruneMissingVideos, previewPrune, getScopeContext, getCurrentName: () => current?.name || '',
-    autoCheckNewMaterials: () => updates.autoCheckNewMaterials() };
+    autoCheckNewMaterials: () => updates.autoCheckNewMaterials(), syncBatchUpdate };
 })();

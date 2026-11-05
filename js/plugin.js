@@ -74,6 +74,7 @@
     });
     if (indexing) closeIndexModeMenu();
     $('btn-frame-visual').disabled = !serviceOnline || indexing;
+    if (typeof Warehouse !== 'undefined') Warehouse.syncBatchUpdate?.();
   }
 
   function closeIndexModeMenu() {
@@ -862,15 +863,30 @@
     $('btn-selection-timeline').disabled = Search.isBusy() || matches.length === 0;
     $('btn-selection-exclude-folder').disabled = organizing || excludingFolder || Search.isBusy()
       || targets.ids.length !== 1 || targets.missing > 0;
+    // 预览区「⋯」菜单中的同类操作只作用于当前预览片段。
+    const preview = Bridge.selectionTargets(previewMatches());
+    for (const id of ['btn-preview-tag', 'btn-preview-folder']) {
+      $(id).disabled = organizing || Search.isBusy() || preview.ids.length === 0;
+    }
+    const noPreview = Search.isBusy() || !Search.getActiveMatch();
+    for (const id of ['btn-preview-topic-add', 'btn-preview-topic-remove', 'btn-preview-topic-score', 'btn-preview-timeline']) {
+      $(id).disabled = noPreview;
+    }
+    $('btn-preview-exclude-folder').disabled = organizing || excludingFolder || Search.isBusy()
+      || preview.ids.length !== 1 || preview.missing > 0;
     ExampleSearch.updateButtons();
   }
 
-  async function excludeSelectedFolder() {
-    if ($('btn-selection-exclude-folder').disabled) return;
+  const previewMatches = () => [Search.getActiveMatch()].filter(Boolean);
+
+  /* getMatches：已选片段或当前预览片段；处理期间对象变化即放弃。 */
+  async function excludeSelectedFolder(getMatches = () => Search.getSelectedMatches()) {
+    const button = getMatches === previewMatches ? $('btn-preview-exclude-folder') : $('btn-selection-exclude-folder');
+    if (button.disabled) return;
     const target = scopeContext();
-    const itemId = Bridge.selectionTargets(Search.getSelectedMatches()).ids[0];
+    const itemId = Bridge.selectionTargets(getMatches()).ids[0];
     const stillSelected = () => {
-      const selection = Bridge.selectionTargets(Search.getSelectedMatches());
+      const selection = Bridge.selectionTargets(getMatches());
       return isScopeContextCurrent(target) && selection.ids.length === 1 && selection.ids[0] === itemId && !selection.missing;
     };
     excludingFolder = true;
@@ -916,9 +932,9 @@
     finally { dialog?.remove(); excludingFolder = false; updateSelectionActions(); }
   }
 
-  function openOrganize(kind) {
+  function openOrganize(kind, matches = Search.getSelectedMatches()) {
     if (organizing || Search.isBusy()) return;
-    const targets = Bridge.selectionTargets(Search.getSelectedMatches());
+    const targets = Bridge.selectionTargets(matches);
     if (!targets.ids.length) return;
     organizeSelection = { ...targets, kind, library: eagle.library.path };
     $('organize-title').textContent = kind === 'tag' ? '添加标签' : '添加到 Eagle 新文件夹';
@@ -1102,8 +1118,32 @@
     document.addEventListener('search-busy', updateSelectionActions);
     $('btn-selection-tag').addEventListener('click', () => openOrganize('tag'));
     $('btn-selection-folder').addEventListener('click', () => openOrganize('folder'));
-    $('btn-selection-exclude-folder').addEventListener('click', excludeSelectedFolder);
+    $('btn-selection-exclude-folder').addEventListener('click', () => excludeSelectedFolder());
+    $('btn-preview-tag').addEventListener('click', () => openOrganize('tag', previewMatches()));
+    $('btn-preview-exclude-folder').addEventListener('click', () => excludeSelectedFolder(previewMatches));
+    // 预览区「⋯」：预览区会裁剪溢出，菜单 fixed 定位贴在按钮下方（空间不足时翻到上方）。
+    const previewMenu = $('preview-more-menu');
+    document.addEventListener('preview-change', () => { previewMenu.open = false; updateSelectionActions(); });
+    previewMenu.addEventListener('toggle', () => {
+      if (!previewMenu.open) return;
+      const content = previewMenu.querySelector('.menu-content');
+      const anchor = previewMenu.querySelector('summary').getBoundingClientRect();
+      const box = content.getBoundingClientRect();
+      const below = anchor.bottom + 6;
+      const top = below + box.height > window.innerHeight - 8 ? Math.max(8, anchor.top - 6 - box.height) : below;
+      content.style.left = `${Math.max(8, Math.min(anchor.left, window.innerWidth - box.width - 8))}px`;
+      content.style.top = `${top}px`;
+    });
+    const closePreviewMenu = () => { previewMenu.open = false; };
+    $('preview-panel').addEventListener('scroll', closePreviewMenu, { passive: true });
+    $('inspector').addEventListener('scroll', closePreviewMenu, { passive: true });
+    window.addEventListener('resize', closePreviewMenu);
+    $('btn-preview-topic-add').addEventListener('click', () => {
+      try { ManualAdd.openFor(previewMatches()); } catch (error) { toast(error.message, true); }
+    });
+    $('btn-preview-folder').addEventListener('click', () => openOrganize('folder', previewMatches()));
     const timelineName = () => Warehouse.getCurrentName() || Search.getLastQuery() || '语义搜索片段';
+    $('btn-preview-timeline').addEventListener('click', () => TimelineExport.exportMatches(previewMatches(), timelineName()));
     $('btn-selection-timeline').addEventListener('click', () => {
       closeContextMenu();
       selectionMenu.open = false;

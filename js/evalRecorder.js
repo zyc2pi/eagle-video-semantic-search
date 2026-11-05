@@ -82,10 +82,11 @@ const EvalRecorder = (() => {
     }
   }
 
-  function judge(relevant) {
+  /* target 省略时标注已选片段；预览区传入当前预览片段，标注后不清除选择。 */
+  function judge(relevant, target = null) {
     try {
       if (!current) throw new Error('当前结果不是在评测记录模式下搜索得到的');
-      const matches = Search.getSelectedMatches() || [];
+      const matches = (target || Search.getSelectedMatches()) || [];
       if (!matches.length) throw new Error('请先选中要标注的片段');
       const data = read(current.file);
       const item = data.cases.find((value) => value.id === current.caseId);
@@ -94,7 +95,7 @@ const EvalRecorder = (() => {
       write(current.file, data);
       const labeled = Object.keys(item.judgments).length;
       toast(`已标注 ${matches.length} 个为${relevant ? '相关' : '不相关'}（本次查询共标注 ${labeled} 个）`);
-      Search.clearSelection();
+      if (!target) Search.clearSelection();
     } catch (error) {
       toast(`标注失败：${error.message}`, true, 5000);
     }
@@ -200,6 +201,10 @@ const EvalRecorder = (() => {
       $(id).classList.toggle('hidden', !on);
       $(id).disabled = !current || !(Search.getSelectedMatches()?.length);
     });
+    ['btn-preview-eval-relevant', 'btn-preview-eval-irrelevant'].forEach((id) => {
+      $(id).classList.toggle('hidden', !on);
+      $(id).disabled = !current || !Search.getActiveMatch();
+    });
   }
 
   function init({ pluginPath, isServiceOnline }) {
@@ -208,6 +213,10 @@ const EvalRecorder = (() => {
     document.addEventListener('search-selection', updateButtons);
     $('btn-eval-relevant').addEventListener('click', () => judge(true));
     $('btn-eval-irrelevant').addEventListener('click', () => judge(false));
+    const previewTarget = () => [Search.getActiveMatch()].filter(Boolean);
+    $('btn-preview-eval-relevant').addEventListener('click', () => judge(true, previewTarget()));
+    $('btn-preview-eval-irrelevant').addEventListener('click', () => judge(false, previewTarget()));
+    document.addEventListener('preview-change', updateButtons);
     $('btn-eval-summary').addEventListener('click', openSummary);
     $('btn-perf-check').addEventListener('click', () => runBenchmark(isServiceOnline));
     updateButtons();

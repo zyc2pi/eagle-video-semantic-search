@@ -265,9 +265,11 @@ const ManualAdd = (() => {
       if (session === savedSession && generation === targetGeneration) { status(error.message, true); sync(); }
     }
   }
-  function open(editEntry = null) {
+  /* matches 省略时取已选片段；预览区传入当前预览片段，提交后不清除选择。 */
+  function open(editEntry = null, matches = null) {
     hooks.checkIdle(); hooks.validateSource();
-    const selected = Search.getSelectedMatches() || [];
+    const fromPreview = Array.isArray(matches);
+    const selected = (fromPreview ? matches : Search.getSelectedMatches()) || [];
     if (!selected.length) return;
     const editing = editEntry !== null;
     if (editing && (!editEntry?.id || !Array.isArray(editEntry.matches))) throw new Error('当前主题尚未加载，请重新打开主题');
@@ -275,15 +277,15 @@ const ManualAdd = (() => {
     const listing = editing ? null : store().list();
     const entries = editing ? [target] : listing.entries;
     if (!entries.length) throw new Error('还没有仓库主题，请先保存一个主题');
-    const matches = editing ? editingMatches(target, selected).map((match) => SearchRecipe.clone(match)) : selected.map((match) => {
+    const sessionMatches = editing ? editingMatches(target, selected).map((match) => SearchRecipe.clone(match)) : selected.map((match) => {
       const item = Bridge.itemForPath(match.video_path);
       return { ...SearchRecipe.clone(match), eagleItemId: match.eagleItemId || item?.id };
     });
     Search.pausePreview();
     session = { library: eagle.library.path, sourceVersion, entries, categories: listing?.categories || [],
-      editing, editTargetId: target?.id, matches, scores: matches.map(emptyScore), index: 0, overviewPage: 0, target, highest: null,
-      existing: [], restoring: [] };
-    if (editing) matches.forEach((match, index) => {
+      editing, editTargetId: target?.id, matches: sessionMatches, scores: sessionMatches.map(emptyScore), index: 0, overviewPage: 0, target, highest: null,
+      existing: [], restoring: [], fromPreview };
+    if (editing) sessionMatches.forEach((match, index) => {
       if (SceneScores.valid(match.manualScore?.value)) setScore(index, match.manualScore.value, match.manualScore.mode);
     });
     $('manual-add-title').textContent = editing ? '调整当前主题评分' : '添加片段到主题';
@@ -335,10 +337,11 @@ const ManualAdd = (() => {
       : session.scores.every((_, index) => keepExisting(index)) ? '这些片段均已收录；选择“重新评分”后可修改'
       : '没有未评分片段；取消“只填未评分”可覆盖全部分数，已收录片段仍遵循重复保护');
   }
-  function editScores(entry) {
+  function editScores(entry, matches = null) {
     if (!entry) throw new Error('请先打开当前主题再调整评分');
-    open(entry);
+    open(entry, matches);
   }
+  const openFor = (matches) => open(null, matches);
   function submit(event) {
     event.preventDefault();
     try {
@@ -365,7 +368,7 @@ const ManualAdd = (() => {
         beforeRevision: target.revision || 0, undoBytes: result.undoBytes,
         targetName: target.name, label: editing ? '调整评分' : '收录片段' });
       if (!editing) recentTarget(session.library, target.id);
-      Search.clearSelection();
+      if (!session.fromPreview) Search.clearSelection();
       $('manual-add-dialog').close();
       hooks.toast(editing ? `已调整「${target.name}」中 ${result.rescored} 个片段的评分`
         : `已加入「${target.name}」：新增 ${result.added} 个，更新评分 ${result.rescored} 个，重新加入 ${result.restored} 个，保留原分 ${result.kept || 0} 个`);
@@ -443,5 +446,5 @@ const ManualAdd = (() => {
     });
     document.addEventListener('search-context', () => { sourceVersion += 1; });
   }
-  return { init, editScores };
+  return { init, editScores, openFor };
 })();

@@ -557,6 +557,12 @@ async function main() {
       console.log('continuous collection, duplicate protection and recent target smoke passed');
       return;
     }
+    if (process.env.WAREHOUSE_BATCH_ONLY) {
+      await runBatchUpdateSmoke(page);
+      assert.deepStrictEqual(errors, []);
+      console.log('batch topic update by category, selective apply, conflict, stop and offline guard smoke passed');
+      return;
+    }
     if (process.env.WAREHOUSE_CATEGORY_ONLY) {
       await runCategoryPickerSmoke(page);
       assert.deepStrictEqual(errors, []);
@@ -960,7 +966,7 @@ async function main() {
       if (!Number.isFinite(video.duration)) await seek(100000);
       await seek(0.48);
     });
-    assert(await page.locator('#preview-cover-actions').isVisible());
+    assert(!(await page.locator('#preview-cover-actions').evaluate((node) => node.classList.contains('hidden'))), '主题内「⋯」提供封面写入');
     const beforeLayoutSwitch = await page.evaluate(() => {
       window.__previewBeforeSwitch = document.getElementById('preview-video');
       const video = window.__previewBeforeSwitch;
@@ -1005,6 +1011,8 @@ async function main() {
     assert.strictEqual(await page.evaluate(() => document.getElementById('preview-video').paused), true, '逐帧操作不能自动恢复播放');
     const selectedFrame = await page.evaluate(() => Math.round(document.getElementById('preview-video').currentTime * 25));
     const beforeCover = await page.evaluate(() => ArchiveStore.open(Config.pluginPath(), eagle.library.path).list().entries.find((entry) => entry.name === '图片主题'));
+    await page.locator('#preview-more-menu > summary').click();
+    assert(await page.locator('#btn-preview-topic-remove').isVisible(), '主题内「⋯」提供从主题移除');
     await page.locator('#btn-set-topic-cover').click();
     await page.waitForFunction(() => document.querySelector('.toast')?.textContent.includes('已将当前画面设为'));
     const afterCover = await page.evaluate(() => ArchiveStore.open(Config.pluginPath(), eagle.library.path).list().entries.find((entry) => entry.name === '图片主题'));
@@ -1013,6 +1021,7 @@ async function main() {
     assert(afterCover.cover.dataUrl.startsWith('data:image/jpeg;base64,'));
     assert.deepStrictEqual(afterCover.matches, beforeCover.matches);
     await page.evaluate(() => { window.__writeFail = true; });
+    await page.locator('#preview-more-menu > summary').click();
     await page.locator('#btn-set-topic-cover').click();
     await page.waitForFunction(() => document.querySelector('.toast')?.textContent.includes('模拟写盘失败'));
     assert.deepStrictEqual(await page.evaluate(() => ArchiveStore.open(Config.pluginPath(), eagle.library.path).list().entries.find((entry) => entry.name === '图片主题').cover), afterCover.cover);
@@ -1061,7 +1070,7 @@ async function main() {
     await openFixtureFrame(0.4);
     assert(await page.locator('#btn-cover-prev-frame').isVisible(), '普通结果也可回退一帧');
     assert(await page.locator('#btn-cover-next-frame').isVisible(), '普通结果也可前进一帧');
-    assert(!(await page.locator('#btn-set-topic-cover').isVisible()), '普通结果不展示主题封面写入');
+    assert(await page.locator('#preview-cover-actions').evaluate((node) => node.classList.contains('hidden')), '普通结果不展示主题封面写入');
     const frameOne = await page.evaluate(async () => Search.captureFrame());
     const visualRequestCount = await page.evaluate(() => window.__requests.length);
     await page.locator('#btn-frame-visual').click();
@@ -2723,6 +2732,95 @@ async function runTopicCopySmoke(page) {
   await page.locator('#btn-archives').click();
   await page.locator('#warehouse-query').fill(query);
   await page.locator('#topic-search').click();
+}
+
+async function runBatchUpdateSmoke(page) {
+  await ensureSearchResults(page);
+  const ids = await page.evaluate(() => {
+    const archive = ArchiveStore.open(Config.pluginPath(), eagle.library.path);
+    archive.category('add', '', '批量父', '');
+    const parent = archive.list().categories.find((item) => item.name === '批量父').id;
+    archive.category('add', '', '批量子', parent);
+    const child = archive.list().categories.find((item) => item.name === '批量子').id;
+    const recipe = Search.getRecipe();
+    const matches = Search.getRawMatches().map((match) => ({ ...match }));
+    const make = (name, categoryId, withRecipe = true) => archive.add({ name, categoryId,
+      recipe: withRecipe ? recipe : null, matches, view: { sortBy: 'sim', grouped: false, minDur: 0 } }).id;
+    return { parent, child, a: make('批量父主题', parent), b: make('批量子主题', child),
+      c: make('批量其他主题', ''), d: make('批量无条件主题', parent, false) };
+  });
+  const entry = (id) => page.evaluate((id) => ArchiveStore.open(Config.pluginPath(), eagle.library.path)
+    .list().entries.find((item) => item.id === id), id);
+  const status = () => page.locator('#batch-update-status').textContent();
+  const before = { a: await entry(ids.a), b: await entry(ids.b), c: await entry(ids.c) };
+  await page.locator('#btn-archives').click();
+  await page.locator('#warehouse-query').fill('');
+  await page.locator('#warehouse-category').selectOption(ids.parent);
+  const button = page.locator('#warehouse-update-all');
+  assert.strictEqual(await button.textContent(), '更新该分类全部主题');
+  assert(await button.isEnabled());
+
+  // 分类范围含子分类：父、子及无条件主题；无条件主题跳过，只写入勾选的主题。
+  await page.evaluate(() => { window.__round = 1; SearchCache.clear(); });
+  const requests = await page.evaluate(() => window.__requests.length);
+  await button.click();
+  assert((await status()).includes('3 个主题'), await status());
+  await page.locator('#batch-update-start').click();
+  await page.waitForFunction(() => document.querySelectorAll('#batch-update-dialog .batch-update-row').length === 2);
+  assert.strictEqual(await page.evaluate(() => window.__requests.length) - requests, 2, '每个有条件主题重放一次');
+  assert.deepStrictEqual([await entry(ids.a), await entry(ids.b)], [before.a, before.b], '确认前不写入');
+  await page.locator('#batch-update-dialog .batch-update-row').filter({ hasText: '批量子主题' }).locator('input').uncheck();
+  await page.locator('#batch-update-start').click();
+  await page.waitForFunction(() => document.getElementById('batch-update-status').textContent.includes('批量更新结束'));
+  const summary = await status();
+  assert(summary.includes('成功 1') && summary.includes('跳过 1') && summary.includes('未写入 1'), summary);
+  const updatedA = await entry(ids.a);
+  assert.strictEqual(updatedA.revision, (before.a.revision || 0) + 1);
+  assert.notStrictEqual(updatedA.updatedAt, before.a.updatedAt);
+  assert.deepStrictEqual(await entry(ids.b), before.b, '未勾选主题不写入');
+  assert.deepStrictEqual(await entry(ids.c), before.c, '范围外主题不写入');
+  await page.locator('#batch-update-start').click();
+  await page.waitForFunction(() => !document.getElementById('batch-update-dialog'));
+  assert(await button.isEnabled(), '结束后恢复入口');
+
+  // 版本冲突：计算后主题被其他操作改写，写入失败但不影响其他主题。
+  await page.evaluate(() => { window.__round = 2; SearchCache.clear(); });
+  await button.click();
+  await page.locator('#batch-update-start').click();
+  await page.waitForFunction(() => document.querySelectorAll('#batch-update-dialog .batch-update-row').length === 2);
+  await page.evaluate(async (id) => {
+    const archive = ArchiveStore.open(Config.pluginPath(), eagle.library.path);
+    const target = archive.list().entries.find((item) => item.id === id);
+    await archive.hydrateEntry(target); archive.replace(target, target.updatedAt);
+  }, ids.a);
+  await page.locator('#batch-update-start').click();
+  await page.waitForFunction(() => document.getElementById('batch-update-status').textContent.includes('批量更新结束'));
+  assert((await status()).includes('成功 1') && (await status()).includes('失败 1'), await status());
+  assert((await page.locator('#batch-update-dialog details').textContent()).includes('其他操作更新'));
+  assert.strictEqual((await entry(ids.b)).matches.length < before.b.matches.length, true, '另一主题照常写入');
+  await page.locator('#batch-update-start').click();
+
+  // 全部主题：入口改名；停止后不写入且汇总未计算数量。
+  await page.locator('#warehouse-category').selectOption('*');
+  assert.strictEqual(await button.textContent(), '全部更新');
+  const snapshot = await page.evaluate(() => ArchiveStore.open(Config.pluginPath(), eagle.library.path).list().entries);
+  await page.evaluate(() => { window.__round = 1; window.__delayNext = true; SearchCache.clear(); });
+  await button.click();
+  await page.locator('#batch-update-start').click();
+  await page.waitForFunction(() => typeof window.__releaseSearch === 'function' && Search.isBusy());
+  await page.locator('#batch-update-cancel').click();
+  await page.evaluate(() => { window.__releaseSearch(); window.__releaseSearch = null; });
+  await page.waitForFunction(() => document.getElementById('batch-update-status').textContent.startsWith('已停止'));
+  assert((await status()).includes('未计算'), await status());
+  await page.locator('#batch-update-start').click();
+  assert.deepStrictEqual(await page.evaluate(() => ArchiveStore.open(Config.pluginPath(), eagle.library.path).list().entries), snapshot);
+
+  // 服务离线时禁用入口。
+  await page.evaluate(() => window.__serviceCallback('offline', '测试离线'));
+  assert(await button.isDisabled());
+  await page.evaluate(() => window.__serviceCallback('online', '测试搜索服务已连接'));
+  assert(await button.isEnabled());
+  await page.evaluate(() => { window.__round = 0; SearchCache.clear(); });
 }
 
 async function revealControl(page, selector) {

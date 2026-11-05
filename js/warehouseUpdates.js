@@ -278,6 +278,163 @@ const WarehouseUpdates = (() => {
       return found;
     }
 
+    /* 单主题与批量更新共用：按 recipe 重放并生成候选，不写盘。 */
+    async function computeUpdate(entry, recipe, savedView, library) {
+      const result = await Search.replay(recipe);
+      if (library !== eagle.library.path) throw new Error('素材库已切换，未写入更新结果');
+      const matches = result.matches;
+      const previous = { ...entry, matches: entry.matches.map((match) => ({ ...match,
+        eagleItemId: match.eagleItemId || Bridge.itemForPath(match.video_path)?.id,
+      })) };
+      const updated = ArchiveStore.updatedEntry(previous, matches, recipe, savedView);
+      updated.query = recipe.query;
+      updated.legacy = false;
+      return { result, matches, previous, updated };
+    }
+
+    /* 批量更新：串行重放范围内主题，汇总变化后由用户勾选一次写入；每个主题独立原子提交。 */
+    async function batchUpdate({ label, include = () => true }) {
+      checkIdle();
+      if (!hooks.canSearch()) throw new Error('搜索服务未就绪或正在建索引，请稍后更新');
+      autoCheck?.abort();
+      const library = eagle.library.path;
+      const archive = store();
+      const targets = ownedEntries(library).filter(include)
+        .sort((a, b) => Number(b.favorite === true) - Number(a.favorite === true)
+          || String(b.updatedAt).localeCompare(String(a.updatedAt)));
+      if (!targets.length) throw new Error('当前范围没有可更新的主题');
+      const navigation = beginNavigation();
+      const dialog = node('dialog', 'topic-changes-dialog');
+      dialog.id = 'batch-update-dialog';
+      const status = node('p', 'topic-changes-summary', `将按各自保存的搜索条件依次重新搜索 ${targets.length} 个主题。`);
+      status.id = 'batch-update-status'; status.setAttribute('aria-live', 'polite');
+      const list = node('div', 'topic-changes-lists');
+      const error = node('p', 'error'); error.setAttribute('role', 'alert');
+      const actions = node('div', 'dialog-actions');
+      const cancel = node('button', '', '取消'); cancel.id = 'batch-update-cancel'; cancel.type = 'button';
+      const primary = node('button', 'primary', '开始'); primary.id = 'batch-update-start'; primary.type = 'button';
+      actions.append(cancel, primary);
+      dialog.append(node('h2', '', `${label} · 批量更新`),
+        node('p', 'hint', '先逐个计算变化，全部完成后再勾选要写入的主题；未勾选的不改动。人工片段照常保留，无变化的主题不写入。'),
+        status, list, error, actions);
+      document.body.appendChild(dialog);
+
+      let stage = 'confirm'; // confirm → running → review → writing → done
+      let stopped = false;
+      const changed = []; const unchanged = []; const failed = []; const skipped = [];
+      const succeeded = [];
+      let done = null;
+      const finished = new Promise((resolve) => { done = resolve; });
+      const failureList = () => {
+        if (!failed.length && !skipped.length) return null;
+        const details = node('details');
+        details.append(node('summary', '', `失败 ${failed.length} · 跳过 ${skipped.length}`),
+          ...failed.map(({ entry, message }) => node('p', 'error', `「${entry.name}」：${message}`)),
+          ...skipped.map(({ entry, message }) => node('p', 'hint', `「${entry.name}」：${message}`)));
+        return details;
+      };
+      const finish = () => {
+        stage = 'done';
+        updating = false; syncSceneActions();
+        const notComputed = targets.length - changed.length - unchanged.length - failed.length - skipped.length;
+        const unwritten = changed.length - succeeded.length - failed.filter((item) => item.writing).length;
+        const text = `成功 ${succeeded.length} · 无变化 ${unchanged.length} · 失败 ${failed.length}`
+          + (skipped.length ? ` · 跳过 ${skipped.length}` : '')
+          + (unwritten > 0 ? ` · 未写入 ${unwritten}` : '') + (notComputed > 0 ? ` · 未计算 ${notComputed}` : '');
+        status.textContent = `${stopped ? '已停止。' : '批量更新结束。'}${text}`;
+        list.replaceChildren(...succeeded.map(({ entry, saved }) =>
+          node('p', '', `「${entry.name}」：${saved.matches.length} 个片段，新增 ${saved.newKeys.length}`)));
+        const failures = failureList(); if (failures) list.appendChild(failures);
+        cancel.hidden = true; primary.hidden = false; primary.disabled = false; primary.textContent = '关闭';
+        primary.onclick = () => dialog.close();
+        primary.focus();
+        if (succeeded.length) {
+          if (currentNavigation(navigation)) {
+            try { hooks.setData(archive.list()); hooks.renderCards(); }
+            catch (failure) { hooks.toast(`更新已保存，仓库列表刷新失败：${failure.message}`, true, 6500); }
+          }
+          hooks.toast(`批量更新：${text}`, failed.length > 0, 6500);
+        }
+      };
+      const review = () => {
+        stage = 'review';
+        list.replaceChildren();
+        if (!changed.length) { finish(); return; }
+        status.textContent = `${stopped ? '已停止，' : ''}${changed.length} 个主题有变化，无变化 ${unchanged.length}，失败 ${failed.length}`
+          + (skipped.length ? `，跳过 ${skipped.length}` : '') + '。勾选后应用：';
+        const boxes = changed.map((item) => {
+          const row = node('label', 'batch-update-row');
+          const box = node('input'); box.type = 'checkbox'; box.checked = true;
+          const { added, removed, manual } = item.changes;
+          row.append(box, node('span', '', `「${item.entry.name}」：${item.previous.matches.length} → ${item.updated.matches.length} 个片段 · 新增 ${added.length} · 消失 ${removed.length}`
+            + (manual.length ? ` · 人工保留 ${manual.length}` : '')));
+          list.appendChild(row);
+          return box;
+        });
+        const failures = failureList(); if (failures) list.appendChild(failures);
+        const sync = () => {
+          const count = boxes.filter((box) => box.checked).length;
+          primary.textContent = `应用所选 (${count})`; primary.disabled = !count;
+        };
+        boxes.forEach((box) => box.addEventListener('change', sync));
+        cancel.textContent = '放弃'; cancel.disabled = false; primary.hidden = false; sync();
+        primary.onclick = async () => {
+          const selected = changed.filter((_, index) => boxes[index].checked);
+          stage = 'writing'; cancel.disabled = true; primary.disabled = true;
+          boxes.forEach((box) => { box.disabled = true; });
+          for (const [index, item] of selected.entries()) {
+            status.textContent = `正在写入 ${index + 1}/${selected.length}：${item.entry.name}`;
+            try {
+              if (!currentNavigation(navigation)) throw new Error('素材库或当前页面已切换，未写入更新结果');
+              const saved = await archive.replace(item.updated, item.entry.updatedAt);
+              succeeded.push({ entry: item.entry, saved });
+            } catch (failure) { failed.push({ entry: item.entry, message: failure.message, writing: true }); }
+          }
+          finish();
+        };
+      };
+      const run = async () => {
+        stage = 'running'; updating = true; syncSceneActions();
+        cancel.textContent = '停止'; primary.hidden = true;
+        for (const [index, entry] of targets.entries()) {
+          if (stopped) break;
+          if (!currentNavigation(navigation)) { error.textContent = '素材库或当前页面已切换，已停止'; stopped = true; break; }
+          if (!hooks.canSearch()) { error.textContent = '搜索服务离线或开始建索引，已停止'; stopped = true; break; }
+          status.textContent = `正在重新搜索 ${index + 1}/${targets.length}：${entry.name}`;
+          try {
+            await archive.hydrateEntry(entry);
+            if (!entry.recipe) { skipped.push({ entry, message: '旧主题缺少搜索条件，请打开主题后单独更新' }); continue; }
+            const computed = await computeUpdate(entry, entry.recipe, entry.view, library);
+            const changes = ArchiveStore.entryChanges(computed.previous, computed.updated, computed.matches);
+            if (changes.added.length || changes.removed.length) changed.push({ entry, ...computed, changes });
+            else unchanged.push(entry);
+          } catch (failure) {
+            if (stopped || failure.name === 'AbortError') break;
+            failed.push({ entry, message: failure.message });
+          }
+        }
+        review();
+      };
+      cancel.addEventListener('click', () => {
+        if (stage === 'running') {
+          stopped = true; Search.cancel(); cancel.disabled = true; status.textContent = '正在停止…';
+        } else if (stage === 'confirm' || stage === 'review') dialog.close();
+      });
+      primary.onclick = () => { run(); };
+      dialog.addEventListener('cancel', (event) => {
+        event.preventDefault();
+        if (stage === 'running' || stage === 'confirm' || stage === 'review') cancel.click();
+        else if (stage === 'done') dialog.close();
+      });
+      dialog.addEventListener('close', () => {
+        dialog.remove();
+        if (stage !== 'done') { updating = false; syncSceneActions(); }
+        done({ succeeded: succeeded.length, unchanged: unchanged.length, failed: failed.length, skipped: skipped.length });
+      }, { once: true });
+      dialog.showModal(); primary.focus();
+      return finished;
+    }
+
     async function refreshEntry(entry, recipe, savedView = entry.view) {
       checkIdle();
       const navigation = beginNavigation();
@@ -300,15 +457,9 @@ const WarehouseUpdates = (() => {
       $('topic-update').textContent = '更新中…';
       hooks.toast(`正在更新「${entry.name}」…`, false, 10000);
       try {
-        const result = await Search.replay(recipe);
-        if (library !== eagle.library.path) throw new Error('素材库已切换，未写入更新结果');
-        const matches = result.matches;
-        const previous = { ...entry, matches: entry.matches.map((match) => ({ ...match,
-          eagleItemId: match.eagleItemId || Bridge.itemForPath(match.video_path)?.id,
-        })) };
-        let updated = ArchiveStore.updatedEntry(previous, matches, recipe, savedView);
-        updated.query = recipe.query;
-        updated.legacy = false;
+        const computed = await computeUpdate(entry, recipe, savedView, library);
+        const { result, matches, previous } = computed;
+        let { updated } = computed;
         updated = await previewChanges(previous, updated, { rawMatches: matches,
           note: result.missingDates ? `${result.missingDates} 个素材缺少导入时间，已排除。` : '',
           commit: () => {
@@ -401,7 +552,7 @@ const WarehouseUpdates = (() => {
       dialog.showModal(); name.focus(); name.select();
     }
 
-    return { refreshEntry, checkNewMaterials, autoCheckNewMaterials, newHitsFor, topicHistory, copyTopic, isBusy: () => updating || copying,
+    return { refreshEntry, batchUpdate, checkNewMaterials, autoCheckNewMaterials, newHitsFor, topicHistory, copyTopic, isBusy: () => updating || copying,
       isUpdating: () => updating };
   }
 
