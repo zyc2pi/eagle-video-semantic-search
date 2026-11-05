@@ -77,7 +77,7 @@ Eagle（素材管理软件）的窗口插件，提供视频的语义检索：中
 - 片段身份一律用 Eagle 素材 ID（旧数据回退路径）+ 原始帧边界（`original_start_frame/original_end_frame`），不用偏移后的预览帧或排序下标。
 - 空范围 `[]`/空 Set 表示零候选，绝不能退回整库；`null` 才是不限。
 - 新增设置：index.html 控件 + `Config.DEFAULTS`（及 `NUMBER_RULES`/枚举校验）+ `SettingsPanel.FIELDS` 一行。
-- 迭代记录与后续方向见 ROADMAP.md
+- 迭代记录与后续方向见 ROADMAP.md；2026-09～10 的复查、方案与更新报告归档在 docs/history/
 
 ## 已踩过的坑（改 UI 前必读）
 

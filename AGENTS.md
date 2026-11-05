@@ -43,6 +43,14 @@
 较早的任务（TASK-20261031-001 及以前）已原样移至 `TASKS-ARCHIVE.md`，
 需要追溯旧决策或验证边界时查阅；新任务继续记录在本章节顶部。
 
+### TASK-20261105-007 — 清理仓库目录多余文件
+
+- 状态：ready-for-human
+- 目标：清理根目录无用文件与不属于插件仓库的测试。
+- 修改：旧版界面反馈截图（03f1377a-….png）、7 月旧打包产物 视频语义搜索.eagleplugin、旧格式 saves/（9 个存档已全部记入仓库 imported，确认迁移完成）移入回收站。8 个 2026-09～10 的 REVIEW/UPDATE/SOLUTION/WAREHOUSE-REVIEW 报告 git mv 至 docs/history/，README、ROADMAP、AGENT.md 及报告内相对链接同步。删除 tests/backendPackage.smoke.js（只测后端仓库的配置加载器，应属后端）。保留 searchSecurity.smoke.js、warehouse.benchmark.js（可运行且被文档引用）。
+- 验证：删除前 backendPackage.smoke 与 warehouse.benchmark 均可运行；改动后检查链接目标存在、git diff --check。
+- 边界：未提交或推送；.claude/launch.json 为本地预览配置，未动。
+
 ### TASK-20261105-006 — 仓库按全部/分类批量更新主题
 
 - 状态：ready-for-human
