@@ -45,7 +45,10 @@ const FrameSearch = (() => {
     const span = Math.max(1, Math.round(seconds * fps));
     let end;
     let floor;
-    if (mode === 'playhead') {
+    if (mode === 'start') {
+      if (!Number.isFinite(clipStart) || !Number.isFinite(clipEnd) || clipEnd < clipStart) throw new Error('片段帧范围无效');
+      return { start: Math.round(clipStart), end: Math.min(Math.round(clipEnd), Math.round(clipStart) + span - 1), fps };
+    } else if (mode === 'playhead') {
       if (!Number.isInteger(playheadFrame) || playheadFrame < 0) throw new Error('无法读取播放头位置');
       end = playheadFrame;
       floor = 0;
@@ -63,16 +66,17 @@ const FrameSearch = (() => {
 
   function continuationSettings() {
     const cfg = Config.get();
-    return { mode: cfg.continuationMode === 'playhead' ? 'playhead' : 'end',
+    return { mode: ['start', 'playhead'].includes(cfg.continuationMode) ? cfg.continuationMode : 'end',
       seconds: Number(cfg.continuationSeconds) || 1 };
   }
 
   function syncContinuationControls() {
     const { mode, seconds } = continuationSettings();
     $('continuation-mode-end').checked = mode === 'end';
+    $('continuation-mode-start').checked = mode === 'start';
     $('continuation-mode-playhead').checked = mode === 'playhead';
     $('continuation-seconds').value = String(seconds);
-    $('btn-frame-continue').title = `取${mode === 'end' ? '片段结尾' : '播放头之前'} ${seconds} 秒的多帧画面，`
+    $('btn-frame-continue').title = `取${mode === 'start' ? '片段开头' : mode === 'end' ? '片段结尾' : '播放头之前'} ${seconds} 秒的多帧画面，`
       + '找内容相近、可以接上的镜头（同视频的后续镜头也会保留）；按画面内容匹配，不区分运动方向';
   }
 
@@ -83,7 +87,7 @@ const FrameSearch = (() => {
       syncContinuationControls();
       return;
     }
-    const mode = $('continuation-mode-playhead').checked ? 'playhead' : 'end';
+    const mode = $('continuation-mode-playhead').checked ? 'playhead' : $('continuation-mode-start').checked ? 'start' : 'end';
     try { Config.save({ continuationMode: mode, continuationSeconds: seconds }); } catch { /* Config 已提示错误 */ }
     syncContinuationControls();
   }
@@ -121,6 +125,8 @@ const FrameSearch = (() => {
     const recipe = Search.getRecipe();
     const source = recipe?.payload;
     const range = Boolean(source?.continuation && source.video_path && Number.isFinite(source.end_frame));
+    $('btn-continuation-review').classList.toggle('hidden', !range);
+    $('btn-continuation-review').disabled = pending || Search.isBusy() || !hooks.canSearch();
     const visible = range || Boolean(source?.image_base64 && source.source_frame != null);
     $('frame-query-reference').classList.toggle('hidden', !visible);
     if (!visible) { $('frame-query-image').removeAttribute('src'); return; }
@@ -129,7 +135,8 @@ const FrameSearch = (() => {
     if (range) {
       const fps = source.source_fps || 25;
       Search.loadThumbnail($('frame-query-image'), Api.previewUrl(source.video_path, source.end_frame));
-      $('frame-query-label').textContent = `接续查询画面：${rangeLabel(source.source_name, source.start_frame, source.end_frame, fps)}`;
+      $('frame-query-label').textContent = `接续查询画面：${rangeLabel(source.source_name, source.start_frame, source.end_frame, fps)}`
+        + (source.continuation_review ? ' · 开头复核（最多 20 个候选）' : '');
       return;
     }
     $('frame-query-image').src = source.image_base64;
@@ -176,9 +183,32 @@ const FrameSearch = (() => {
     hooks = options;
     $('btn-frame-visual').addEventListener('click', visual);
     $('btn-frame-continue').addEventListener('click', continuation);
-    ['continuation-mode-end', 'continuation-mode-playhead', 'continuation-seconds']
+    ['continuation-mode-end', 'continuation-mode-start', 'continuation-mode-playhead', 'continuation-seconds']
       .forEach((id) => $(id).addEventListener('change', saveContinuationControls));
     syncContinuationControls();
+    $('btn-continuation-review').addEventListener('click', async () => {
+      let token;
+      try {
+        checkReady();
+        const recipe = Search.getRecipe();
+        if (!recipe?.payload?.continuation) return;
+        token = ++generation;
+        setBusy(true);
+        const library = eagle.library.path;
+        const context = await hooks.resolveScope();
+        const resolved = await SearchRecipe.resolve(recipe);
+        checkLibrary(library);
+        if (token !== generation) return;
+        context.config = { ...context.config, ...recipe.config, visualAgg: 'max' };
+        const result = await Search.runVisual({ ...resolved.payload, continuation_review: true }, context, recipe.query);
+        if (report(result) && result.extra?.continuation_review) {
+          const summary = result.extra.continuation_review;
+          hooks.toast(`开头复核完成 ${summary.succeeded}/${summary.requested}，失败 ${summary.failed}；其余候选保留`, summary.failed > 0, 6500);
+        }
+      } catch (error) { if (token === undefined || token === generation) hooks.toast(error.message, true); }
+      finally { if (token === generation) { setBusy(false); syncReference(); } }
+    });
+    document.addEventListener('search-busy', syncReference);
     document.addEventListener('search-context', syncReference);
     document.addEventListener('search-completed', syncReference);
   }

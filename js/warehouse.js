@@ -244,9 +244,9 @@ const Warehouse = (() => {
     if (!current || currentLibrary !== eagle.library.path || document.body.dataset.page === 'warehouse') return;
     const filter = Search.getArchiveFilter();
     localFilters.set(timeKey(current), filter);
-    const { query, source, tags, orientation, maxDur, minScore } = filter;
+    const { query, source, tags, orientation, maxDur, minScore, membership, videoLimit, queryHits } = filter;
     topicPositions.set(timeKey(current), { view: Search.getView(), position: Search.captureBrowsePosition(),
-      filter: { query, source, tags, orientation, maxDur, minScore }, time: localTime(current) });
+      filter: { query, source, tags, orientation, maxDur, minScore, membership, videoLimit, queryHits }, time: localTime(current) });
   }
   function rememberWarehousePosition() {
     if (document.body.dataset.page !== 'warehouse' || cards.state.library !== eagle.library.path) return;
@@ -301,10 +301,17 @@ const Warehouse = (() => {
   }
   async function returnToSearch() {
     checkIdle();
+    const navigation = beginNavigation();
+    const library = eagle.library.path;
     clearTimeout(sceneQueryTimer);
     rememberTopicPosition();
     const session = searchSession;
     const sameLibrary = session?.state.library === SearchRecipe.normalize(eagle.library.path);
+    if (sameLibrary && session.state.filter?.membership && session.state.filter.membership !== 'all') {
+      await TopicRelations.ensure().catch((error) => hooks.toast(error.message, true));
+    }
+    if (!currentNavigation(navigation) || library !== eagle.library.path || session !== searchSession) return;
+    checkIdle();
     detachTopic(false);
     Search.restoreState(sameLibrary ? session.state : null);
     $('query').value = sameLibrary ? session.queryInput : '';
@@ -815,7 +822,7 @@ const Warehouse = (() => {
     const previewMatches = () => [Search.getActiveMatch()].filter(Boolean);
     $('btn-preview-topic-remove').addEventListener('click', () => attempt(() => removeTopicMatches(previewMatches())));
     $('btn-preview-topic-score').addEventListener('click', () => attempt(() => { requireTopic(); ManualAdd.editScores(current, previewMatches()); }));
-    const applySceneFilter = () => attempt(() => {
+    const applySceneFilter = () => attempt(async () => {
       checkIdle();
       if (current) requireTopic();
       const maximum = $('result-max-dur');
@@ -823,9 +830,17 @@ const Warehouse = (() => {
         if (!maximum.validity.valid) throw new Error('请输入有效的非负时长上限');
         const filter = { ...Search.getArchiveFilter(), query: $('topic-scene-query').value, source: $('topic-scene-source').value,
           tags: $('result-tags').value,
+          membership: $('result-membership').value, videoLimit: Number($('result-video-limit').value),
+          queryHits: Number($('result-query-hits').value),
           maxDur: maximum.value === '' ? null : Number(maximum.value) };
+        const library = eagle.library.path;
+        const topic = current;
         Search.setArchiveFilter(filter);
         if (current) localFilters.set(timeKey(current), Search.getArchiveFilter());
+        if (filter.membership !== 'all') {
+          await TopicRelations.ensure();
+          if (library !== eagle.library.path || topic !== current || $('result-membership').value !== filter.membership) return;
+        }
         $('result-filter-error').textContent = '';
       } catch (error) { $('result-filter-error').textContent = error.message; }
     });
@@ -849,7 +864,7 @@ const Warehouse = (() => {
       clearTimeout(sceneQueryTimer);
       applySceneFilter();
     });
-    ['result-max-dur'].forEach((id) => $(id).addEventListener('change', () => {
+    ['result-max-dur', 'result-membership', 'result-video-limit', 'result-query-hits'].forEach((id) => $(id).addEventListener('change', () => {
       clearTimeout(sceneQueryTimer); applySceneFilter();
     }));
     $('topic-filter-threshold').addEventListener('change', () => attempt(() => {

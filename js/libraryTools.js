@@ -76,6 +76,76 @@ const LibraryTools = (() => {
   }
 
   // ---------- 语义查重 ----------
+  async function openCoverage() {
+    const library = eagle.library.path;
+    const model = h('select', { attrs: { 'aria-label': '索引模型' } });
+    const status = h('select', { attrs: { 'aria-label': '覆盖状态' } },
+      ...[['missing', '未处理'], ['failed', '失败'], ['skipped', '跳过'], ['indexed', '已索引'], ['unknown', '已处理，状态未知']]
+        .map(([value, text]) => h('option', { value, text })));
+    const summary = h('p', { className: 'hint', attrs: { role: 'status' }, text: '正在读取覆盖清单…' });
+    const list = h('div', { className: 'coverage-list' });
+    const more = h('button', { type: 'button', text: '加载更多', hidden: true });
+    const dialog = h('dialog', { className: 'ai-plan-dialog confirm-dialog' },
+      h('h3', { text: '当前素材库索引覆盖清单' }),
+      h('div', { className: 'sequence-options' }, model, status), summary, list, more,
+      h('div', { className: 'dialog-actions' }, h('button', { type: 'button', text: '关闭', onclick: () => dialog.close() })));
+    let rows = [];
+    let generation = 0;
+    let shown = 0;
+    const append = () => {
+      const matching = rows.filter((row) => row.status === status.value);
+      for (const row of matching.slice(shown, shown + 100)) list.append(h('div', { className: 'coverage-row' },
+        h('span', { text: row.item.name, title: row.item.filePath }),
+        h('button', { type: 'button', text: '在全部中显示', onclick: async () => {
+          try {
+            if (library !== eagle.library.path) throw new Error('素材库已切换，请重新打开覆盖清单');
+            await Bridge.revealInAll(row.item.id);
+          } catch (error) { toast(error.message, true); }
+        } })));
+      shown = Math.min(shown + 100, matching.length);
+      more.hidden = shown >= matching.length;
+    };
+    const render = () => { shown = 0; list.replaceChildren(); append(); };
+    const load = async () => {
+      const token = ++generation;
+      rows = [];
+      list.replaceChildren(); more.hidden = true;
+      summary.textContent = '正在读取覆盖清单…';
+      try {
+        if (!isServiceOnline()) throw new Error('请先连接搜索服务');
+        const identity = await Bridge.resolveLibraryIdentity();
+        const indexes = (await Api.listIndexes(identity.id)).filter((index) => index.model === model.value);
+        const videos = await Bridge.collectLibraryVideos();
+        const coverages = await Promise.all(indexes.map((index) => Api.indexCoverage(index.path)));
+        if (!dialog.open || token !== generation) return;
+        if (library !== eagle.library.path) throw new Error('素材库已切换，请重新打开覆盖清单');
+        const paths = {};
+        for (const [key, field] of [['indexed', 'indexedPaths'], ['skipped', 'skippedPaths'], ['failed', 'failedPaths'], ['unknown', 'processedPaths']]) {
+          paths[key] = new Set(coverages.flatMap((coverage) => coverage[field]).map(Bridge.normalizePath));
+        }
+        rows = videos.map((item) => ({ item, status: ['indexed', 'skipped', 'failed', 'unknown']
+          .find((key) => paths[key].has(Bridge.normalizePath(item.filePath))) || 'missing' }));
+        summary.textContent = [...status.options].map((option) => `${option.text} ${rows.filter((row) => row.status === option.value).length}`).join(' · ')
+          + (indexes.length ? '。具体原因可查看对应索引任务记录。' : '。该模型尚无索引。');
+        render();
+      } catch (error) { if (dialog.open && token === generation) summary.textContent = error.message; }
+    };
+    model.append(h('option', { value: Config.get().modelName, text: Config.get().modelName }));
+    status.addEventListener('change', render);
+    model.addEventListener('change', load);
+    more.addEventListener('click', append);
+    dialog.addEventListener('close', () => { generation += 1; dialog.remove(); });
+    document.body.append(dialog); dialog.showModal();
+    try {
+      const identity = await Bridge.resolveLibraryIdentity();
+      const indexes = await Api.listIndexes(identity.id);
+      if (!dialog.open || library !== eagle.library.path) return;
+      const names = [...new Set([Config.get().modelName, ...indexes.map((index) => index.model)])];
+      model.replaceChildren(...names.map((name) => h('option', { value: name, text: name })));
+      await load();
+    } catch (error) { if (dialog.open) summary.textContent = error.message; }
+  }
+
   async function runDedupScan() {
     const body = $('dedup-body');
     body.innerHTML = '<p class="hint">扫描中（读取索引向量并聚类）…</p>';
@@ -275,6 +345,7 @@ const LibraryTools = (() => {
   function init(options = {}) {
     if (typeof options.isServiceOnline === 'function') isServiceOnline = options.isServiceOnline;
     $('btn-stats').addEventListener('click', openStats);
+    $('btn-index-coverage').addEventListener('click', openCoverage);
     $('btn-dedup-scan').addEventListener('click', openDedupScan);
     $('btn-index-admin').addEventListener('click', openIndexAdmin);
     $('btn-dedup-rescan').addEventListener('click', runDedupScan);

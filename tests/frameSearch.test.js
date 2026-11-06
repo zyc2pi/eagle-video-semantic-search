@@ -95,6 +95,8 @@ async function main() {
   // 找接续画面：片段结尾取原始帧边界内最后 N 秒；播放头模式以播放头为终点。
   const match = context.Search.activeMatch;
   assert.deepStrictEqual({ ...FrameSearch.continuationRange(match, 'end', 1) }, { start: 226, end: 250, fps: 25 });
+  assert.deepStrictEqual({ ...FrameSearch.continuationRange(match, 'start', 1) }, { start: 100, end: 124, fps: 25 });
+  assert.deepStrictEqual({ ...FrameSearch.continuationRange(match, 'start', 10) }, { start: 100, end: 250, fps: 25 });
   assert.deepStrictEqual({ ...FrameSearch.continuationRange(match, 'end', 10) }, { start: 100, end: 250, fps: 25 }, '不超出片段起点');
   assert.deepStrictEqual({ ...FrameSearch.continuationRange(match, 'playhead', 2, 30) }, { start: 0, end: 30, fps: 25 });
   assert.throws(() => FrameSearch.continuationRange(match, 'playhead', 1, null), /播放头/);

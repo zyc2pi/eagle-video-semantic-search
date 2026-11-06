@@ -126,6 +126,13 @@
           <select id="topic-scene-source" aria-label="按人工评分筛选片段">
             <option value="all">全部片段</option><option value="manual">人工评分</option><option value="auto">未人工评分</option>
           </select>
+          <label for="result-membership">主题收录</label>
+          <select id="result-membership"><option value="all">全部片段</option><option value="uncollected">尚未收录</option><option value="collected">已收录</option></select>
+          <span id="result-membership-status" class="hint" role="status"></span>
+          <label for="result-video-limit">每素材</label>
+          <select id="result-video-limit" title="筛选后按相似度选出每个素材的前 N 个片段，保存和导出使用当前可见结果"><option value="0">不限片段数</option><option value="1">最高分 1 个</option><option value="3">最高分 3 个</option><option value="5">最高分 5 个</option></select>
+          <label for="result-query-hits">查询命中</label>
+          <input id="result-query-hits" type="number" min="0" max="8" step="1" value="0" aria-label="至少命中多少条改写查询，0 为不限" title="至少命中 N 条改写查询，0 为不限；缺少命中信息的结果仅在不限时显示">
           <span class="filter-label">片段时长</span>
           <div class="dur-row">
             <input id="view-min-dur" type="number" min="0" max="600" step="0.5" value="0" title="只显示不短于此秒数的场景" aria-label="片段时长下限">
@@ -181,6 +188,7 @@
             <option value="sim">相似度</option>
             <option value="dur">时长</option>
             <option value="name">视频名</option>
+            <option value="continuation">接续复核顺序</option>
           </select>
         </label>
         <label class="scope-toggle"><input id="view-grouped" type="checkbox"> 按视频分组</label>
@@ -189,6 +197,7 @@
     </details>
     <button id="btn-save-results" class="mini-btn" title="保存当前筛选后的全部结果及搜索条件">保存到仓库</button>
     <button id="btn-refine-results" type="button" class="mini-btn" title="在当前筛选后的全部镜头中继续语义搜索">在结果中搜索</button>
+    <button id="btn-feedback-manage" type="button" class="mini-btn hidden">管理检索样例</button>
     <button id="btn-organize-undo" type="button" class="mini-btn hidden" title="撤销最近一次收录或改分（Ctrl+Z）" disabled>撤销整理</button>
     <span id="selection-count" class="selection-count" aria-live="polite"></span>
     <!-- 有选中片段时才显示入口；右键菜单复用同一份内容。 -->
@@ -223,6 +232,7 @@
   <div id="frame-query-reference" class="frame-query-reference hidden">
     <img id="frame-query-image" alt="本次搜索使用的画面">
     <span id="frame-query-label"></span>
+    <button id="btn-continuation-review" type="button" class="mini-btn hidden" title="复核初筛前 20 个候选的开头画面；重新搜索并按复核分数排列">复核候选开头</button>
   </div>
   <div id="topic-removal-notice" class="topic-removal-notice hidden">
     <span id="topic-removal-message" role="status"></span>
@@ -244,6 +254,7 @@
     <div class="preview-side">
       <div id="preview-info" title="← / → 切换结果，Esc 收起"></div>
       <div id="preview-summary" class="preview-summary" aria-live="polite"></div>
+      <div id="preview-sequence" class="preview-sequence hidden" aria-label="时序搜索步骤"></div>
       <div id="preview-feedback" class="preview-feedback"></div>
       <div id="preview-timeline" class="preview-timeline" title="此视频的全部命中场景，点击跳转"></div>
       <div class="preview-frame-actions">
@@ -258,6 +269,7 @@
             <summary title="接续画面的取帧位置与时长" aria-label="接续取帧设置">▾</summary>
             <div class="menu-content">
               <label><input id="continuation-mode-end" type="radio" name="continuation-mode" value="end"> 片段结尾</label>
+              <label><input id="continuation-mode-start" type="radio" name="continuation-mode" value="start"> 片段开头</label>
               <label><input id="continuation-mode-playhead" type="radio" name="continuation-mode" value="playhead"> 播放头之前</label>
               <label class="continuation-seconds">取 <input id="continuation-seconds" type="number" min="0.2" max="10" step="0.1"> 秒画面</label>
               <p class="hint">多帧画面平均后找相似，按画面内容匹配，不区分运动方向。</p>
@@ -281,6 +293,7 @@
             <button id="btn-preview-topic-remove" type="button" class="topic-only">从主题移除</button>
             <button id="btn-preview-topic-score" type="button" class="topic-only">调整评分</button>
             <button id="btn-preview-tag" type="button">添加标签</button>
+            <button id="btn-preview-analyze" type="button">分析运镜与景别</button>
             <button id="btn-preview-folder" type="button">添加到新文件夹</button>
             <button id="btn-preview-timeline" type="button" title="写成 FCP7 XML，记录原视频入出点，不生成新视频">导出为时间线（PR / 达芬奇）</button>
             <button id="btn-preview-eval-relevant" type="button" class="hidden" title="评测记录模式：把这个片段标为与本次查询相关">评测：标为相关</button>
@@ -289,6 +302,7 @@
         </details>
         <button id="btn-close-preview" type="button" class="preview-close" title="收起预览（Esc）；← / → 切换结果">收起预览</button>
       </div>
+      <section id="shot-analysis" class="inspector-section hidden" aria-live="polite"></section>
       <section class="inspector-section"><h3>所属主题</h3><div id="preview-membership" class="inspector-chips" aria-live="polite"></div></section>
       <section class="inspector-section inspector-tags-section"><h3>标签</h3><div id="preview-tags" class="preview-tags"></div></section>
       <section class="inspector-section"><h3>评分</h3><dl id="preview-rating" class="inspector-info"></dl></section>
@@ -476,7 +490,7 @@
           <label>片段时长 ≥（秒）<input id="entry-duration" type="number" min="0" step="0.5" required></label>
         </div>
         <div class="field-pair">
-          <label>排序<select id="entry-sort"><option value="sim">相似度</option><option value="dur">时长</option><option value="name">视频名</option></select></label>
+          <label>排序<select id="entry-sort"><option value="sim">相似度</option><option value="dur">时长</option><option value="name">视频名</option><option value="continuation">接续复核顺序</option></select></label>
           <label class="check-row"><input id="entry-grouped" type="checkbox">按视频分组</label>
         </div>
         <label><select id="entry-time" aria-label="搜索时间范围">
@@ -666,6 +680,7 @@
       </div>
       <div class="btn-row">
         <button id="btn-stats" type="button" title="素材库统计：标签分布、时长分布、索引覆盖率">库统计</button>
+        <button id="btn-index-coverage" type="button">索引覆盖清单</button>
         <button id="btn-dedup-scan" type="button" title="用现有索引的场景向量找出语义重复的视频，分组展示并可在 Eagle 中选中处理">查重扫描</button>
         <button id="btn-perf-check" type="button" title="在当前素材库上只读测量素材清单、仓库读取与搜索耗时">性能自检</button>
         <button id="btn-eval-summary" type="button" title="汇总评测记录模式下的查询与人工标注（P@10、标注子集召回、耗时）">评测汇总</button>
@@ -717,6 +732,7 @@
   <script src="js/warehouse.js"></script>
   <script src="js/layoutPanels.js"></script>
   <script src="js/libraryTools.js"></script>
+  <script src="js/shotAnalysis.js"></script>
   <script src="js/settingsPanel.js"></script>
   <script src="js/plugin.js"></script>
 </body>

@@ -180,6 +180,99 @@ async function main() {
     await page.waitForFunction(() => document.body.dataset.page === 'warehouse');
     await page.locator('#topic-search').click();
     await page.waitForFunction(() => document.body.dataset.page !== 'warehouse');
+    if (process.env.WAREHOUSE_EXTENSIONS_ONLY) {
+      await page.evaluate(() => {
+        const original = window.fetch;
+        window.fetch = async (url, init) => {
+          if (url.endsWith('/analyze_shot')) return { ok: true, status: 200, json: async () => ({ success: true,
+            motion: { label: '固定镜头', direction: '静止', confidence: 0.8 }, scale: { label: '特写', confidence: 0.9 },
+            tags: ['运镜:固定镜头', '景别:特写'], notes: [] }) };
+          const response = await original(url, init);
+          const data = await response.json();
+          if (url.includes('/index/contents')) data.success = true;
+          if (url.endsWith('/health')) data.capabilities.continuation_review = true;
+          if (url.includes('/search')) data.matches = data.matches.map((match, index) => ({ ...match,
+            matched_queries: Array.from({ length: index % 3 + 1 }, (_, i) => ({ id: String(i), text: `查询${i}`, similarity: 20 })) }));
+          if (url.endsWith('/search_visual') && JSON.parse(init.body).continuation_review) {
+            data.matches.forEach((match, index) => { match.continuation_rank = data.matches.length - index; match.continuation_similarity = index; });
+            data.continuation_review = { requested: 20, succeeded: 20, failed: 0 };
+          }
+          return { ...response, json: async () => data };
+        };
+      });
+      await page.locator('#query').fill('扩展功能');
+      await page.locator('#btn-search').click();
+      await page.waitForFunction(() => Search.getRawMatches().length > 0 && !Search.isBusy());
+      const baseline = await page.evaluate(() => Search.getRawMatches().length);
+      await revealControl(page, '#result-video-limit');
+      await page.selectOption('#result-video-limit', '1');
+      await page.waitForFunction(() => Search.getAllMatches().length === 2);
+      await revealControl(page, '#btn-save-results');
+      await page.locator('#btn-save-results').click();
+      await page.locator('#entry-name').fill('扩展功能主题');
+      await page.locator('#entry-submit').click();
+      await page.waitForFunction(() => !document.getElementById('warehouse-editor').open);
+      await page.locator('#topic-search').click();
+      await revealControl(page, '#result-video-limit');
+      await page.selectOption('#result-video-limit', '0');
+      await page.locator('#result-query-hits').fill('3');
+      await page.locator('#result-query-hits').blur();
+      await page.waitForFunction(() => Search.getAllMatches().every((match) => match.matched_queries.length >= 3));
+      assert((await page.evaluate(() => Search.getAllMatches().length)) < baseline);
+      await page.locator('#result-filter-clear').click();
+      await page.selectOption('#result-membership', 'uncollected');
+      await page.waitForFunction((expected) => Search.getArchiveFilter().membership === 'uncollected' && Search.getAllMatches().length === expected, baseline - 2);
+      await page.selectOption('#result-membership', 'collected');
+      await page.waitForFunction(() => Search.getArchiveFilter().membership === 'collected' && Search.getAllMatches().length === 2);
+      await page.selectOption('#result-membership', 'all');
+      await page.waitForFunction((expected) => Search.getAllMatches().length === expected, baseline);
+      await page.locator('#result-filter-menu summary').click();
+      await page.locator('#results .card').first().click();
+      await revealControl(page, '#btn-selection-similar');
+      await page.locator('#btn-selection-similar').click();
+      await page.waitForFunction(() => !Search.isBusy() && Search.getRecipe()?.kind === 'feedback');
+      await revealControl(page, '#btn-feedback-manage');
+      await page.locator('#btn-feedback-manage').click();
+      await page.locator('.feedback-examples').waitFor();
+      await page.getByRole('spinbutton', { name: '负例排除力度' }).fill('0.8');
+      await page.getByRole('button', { name: '应用并重新搜索' }).click();
+      await page.waitForFunction(() => !Search.isBusy() && Search.getRecipe()?.payload.feedback.negativeWeight === 0.8);
+      await page.evaluate(() => {
+        const matches = Search.getRawMatches();
+        matches[0] = { ...matches[0], sequence: [{ query: '开门', original_start_frame: 10, original_end_frame: 30, similarity: 20 }] };
+        Search.replaceResults(matches);
+        Search.openPreviewByKey(ArchiveStore.sceneKey(matches[0]));
+      });
+      assert.strictEqual(await page.locator('#preview-sequence button').count(), 1);
+      await page.locator('#preview-sequence button').click();
+      await page.locator('#preview-more-menu summary').click();
+      await page.locator('#btn-preview-analyze').click();
+      await page.waitForFunction(() => document.getElementById('shot-analysis').textContent.includes('特写'));
+      await page.getByRole('button', { name: '确认添加到素材标签' }).click();
+      await page.locator('dialog[open] .dialog-actions .primary').click();
+      await page.waitForFunction(() => document.getElementById('preview-tags').textContent.includes('景别:特写'));
+      await page.locator('#continuation-menu summary').click();
+      await page.locator('#continuation-mode-start').check();
+      await page.locator('#continuation-menu summary').click();
+      await page.locator('#btn-frame-continue').click();
+      await page.waitForFunction(() => !Search.isBusy() && Search.getRecipe()?.payload.continuation === 'start');
+      await page.locator('#btn-continuation-review').click();
+      await page.waitForFunction(() => !Search.isBusy() && Search.getRecipe()?.payload.continuation_review);
+      assert.strictEqual(await page.evaluate(() => Search.getView().sortBy), 'continuation');
+      await page.locator('#btn-settings').click();
+      await page.locator('#btn-index-coverage').click();
+      await page.waitForFunction(() => {
+        const summary = document.querySelector('.coverage-list')?.previousElementSibling;
+        return summary && !summary.textContent.includes('正在');
+      });
+      assert((await page.locator('.coverage-list').evaluate((list) => list.previousElementSibling.textContent)).includes('已索引 3'),
+        await page.locator('.coverage-list').evaluate((list) => list.previousElementSibling.textContent));
+      await page.getByRole('combobox', { name: '覆盖状态' }).selectOption('indexed');
+      await page.waitForFunction(() => document.querySelectorAll('.coverage-row').length === 3);
+      assert.deepStrictEqual(errors, []);
+      console.log('extensions: local filters, feedback manager, sequence steps, shot analysis, head reference/review and index coverage passed');
+      return;
+    }
     if (process.env.WAREHOUSE_SESSION_SCOPE_ONLY) {
       const card = (id) => page.locator(`#results .card:has(img[alt="${({ a: '城市街道', b: '旧素材', c: '新加入夜景' })[id]}"])`).first();
       const visiblePaths = () => page.evaluate(() => [...new Set(Search.getAllMatches().map((m) => m.video_path))].sort());

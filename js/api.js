@@ -162,7 +162,10 @@ const Api = (() => {
     return { ...body, allowed_video_paths: Array.from(allowedVideoPaths) };
   }
 
-  function searchVisual(payload, indices, threshold, allowedVideoPaths = null, cfg = Config.get(), requestOptions = {}) {
+  async function searchVisual(payload, indices, threshold, allowedVideoPaths = null, cfg = Config.get(), requestOptions = {}) {
+    if (payload.continuation_review && !(await healthInfo())?.capabilities?.continuation_review) {
+      throw new Error('请在设置中重启搜索服务，以启用候选开头复核');
+    }
     const isScene = payload.start_frame != null || payload.end_frame != null;
     return post('/api/v1/search_visual', withSearchScope({
       ...payload,
@@ -216,6 +219,12 @@ const Api = (() => {
 
   function describeFrame(payload, requestOptions = {}) {
     return post('/api/v1/describe', { ...payload, keep_model: false }, LONG_TIMEOUT_MS, requestOptions);
+  }
+
+  function analyzeShot(match) {
+    return post('/api/v1/analyze_shot', { video_path: match.video_path,
+      start_frame: match.original_start_frame ?? match.start_frame,
+      end_frame: match.original_end_frame ?? match.end_frame }, LONG_TIMEOUT_MS);
   }
 
   /* 混合检索：文本提示词 × 视觉片段 两路融合。textThreshold 不传时退回配置值 */
@@ -318,7 +327,7 @@ const Api = (() => {
 
   return {
     health, healthInfo, resolveLibrary, associateLibrary, listIndexJobs, listIndexes, listModels, startIndex, indexStatus, cancelIndex, retryIndex,
-    search, aiSearchPlan, searchVisual, searchHybrid, describeFrame, shutdown,
+    search, aiSearchPlan, searchVisual, searchHybrid, describeFrame, analyzeShot, shutdown,
     dedupScan, indexCoverage, indexContents, previewUrl,
     indexStats, trashIndex, searchFeedback, searchSequence,
   };

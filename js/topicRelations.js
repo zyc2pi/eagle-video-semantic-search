@@ -5,6 +5,8 @@ const TopicRelations = (() => {
   let hooks;
   let cache = null;
   let pendingSnapshot = null;
+  let failedLibrary = null;
+  let membershipLibrary = null;
   let refreshGeneration = 0;
   let dialogGeneration = 0;
   let timer;
@@ -77,6 +79,7 @@ const TopicRelations = (() => {
     const signature = JSON.stringify(snapshot.entries.map((entry) => [entry.id, entry.name, entry.revision, entry.updatedAt]));
     if (cache?.library === library && cache.signature === signature) return cache;
     if (pendingSnapshot?.library === library && pendingSnapshot.signature === signature) return pendingSnapshot.promise;
+    // 同库主题变化时沿用旧归属直到新快照就绪，避免归属筛选列表清空、丢失选择与浏览位置；切库由调用方清空。
     const pending = { library, signature };
     pendingSnapshot = pending;
     const isCurrent = () => pendingSnapshot === pending && library === eagle.library.path;
@@ -109,12 +112,34 @@ const TopicRelations = (() => {
       Search.refreshTopicMembership(snapshot.find);
     } catch (error) {
       if (error.name === 'AbortError') return;
-      if (generation === refreshGeneration) { cache = null; Search.refreshTopicMembership(null, '归属读取失败，点击重试'); }
+      if (generation === refreshGeneration && !cache && !pendingSnapshot) {
+        failedLibrary = eagle.library.path;
+        Search.refreshTopicMembership(null, '归属读取失败，请重试');
+      }
     }
   }
 
   function scheduleRefresh() {
+    failedLibrary = null;
     clearTimeout(timer); timer = setTimeout(refresh, 0);
+  }
+
+  async function ensure() {
+    const library = eagle.library.path;
+    failedLibrary = null;
+    try {
+      const snapshot = await readSnapshot();
+      if (snapshot.library !== eagle.library.path) throw new Error('素材库已切换，请重试');
+      cache = snapshot;
+      failedLibrary = null;
+      Search.refreshTopicMembership(snapshot.find);
+    } catch (error) {
+      if (library === eagle.library.path && error.name !== 'AbortError' && !cache && !pendingSnapshot) {
+        failedLibrary = library;
+        Search.refreshTopicMembership(null, '归属读取失败，请重试');
+      }
+      throw error;
+    }
   }
 
   function node(tag, className, text) {
@@ -298,9 +323,14 @@ const TopicRelations = (() => {
     });
     dialog.addEventListener('close', () => { ++dialogGeneration; stopPreview(); comparison = null; });
     document.addEventListener('search-context', () => {
-      if (cache?.library !== eagle.library.path) { cache = null; Search.refreshTopicMembership(null); }
+      if (membershipLibrary !== eagle.library.path) {
+        membershipLibrary = eagle.library.path;
+        failedLibrary = null;
+        cache = null;
+        Search.refreshTopicMembership(null);
+      }
       if (dialog.open && dialogLibrary !== eagle.library.path) { dialog.close(); hooks.toast('素材库已切换，主题比较已关闭'); }
-      scheduleRefresh();
+      if (failedLibrary !== eagle.library.path) scheduleRefresh();
     });
   }
   async function openTopic(id, library) {
@@ -310,7 +340,7 @@ const TopicRelations = (() => {
       await hooks.openEntry(id);
     } catch (error) { hooks.toast(error.message, true); }
   }
-  return { init, showCompare, buildMembership, compare, refresh: scheduleRefresh,
+  return { init, showCompare, buildMembership, compare, ensure, refresh: scheduleRefresh,
     openTopic,
     showMembership: (match) => showMembership(match).catch((error) => hooks.toast(error.message, true)) };
 })();

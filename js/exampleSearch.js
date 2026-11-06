@@ -68,6 +68,53 @@ const ExampleSearch = (() => {
     return steps;
   }
 
+  function openFeedbackDialog() {
+    const recipe = Search.getRecipe();
+    if (recipe?.kind !== 'feedback') return;
+    const library = eagle.library.path;
+    const signature = JSON.stringify(recipe);
+    const examples = SearchRecipe.clone(recipe.payload.feedback);
+    const list = h('div', { className: 'feedback-examples' });
+    const weight = h('input', { type: 'number', min: 0, max: 1, step: 0.05, value: examples.negativeWeight ?? 0.5,
+      attrs: { 'aria-label': '负例排除力度' } });
+    const error = h('p', { className: 'form-error', attrs: { role: 'status' } });
+    const render = () => {
+      list.replaceChildren();
+      for (const [key, label] of [['positives', '正例'], ['negatives', '负例']]) {
+        list.append(h('h4', { text: `${label}（${examples[key].length}）` }));
+        examples[key].forEach((example, index) => {
+          const name = Bridge.itemForPath(example.video_path)?.name || example.video_path.split(/[\\/]/).pop();
+          list.append(h('div', { className: 'feedback-example-row' },
+            h('span', { text: `${name} · 源帧 ${example.start_frame}–${example.end_frame}` }),
+            h('button', { type: 'button', text: '移除', onclick: () => { examples[key].splice(index, 1); render(); } })));
+        });
+      }
+    };
+    const submit = h('button', { type: 'button', className: 'primary', text: '应用并重新搜索', onclick: async () => {
+      try {
+        if (!examples.positives.length) throw new Error('至少保留一个正例');
+        if (weight.value === '' || !weight.validity.valid) throw new Error('排除力度应为 0～1');
+        if (!hooks.isServiceOnline() || Search.isBusy()) throw new Error('服务未就绪或已有搜索进行中');
+        const context = await hooks.resolveScope();
+        const resolved = await SearchRecipe.resolve({ ...recipe, payload: { ...recipe.payload, feedback: examples } });
+        if (!dialog.open) return;
+        if (library !== eagle.library.path || signature !== JSON.stringify(Search.getRecipe())) throw new Error('搜索或素材库已切换，请重新打开样例管理');
+        const refreshed = { ...resolved.payload.feedback, negativeWeight: Number(weight.value) };
+        context.config = { ...context.config, ...recipe.config };
+        dialog.close();
+        report(await Search.runFeedback(refreshed, context, feedbackLabel(refreshed)));
+      } catch (err) { if (dialog.open) error.textContent = err.message; else toast(err.message, true); }
+    } });
+    const dialog = h('dialog', { className: 'ai-plan-dialog confirm-dialog' },
+      h('h3', { text: '管理检索样例' }), list,
+      h('label', { className: 'sequence-options' }, '负例排除力度（0～1）', weight), error,
+      h('div', { className: 'dialog-actions' }, h('button', { type: 'button', text: '取消', onclick: () => dialog.close() }), submit));
+    dialog.addEventListener('close', () => dialog.remove());
+    render();
+    document.body.append(dialog);
+    dialog.showModal();
+  }
+
   async function sequence(steps, maxGap, threshold) {
     if (steps.length < 2 || steps.length > 4) throw new Error('时序搜索需要 2～4 个步骤，用 → 或 >> 分隔');
     if (!Number.isFinite(maxGap) || maxGap < 0 || maxGap > 120) throw new Error('步骤间隔应为 0～120 秒');
@@ -125,6 +172,8 @@ const ExampleSearch = (() => {
   function updateButtons() {
     const selected = Search.getSelectedMatches()?.length || 0;
     const feedbackActive = Search.getRecipe()?.kind === 'feedback';
+    $('btn-feedback-manage').classList.toggle('hidden', !feedbackActive);
+    $('btn-feedback-manage').disabled = !hooks.isServiceOnline() || Search.isBusy();
     const disabled = !hooks.isServiceOnline() || Search.isBusy() || !selected;
     $('btn-selection-similar').disabled = disabled;
     ['btn-selection-more', 'btn-selection-less'].forEach((id) => {
@@ -149,6 +198,7 @@ const ExampleSearch = (() => {
     $('btn-selection-similar').addEventListener('click', () => feedback('new'));
     $('btn-selection-more').addEventListener('click', () => feedback('more'));
     $('btn-selection-less').addEventListener('click', () => feedback('less'));
+    $('btn-feedback-manage').addEventListener('click', openFeedbackDialog);
     $('btn-sequence-search').addEventListener('click', () => openSequenceDialog(parseSequence($('query').value.trim()) || []));
   }
 

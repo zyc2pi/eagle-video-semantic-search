@@ -93,7 +93,7 @@ const Config = (() => {
         || !['all', 'selected', 'custom', 'exclude'].includes(value.scopeMode)
         || !['triplet', 'dinov3_cses', 'content_adaptive'].includes(value.indexFrameSelection)
         || !['cosine', 'transnetv2'].includes(value.indexShotDetection)
-        || !['end', 'playhead'].includes(value.continuationMode)) throw new Error('配置选项无效');
+        || !['end', 'start', 'playhead'].includes(value.continuationMode)) throw new Error('配置选项无效');
     if (!Array.isArray(value.history) || !value.history.every((v) => typeof v === 'string')
         || !Array.isArray(value.scopeFolderIds) || !value.scopeFolderIds.every((v) => typeof v === 'string')
         || !Array.isArray(value.scopeExcludeFolderIds) || !value.scopeExcludeFolderIds.every((v) => typeof v === 'string')) throw new Error('配置列表格式无效');

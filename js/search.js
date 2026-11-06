@@ -11,7 +11,8 @@ const Search = (() => {
   let archiveTime = { mode: 'all' };
   let archiveFilter = { query: '', source: 'all' };
   let sessionScope = { library: '', paths: null };
-  const filterDefaults = { query: '', source: 'all', tags: '', orientation: 'all', maxDur: null };
+  const filterDefaults = { query: '', source: 'all', tags: '', orientation: 'all', maxDur: null,
+    membership: 'all', videoLimit: 0, queryHits: 0 };
   let topicMembership = null;
   let topicMembershipStatus = '主题归属…';
   const cardMatches = new WeakMap();
@@ -365,7 +366,28 @@ const Search = (() => {
           && (archiveFilter.maxDur == null || (Number.isFinite(match.duration_seconds) && match.duration_seconds <= archiveFilter.maxDur));
       });
     }
+    if (archiveFilter.membership && archiveFilter.membership !== 'all') {
+      idxs = topicMembership ? idxs.filter((i) =>
+        Boolean(topicMembership(lastMatches[i])?.length) === (archiveFilter.membership === 'collected')) : [];
+    }
+    if (archiveFilter.queryHits > 0) idxs = idxs.filter((i) => {
+      const queries = lastMatches[i].matched_queries;
+      return Array.isArray(queries) && queries.length >= archiveFilter.queryHits;
+    });
+    if (archiveFilter.videoLimit > 0) {
+      const counts = new Map();
+      const best = idxs.slice().sort((a, b) => (lastMatches[b].similarity || 0) - (lastMatches[a].similarity || 0));
+      const keep = new Set(best.filter((i) => {
+        const match = lastMatches[i];
+        const key = match.eagleItemId || Bridge.itemForPath(match.video_path)?.id || Bridge.normalizePath(match.video_path);
+        const count = counts.get(key) || 0;
+        counts.set(key, count + 1);
+        return count < archiveFilter.videoLimit;
+      }));
+      idxs = idxs.filter((i) => keep.has(i));
+    }
     const cmp = {
+      continuation: (a, b) => (lastMatches[a].continuation_rank ?? Infinity) - (lastMatches[b].continuation_rank ?? Infinity),
       sim: (a, b) => (lastMatches[b].similarity || 0) - (lastMatches[a].similarity || 0)
         || Number(lastMatches[b].manualScore?.mode === 'top') - Number(lastMatches[a].manualScore?.mode === 'top'),
       dur: (a, b) => (lastMatches[b].duration_seconds || 0) - (lastMatches[a].duration_seconds || 0),
@@ -442,6 +464,13 @@ const Search = (() => {
       return { ok: false, message: msg };
     }
     lastQuery = query;
+    if (recipe.payload?.continuation_review) {
+      view.sortBy = 'continuation';
+      document.getElementById('view-sort').value = 'continuation';
+    } else if (view.sortBy === 'continuation') {
+      view.sortBy = 'sim';
+      document.getElementById('view-sort').value = 'sim';
+    }
     if (recipe.refinement) {
       view.sortBy = 'sim';
       document.getElementById('view-sort').value = 'sim';
@@ -539,7 +568,7 @@ const Search = (() => {
       allowedVideoPaths: context.paths == null ? null : Array.from(context.paths),
     };
     // 旧服务没有索引版本时仍可搜索，但不可把同路径误当作未更新。
-    const canCache = snapshot.revisions.every((revision) => typeof revision === 'string' && revision.length > 0);
+    const canCache = !payload?.continuation_review && snapshot.revisions.every((revision) => typeof revision === 'string' && revision.length > 0);
     let resp;
     if (canCache && typeof SearchCache !== 'undefined') {
       const cached = SearchCache.get(cacheParams);
@@ -603,6 +632,10 @@ const Search = (() => {
       const started = Date.now();
       const resp = await requestRecipe(request, { ...context, paths: null }, controller.signal);
       const latencyMs = Date.now() - started;
+      // 归属读取失败不作废搜索结果；列表显示读取状态，可在筛选菜单中重试。
+      if (archiveFilter.membership && archiveFilter.membership !== 'all') {
+        await TopicRelations.ensure().catch((error) => { if (error.name !== 'AbortError') Dom.toast(error.message, true); });
+      }
       if (generation !== requestGeneration) return { ok: false, cancelled: true, stale: true };
       if (SearchRecipe.normalize(recipe.library) !== SearchRecipe.normalize(eagle.library.path)) {
         throw new Error('素材库已切换，已忽略旧搜索结果');
@@ -1030,7 +1063,8 @@ const Search = (() => {
     if (el.localFilters) {
       el.localFilters.classList.remove('hidden');
       const values = { 'topic-scene-query': archiveFilter.query, 'topic-scene-source': archiveFilter.source,
-        'result-tags': archiveFilter.tags || '',
+        'result-tags': archiveFilter.tags || '', 'result-membership': archiveFilter.membership || 'all',
+        'result-video-limit': archiveFilter.videoLimit || 0, 'result-query-hits': archiveFilter.queryHits || 0,
         'result-max-dur': archiveFilter.maxDur ?? '', 'topic-filter-threshold': archiveFilter.minScore ?? '' };
       Object.entries(values).forEach(([id, value]) => {
         const input = document.getElementById(id);
@@ -1038,16 +1072,28 @@ const Search = (() => {
       });
       document.getElementById('result-filter-error').textContent = '';
       renderShotTagChips();
+      const membershipStatus = document.getElementById('result-membership-status');
+      if (membershipStatus) {
+        membershipStatus.replaceChildren();
+        if (archiveFilter.membership && archiveFilter.membership !== 'all' && !topicMembership) {
+          membershipStatus.append(Dom.h('button', { type: 'button', text: `${topicMembershipStatus} · 重试`,
+            onclick: () => TopicRelations.ensure().catch((error) => Dom.toast(error.message, true)) }));
+        }
+      }
     }
     const hasLocalFilter = archiveFilter.query.trim() || archiveFilter.source !== 'all'
       || archiveFilter.tags?.trim() || (archiveFilter.orientation || 'all') !== 'all' || archiveFilter.maxDur != null
-      || archiveFilter.minScore != null || (sessionScope.library === eagle.library.path && sessionScope.paths != null);
+      || archiveFilter.minScore != null || (archiveFilter.membership && archiveFilter.membership !== 'all')
+      || archiveFilter.videoLimit > 0 || archiveFilter.queryHits > 0
+      || (sessionScope.library === eagle.library.path && sessionScope.paths != null);
     document.getElementById('filter-active-indicator')?.classList.toggle('hidden', !hasLocalFilter && view.minDur <= 0 && archiveTime.mode === 'all');
     el.resultCount.textContent = view.minDur > 0 || archiveTime.mode !== 'all' || hasLocalFilter
       ? `${displayList.length}/${lastMatches.length} 条`
       : `${lastMatches.length} 条`;
     if (!has) {
-      el.emptyState.innerHTML = lastMatches.length > 0 && hasLocalFilter
+      el.emptyState.innerHTML = archiveFilter.membership && archiveFilter.membership !== 'all' && !topicMembership
+        ? `<p>${esc(topicMembershipStatus)}，请在筛选菜单中重试。</p>`
+        : lastMatches.length > 0 && hasLocalFilter
         ? '<p>当前组合筛选下没有片段，可清除筛选或调整时间与片段时长。标签使用 Eagle 素材信息。</p>'
         : lastMatches.length > 0 && archiveTime.mode !== 'all'
         ? '<p>当前时间筛选下没有结果，可切回「不限时间」或调整时长。缺少加入 Eagle 时间的素材不参与时间筛选。</p>'
@@ -1252,6 +1298,25 @@ const Search = (() => {
       `<b>${esc(match.video_name)}</b><br>`
       + `片段：${esc(fmtTime(match.start))} – ${esc(fmtTime(match.end))}${hybridInfo}${mqList}`
       + (item ? '' : '<br><span style="color:var(--danger)">素材已不在 Eagle 库中</span>');
+    if (Number.isFinite(match.continuation_similarity)) {
+      el.previewInfo.append(Dom.h('p', { text: `开头复核 ${match.continuation_similarity.toFixed(1)} · 原检索 ${Number(match.similarity || 0).toFixed(1)}` }));
+    } else if (match.continuation_error) {
+      el.previewInfo.append(Dom.h('p', { className: 'form-error', text: `开头复核失败：${match.continuation_error}` }));
+    }
+    const sequence = document.getElementById('preview-sequence');
+    if (sequence) {
+      const steps = Array.isArray(match.sequence) ? match.sequence : [];
+      sequence.classList.toggle('hidden', !steps.length);
+      sequence.replaceChildren(...steps.map((step, index) => Dom.h('button', {
+        type: 'button', className: 'sequence-step',
+        text: `${index + 1}. ${step.query} · ${(step.original_start_frame / fps).toFixed(1)}–${((step.original_end_frame + 1) / fps).toFixed(1)} 秒 · ${Number(step.similarity || 0).toFixed(1)}`,
+        onclick: () => {
+          if (activeMatch !== match || !item) return;
+          player.prepare(item);
+          player.start({ item, startSec: step.original_start_frame / fps, endSec: (step.original_end_frame + 1) / fps, poster });
+        },
+      })));
+    }
     el.btnLocate.disabled = !item;
     if (el.btnRevealAll) el.btnRevealAll.disabled = !item;
     renderInspectorInfo(match, item);
@@ -1358,9 +1423,16 @@ const Search = (() => {
   }
 
   function refreshTopicMembership(find, status = '主题归属…') {
+    const changed = topicMembership !== find || topicMembershipStatus !== status;
     topicMembership = find;
     topicMembershipStatus = status;
     renderInspectorMembership();
+    if (changed && archiveFilter.membership && archiveFilter.membership !== 'all') {
+      // 归属更新后按新归属重排，同时回到原浏览位置。
+      const position = captureBrowsePosition();
+      render();
+      restoreBrowsePosition(position).catch(() => {});
+    }
   }
 
   function restoreState(state) {
@@ -1397,6 +1469,7 @@ const Search = (() => {
     setBusy(true);
     try {
       const pathMap = await Bridge.refreshPathMap();
+      if (filter.membership && filter.membership !== 'all') await TopicRelations.ensure().catch((error) => Dom.toast(error.message, true));
       if (options.shouldApply && !options.shouldApply()) return null;
       if (library !== eagle.library.path) throw new Error('素材库已切换，请重新打开主题');
       const byId = new Map([...pathMap.values()].map((item) => [item.id, item]));
@@ -1461,6 +1534,7 @@ const Search = (() => {
     clearThumbnailCache() { ThumbLoader.resetCache(); render(); },
     setSelectionHandler, replaceResults, captureBrowsePosition, restoreBrowsePosition, refreshTopicMembership,
     getSelectedMatches, clearSelection, getAllMatches, getLastQuery, getActiveMatch, openPreviewByKey,
+    refreshTags() { renderShotTagChips(); if (activeMatch) renderPreviewTags(activeMatch); },
     hasResults: () => displayList.length > 0,
     getRawMatches: () => lastMatches.slice(),
     getRecipe: () => lastRecipe && SearchRecipe.clone(lastRecipe),
@@ -1476,6 +1550,9 @@ const Search = (() => {
       if (!['all', 'manual', 'auto'].includes(filter.source) || typeof filter.query !== 'string'
           || typeof filter.tags !== 'string' || !['all', 'landscape', 'portrait', 'square', 'unknown'].includes(filter.orientation)
           || (filter.maxDur !== null && (!Number.isFinite(filter.maxDur) || filter.maxDur < 0))) throw new Error('片段查找条件无效');
+      if (!['all', 'collected', 'uncollected'].includes(filter.membership)
+          || ![0, 1, 3, 5].includes(filter.videoLimit) || !Number.isInteger(filter.queryHits)
+          || filter.queryHits < 0 || filter.queryHits > 8) throw new Error('片段筛选条件无效');
       if (filter.maxDur !== null && filter.maxDur < view.minDur) throw new Error('片段时长上限不能小于下限');
       if (filter.minScore != null && (!Number.isFinite(filter.minScore) || filter.minScore < 0)) throw new Error('请输入有效的非负阈值');
       if (filter.scopePaths != null && (!Array.isArray(filter.scopePaths) || !filter.scopePaths.every((path) => typeof path === 'string'))) throw new Error('文件夹范围无效');

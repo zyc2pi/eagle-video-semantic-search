@@ -63,7 +63,8 @@
   }
 
   function updateButtons() {
-    const indexing = Indexer.isRunning() || Search.isBusy() || (typeof FrameSearch !== 'undefined' && FrameSearch.isBusy());
+    const indexing = Indexer.isRunning() || Search.isBusy() || (typeof FrameSearch !== 'undefined' && FrameSearch.isBusy())
+      || (typeof ShotAnalysis !== 'undefined' && ShotAnalysis.isBusy());
     $('btn-search').disabled = !serviceOnline || indexing;
     $('btn-sequence-search').disabled = !serviceOnline || indexing;
     $('btn-refine-results').disabled = !serviceOnline || indexing || !Search.hasResults();
@@ -76,6 +77,7 @@
     $('btn-frame-visual').disabled = !serviceOnline || indexing;
     $('btn-frame-continue').disabled = !serviceOnline || indexing;
     if (typeof Warehouse !== 'undefined') Warehouse.syncBatchUpdate?.();
+    if (typeof ShotAnalysis !== 'undefined') ShotAnalysis.updateButton();
   }
 
   function closeIndexModeMenu() {
@@ -1252,6 +1254,7 @@
     document.addEventListener('search-busy', updateButtons);
     document.addEventListener('search-selection', updateButtons);
     document.addEventListener('frame-search-busy', updateButtons);
+    document.addEventListener('shot-analysis-busy', updateButtons);
   }
 
   eagle.onPluginCreate((plugin) => {
@@ -1266,6 +1269,7 @@
     Warehouse.init({ toast, canSearch: () => serviceOnline && !Indexer.isRunning() });
     LayoutPanels.init();
     LibraryTools.init({ isServiceOnline: () => serviceOnline });
+    ShotAnalysis.init({ canAnalyze: () => serviceOnline && !Indexer.isRunning() });
     wireEvents();
     FrameSearch.init({ toast,
       canSearch: () => serviceOnline && !Indexer.isRunning(),

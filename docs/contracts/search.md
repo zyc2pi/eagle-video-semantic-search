@@ -34,6 +34,12 @@
 - 正负样本反馈：recipe.kind=`feedback`，`payload.feedback={positives,negatives,negativeWeight}`，样例为 `{video_path,itemId,start_frame,end_frame}`（原始帧边界）。`POST /api/v1/search_feedback` 按 (规范化路径, 原始起始帧) 取索引中已存场景向量，Rocchio 合成 `norm(mean(正例) - w*mean(负例))` 后走 `search_by_vector`，排除样例自身、相对落差截断、默认 Top200；正负例各最多 50。入口在「整理所选」：找更像所选的（新反馈）、加入正例并重搜、不要这类重搜（后两者仅当前结果为反馈搜索时显示）。主题更新时 `SearchRecipe.resolve` 按 itemId 更新样例路径，已删除样例丢弃，正例全部失效则报错。
 - 时序组合查询：recipe.kind=`sequence`，`payload.sequence={steps:[2～4], maxGap}`，query 为 `steps.join(' → ')`。搜索框输入含 `→` 或 `>>` 即走时序搜索（不弹 AI 预览），「时序」按钮打开步骤对话框，间隔偏好存 `Config.sequenceMaxGap`。`POST /api/v1/search_sequence` 对每步执行普通文本搜索（每步按请求阈值在服务端过滤，前 3000 个候选），同一视频内下一步镜头须在上一步镜头开始之后开始且与上一步结尾间隔 ≤ maxGap 秒；每个第一步镜头贪心选后续每步最高分，结果为第一步开始到最后一步结束的跨镜头片段，分数为各步平均，`sequence` 字段列出各步镜头。新搜索不把时序阈值置 0，本地 minScore 不启用。编辑主题时搜索词按 `→`/`->` 重新拆步骤。
 
+## 检索与整理扩展（2026-11-06）
+
+- 本地筛选新增 `membership=all/uncollected/collected`、`videoLimit=0/1/3/5`、`queryHits=0～8`，随搜索会话与主题浏览位置保存，不加入请求配方。归属按素材身份及原始帧边界精确匹配；未知归属显示等待/错误及重试，不能视作未收录。筛选后每素材按原相似度选前 N 个，再按当前视图排序；缺少 matched_queries 的结果按 0 条命中。隐藏勾选由 render 清理，保存/导出沿用可见列表。
+- 「管理检索样例」仅反馈检索显示，可移除正负例、调整 0～1 的负例强度并重新搜索；至少一个正例。提交前检查库与配方，复用原检索配置并按素材 ID 解析样例移动及删除。
+- 接续取帧新增 `continuationMode=start`，从原始起帧取设定秒数并截于原始末帧。单独「复核候选开头」用原配方配置及解析后的查询源重新初筛，payload.continuation_review=true，后端能力标记同名。最多复核前 20 个候选开头，每项最多采 3 帧；与源区间均值向量比较，独立 continuation_similarity（余弦×100）与 continuation_rank，不覆盖原 similarity。失败保留候选与原因，未复核项保留初筛顺序。前端提供独立 continuation 排序，主题编辑支持该排序；显式复核跳过普通 SearchCache，服务端分数缓存上限256，包含双方文件指纹、帧范围及帧率、模型和实际维度。抽帧与帧率探测有超时，候选阶段120秒预算；取消仅停止客户端等待。当前仍只比较视觉内容。
+
 ## 评测记录（2026-11-05）
 
 - `Search.runCaptured` 成功后派发 `search-complete`（recipe、往返 latencyMs、fromCache、服务端 timings）。`EvalRecorder` 在设置 `evalMode` 开启时写入插件 `evaluation/<日期>.json`（已 gitignore），schemaVersion 1，与 `tools/evaluate-search.js` 兼容：results 为当前显示顺序前 100 个去重片段 ID `素材ID:原始起帧:原始止帧`，judgments 由「整理所选」的「评测：标为相关/不相关」写入当前 case。只记录，不改变搜索或主题。「评测汇总」用同一评估器汇总全部日期文件；「性能自检」只读测量素材清单、路径映射、仓库清单、索引列表和固定词搜索两次（不经插件结果缓存）。
