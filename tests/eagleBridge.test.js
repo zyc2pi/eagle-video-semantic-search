@@ -80,6 +80,20 @@ function createEagleMock() {
 }
 
 async function run() {
+  const tree = createEagleMock();
+  const folders = Array.from({ length: 20 }, (_, index) => ({ id: String(index) }));
+  tree.folder.getSelected = async () => folders;
+  let active = 0;
+  let peak = 0;
+  tree.item.get = async ({ folders: [id] }) => {
+    peak = Math.max(peak, ++active);
+    await Promise.resolve();
+    active--;
+    return [{ id, ext: 'mp4' }, { id: 'shared', ext: 'mp4' }];
+  };
+  const batchedVideos = await loadBridge(tree).collectFolderVideos();
+  assert.strictEqual(peak, 8);
+  assert.deepStrictEqual(Array.from(batchedVideos, (video) => video.id), ['0', 'shared', ...folders.slice(1).map((folder) => folder.id)]);
   const savedIds = [];
   const createdNames = [];
   const items = ['a', 'b'].map((id) => ({

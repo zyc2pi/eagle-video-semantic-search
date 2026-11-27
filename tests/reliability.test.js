@@ -70,12 +70,26 @@ async function main() {
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 
   let spawns = 0;
+  let failSpawn = true;
+  let healthy = false;
+  let pipeClosures = 0;
+  const timers = new Map();
   const states = [];
   const service = load('Service', {
     require: (name) => name === 'fs' ? { existsSync: () => true, openSync: () => { throw new Error('mock'); } }
-      : name === 'child_process' ? { spawn: () => { spawns += 1; const child = new EventEmitter(); child.unref = () => {}; queueMicrotask(() => child.emit('error', new Error('ENOENT'))); return child; } } : require(name),
+      : name === 'child_process' ? { spawn: () => {
+        spawns += 1;
+        const child = new EventEmitter();
+        child.stdin = new EventEmitter();
+        child.stdin.end = () => { pipeClosures++; child.emit('exit', 0); };
+        child.unref = () => {};
+        if (failSpawn) queueMicrotask(() => child.emit('error', new Error('ENOENT')));
+        return child;
+      } } : require(name),
     Config: { get: () => ({ projectRoot: 'D:/mock', port: 5006 }), pluginPath: () => 'D:/mock' },
-    Api: { health: async () => false }, process: { env: {} }, setTimeout, clearTimeout, console,
+    Api: { health: async () => healthy }, process: { env: {} }, console,
+    setTimeout(fn, ms) { timers.set(ms, fn); return ms; },
+    clearTimeout(ms) { timers.delete(ms); },
   });
   const first = service.ensure((s) => states.push(s));
   const second = service.ensure((s) => states.push(s));
@@ -83,6 +97,22 @@ async function main() {
   assert.strictEqual(await first, false);
   assert.strictEqual(spawns, 1);
   assert.strictEqual(states.filter((s) => s === 'offline').length, 2);
+
+  failSpawn = false;
+  const loading = service.resume();
+  await new Promise(setImmediate);
+  await service.suspend();
+  timers.get(2000)();
+  assert.strictEqual(await loading, false);
+  const reopened = service.resume();
+  await new Promise(setImmediate);
+  assert.strictEqual(spawns, 2, '重开继续等待已启动的子进程');
+  assert(!timers.has(30000), '重开取消释放计时');
+  healthy = true;
+  timers.get(2000)();
+  assert.strictEqual(await reopened, true);
+  await service.suspend({ immediate: true });
+  assert.strictEqual(pipeClosures, 1);
 
   let scheduled = null;
   let failing = true;

@@ -155,25 +155,85 @@ const WarehouseUpdates = (() => {
       return hit && hit.updatedAt === entry.updatedAt ? hit : null;
     }
 
+    /* 检查结果缓存：主题、新素材集合、索引版本和设置都未变时，重开窗口直接复用上次结果，
+       不再对每个主题重放搜索（否则每次启动都会向服务连发一轮相同的 /indexes + /search）。 */
+    const CHECK_CACHE_KEY = 'eagle-semantic-new-material-check:v1';
+    function readCheckCache() {
+      try { return JSON.parse(localStorage.getItem(CHECK_CACHE_KEY) || '{}') || {}; } catch { return {}; }
+    }
+    function writeCheckCache(cache) {
+      try { localStorage.setItem(CHECK_CACHE_KEY, JSON.stringify(cache)); } catch { /* 缓存不可用时下次照常重查。 */ }
+    }
+    async function indexSignature() {
+      try {
+        const identity = await Bridge.resolveLibraryIdentity();
+        if (!identity?.id) return null;
+        const indexes = await Api.listIndexes(identity.id);
+        return indexes.map((ix) => `${ix.path}@${ix.revision ?? ''}`).sort().join('|');
+      } catch { return null; }
+    }
+    // 只取影响搜索结果的设置；搜索历史、索引统计等每次都会变的字段不参与，否则缓存永远失效。
+    const SEARCH_CONFIG_KEYS = ['modelName', 'threshold', 'visualThreshold', 'visualMargin', 'visualAgg',
+      'visualCentered', 'visualSceneFrames', 'visualVideoFrames', 'aiEnhance', 'aiExpand', 'aiMode',
+      'jevRerank', 'jevRerankTopK', 'jevRerankThreshold', 'useAestheticScore', 'miniRerank', 'sequenceMaxGap', 'continuationMode', 'continuationSeconds'];
+    function checkKey(entry, fresh, indexSig) {
+      const cfg = Config.get();
+      const searchConfig = JSON.stringify(SEARCH_CONFIG_KEYS.map((name) => cfg[name] ?? null));
+      return require('crypto').createHash('sha1')
+        .update([entry.updatedAt, indexSig, searchConfig, ...[...fresh].sort()].join('\n'))
+        .digest('hex');
+    }
+
     /* 只对主题上次更新后加入 Eagle 的视频按原条件重放，统计可能的新命中；不写入任何主题。
-       signal 存在时为后台探测（不占用搜索忙碌状态）。 */
-    async function scanNewMaterials({ isStopped = () => false, onProgress = () => {}, onFound = () => {}, signal } = {}) {
+       signal 存在时为后台探测（不占用搜索忙碌状态）；useCache 时复用未变化主题的上次结果。 */
+    async function scanNewMaterials({ isStopped = () => false, onProgress = () => {}, onFound = () => {}, signal, useCache = false } = {}) {
       const library = eagle.library.path;
       const archive = store();
       const owned = ownedEntries(library);
       const found = [];
       const skipped = [];
       let searched = 0;
+      if (!owned.length) return { found, skipped, searched, total: 0, library };
       const videos = await Bridge.collectLibraryVideos(true);
       await Bridge.refreshPathMap(false, videos);
+      const oldestUpdate = owned.reduce((oldest, entry) => {
+        const time = Date.parse(entry.updatedAt);
+        return time < oldest ? time : oldest;
+      }, Infinity);
+      const imports = [];
+      for (const item of videos) {
+        const time = Number(item.importedAt);
+        if (time > oldestUpdate) imports.push({ time, path: SearchRecipe.normalize(item.filePath) });
+      }
+      imports.sort((a, b) => b.time - a.time);
+      const cacheAll = readCheckCache();
+      const libraryKey = SearchRecipe.normalize(library);
+      const previous = cacheAll[libraryKey] || {};
+      const cache = {};
+      let indexSig;
       for (const [index, entry] of owned.entries()) {
         if (isStopped() || library !== eagle.library.path) break;
         onProgress(index, owned.length, entry);
         const since = Date.parse(entry.updatedAt);
         if (!Number.isFinite(since)) { skipped.push(`${entry.name}（没有更新时间）`); continue; }
-        const fresh = new Set(videos.filter((item) => Number(item.importedAt) > since)
-          .map((item) => SearchRecipe.normalize(item.filePath)));
+        const fresh = new Set();
+        for (const item of imports) {
+          if (item.time <= since) break;
+          fresh.add(item.path);
+        }
         if (!fresh.size) continue;
+        if (indexSig === undefined) indexSig = await indexSignature();
+        const key = indexSig ? checkKey(entry, fresh, indexSig) : null;
+        const cached = key && previous[entry.id]?.key === key ? previous[entry.id] : null;
+        if (cached) cache[entry.id] = cached;
+        if (cached && useCache) {
+          if (cached.hits) {
+            const item = { entry, hits: cached.hits, videos: cached.videos };
+            found.push(item);
+            onFound(item);
+          }
+          continue;
+        }
         await archive.hydrateEntry(entry);
         const recipe = entry.recipe;
         if (!recipe) { skipped.push(`${entry.name}（旧主题缺少搜索条件）`); continue; }
@@ -188,11 +248,16 @@ const WarehouseUpdates = (() => {
         const known = ArchiveStore.sceneLookup([...(entry.matches || []),
           ...(entry.removedMatches || []).map((record) => record.match)]);
         const hits = result.matches.filter((match) => known(match) === undefined);
+        const videoCount = new Set(hits.map((match) => match.eagleItemId)).size;
+        if (key) cache[entry.id] = { key, hits: hits.length, videos: videoCount };
         if (!hits.length) continue;
-        const item = { entry, hits: hits.length, videos: new Set(hits.map((match) => match.eagleItemId)).size };
+        const item = { entry, hits: hits.length, videos: videoCount };
         found.push(item);
         onFound(item);
       }
+      // 中途停止时保留未扫描主题的旧缓存；完整扫描后只留现存主题。
+      cacheAll[libraryKey] = isStopped() ? { ...previous, ...cache } : cache;
+      writeCheckCache(cacheAll);
       return { found, skipped, searched, total: owned.length, library };
     }
 
@@ -204,7 +269,7 @@ const WarehouseUpdates = (() => {
       autoCheck = controller;
       document.addEventListener('search-busy', stop);
       try {
-        const result = await scanNewMaterials({ isStopped: () => controller.signal.aborted, signal: controller.signal });
+        const result = await scanNewMaterials({ isStopped: () => controller.signal.aborted, signal: controller.signal, useCache: true });
         if (controller.signal.aborted || result.library !== eagle.library.path) return;
         recordNewHits(result.library, result.found);
         if (result.found.length) {

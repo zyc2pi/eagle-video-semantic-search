@@ -31,12 +31,22 @@ const SettingsPanel = (() => {
     ['cfg-ai-expand', 'aiExpand', 'check'],
     ['cfg-ai-mode', 'aiMode', 'select'],
     ['cfg-ai-plan-preview', 'aiPlanPreview', 'check'],
-    ['cfg-mini-rerank', 'miniRerank', 'check'],
+    ['cfg-jev-rerank', 'jevRerank', 'check'],
+    ['cfg-jev-top', 'jevRerankTopK', 'number'],
+    ['cfg-jev-threshold', 'jevRerankThreshold', 'number'],
+    ['cfg-jev-aesthetics', 'useAestheticScore', 'check'],
     ['cfg-auto-check-new', 'autoCheckNew', 'check'],
     ['cfg-eval-mode', 'evalMode', 'check'],
     ['cfg-auto-index', 'autoIndex', 'check'],
   ];
   let hooks = {};
+
+  function syncJevControls() {
+    const disabled = !$('cfg-jev-rerank')?.checked;
+    for (const id of ['cfg-jev-top', 'cfg-jev-threshold', 'cfg-jev-aesthetics']) {
+      if ($(id)) $(id).disabled = disabled;
+    }
+  }
 
   function fill(cfg) {
     for (const [id, key, type] of FIELDS) {
@@ -44,6 +54,7 @@ const SettingsPanel = (() => {
       if (type === 'check') $(id).checked = !!value;
       else $(id).value = value ?? '';
     }
+    syncJevControls();
   }
 
   function read() {
@@ -62,7 +73,7 @@ const SettingsPanel = (() => {
     try {
       const models = await Api.listModels();
       // 过滤掉非嵌入模型（重排/多模态大模型/工具目录）
-      const embeddable = models.filter((m) => !/reranker|minicpm|ffmpeg|shot_scale|dinov3|transnet/i.test(m.name));
+      const embeddable = models.filter((m) => !/reranker|minicpm|videojev|ffmpeg|shot_scale|dinov3|transnet/i.test(m.name));
       if (embeddable.length === 0) return; // 保留静态选项
       const current = Config.get().modelName;
       select.innerHTML = '';
@@ -142,6 +153,7 @@ const SettingsPanel = (() => {
   /* hooks: setServiceStatus(state, message)；applied() 在配置保存成功后应用主题/缓存/自动索引。 */
   function init(options) {
     hooks = options;
+    $('cfg-jev-rerank')?.addEventListener('change', syncJevControls);
   }
 
   return { init, open, save, viewServiceLog, restartService, populateModelSelect, FIELDS };

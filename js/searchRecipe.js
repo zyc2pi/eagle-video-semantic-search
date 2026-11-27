@@ -3,13 +3,14 @@ const SearchRecipe = (() => {
   const OPTION_KEYS = [
     'modelName', 'threshold', 'visualThreshold', 'visualMargin', 'visualAgg',
     'visualCentered', 'visualSceneFrames', 'visualVideoFrames', 'aiEnhance',
-    'aiExpand', 'aiMode', 'miniRerank',
+    'aiExpand', 'aiMode', 'jevRerank', 'jevRerankTopK', 'jevRerankThreshold', 'useAestheticScore',
   ];
   const MONTHS = [6, 12, 24, 36, 48, 60];
   const clone = (value) => JSON.parse(JSON.stringify(value));
   const normalize = (value) => String(value || '').replace(/\//g, '\\').toLowerCase();
 
   function options(config) {
+    if (config.jevRerank === undefined && config.miniRerank !== undefined) config = { ...config, jevRerank: config.miniRerank };
     return Object.fromEntries(OPTION_KEYS.filter((key) => config[key] !== undefined)
       .map((key) => [key, config[key]]));
   }
@@ -96,6 +97,9 @@ const SearchRecipe = (() => {
   }
 
   async function resolveScope(scope, time) {
+    if (scope.mode === 'all' && !scope.excludeFolderIds?.length && (time === undefined || time?.mode === 'all')) {
+      return { paths: null, scopePaths: null, missingDates: 0, range: null };
+    }
     let paths = null;
     if (scope.mode === 'folders' || scope.mode === 'exclude') {
       const ids = scope.folderIds || [];
@@ -131,22 +135,31 @@ const SearchRecipe = (() => {
     return { ...result, scopePaths: paths };
   }
 
-  async function currentContext() {
-    const config = { ...Config.get() };
-    const library = eagle.library.path;
+  /* 会话范围：实时跟随开启且 Eagle 有选中文件夹时用选中项，否则用固定范围（整库/指定/排除）。
+     followed 为跟随读取到的文件夹（未开启跟随为 null），followKey 用于检测选中变化。 */
+  async function scopeFromConfig(config) {
     let scope = { mode: 'all' };
-    if (config.scopeMode === 'selected') {
-      const folders = await eagle.folder.getSelected();
-      if (!folders?.length) throw new Error('请先在 Eagle 中选中要搜索的文件夹');
-      scope = { mode: 'folders', folderIds: folders.map((f) => f.id), names: folders.map((f) => f.name) };
-    } else if (config.scopeMode === 'custom' || config.scopeMode === 'exclude') {
+    let followed = null;
+    if (config.scopeFollow || config.scopeMode === 'selected') {
+      const folders = await eagle.folder.getSelected() || [];
+      followed = folders.map((f) => ({ id: f.id, name: f.name || '未命名文件夹' }));
+      if (followed.length) scope = { mode: 'folders', folderIds: followed.map((f) => f.id), names: followed.map((f) => f.name) };
+    }
+    if (scope.mode === 'all' && (config.scopeMode === 'custom' || config.scopeMode === 'exclude')) {
       scope = { mode: config.scopeMode === 'exclude' ? 'exclude' : 'folders', folderIds: [...config.scopeFolderIds] };
     }
     if (config.scopeExcludeFolderIds?.length) scope.excludeFolderIds = [...config.scopeExcludeFolderIds];
+    return { scope, followed, followKey: followed && followed.map((f) => f.id).join('|') };
+  }
+
+  async function currentContext() {
+    const config = { ...Config.get() };
+    const library = eagle.library.path;
+    const { scope, followed, followKey } = await scopeFromConfig(config);
     const time = readTime();
     const resolved = await resolveScope(scope, time);
     if (library !== eagle.library.path) throw new Error('素材库已切换，请重新搜索');
-    return { ...resolved, scope, time, library, config: options(config) };
+    return { ...resolved, scope, time, library, config: options(config), followed, followKey };
   }
 
   function capture(kind, query, payload, context, threshold) {
@@ -214,5 +227,5 @@ const SearchRecipe = (() => {
   }
 
   return { options, bounds, filterItems, filterMatches, readTime, writeTime, timeLabel,
-    currentContext, capture, persistSource, resolve, resolveScope, normalize, clone };
+    currentContext, scopeFromConfig, capture, persistSource, resolve, resolveScope, normalize, clone };
 })();

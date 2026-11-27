@@ -375,6 +375,7 @@ const Warehouse = (() => {
     const saving = updates.isBusy() || coverSaving || scenesSaving || Search.isBusy();
     syncUndoActions();
     syncBatchUpdate();
+    $('btn-aesthetics').disabled = saving || !(Search.getSelectedMatches() || []).length;
     $('btn-topic-add').disabled = saving || !(Search.getSelectedMatches() || []).length;
     $('btn-topic-remove').classList.toggle('hidden', !hasTopic);
     $('btn-topic-remove').disabled = !hasTopic || saving || !(Search.getSelectedMatches() || []).length;
@@ -419,6 +420,48 @@ const Warehouse = (() => {
     if (removedSession?.id === entry.id) {
       removedSession.records = entry.removedMatches || [];
       renderRemovedMatches();
+    }
+  }
+
+  async function scoreSelected() {
+    checkIdle();
+    const selected = Search.getSelectedMatches() || [];
+    if (!selected.length) return;
+    const library = eagle.library.path, topic = current, generation = navigationGeneration;
+    const session = Search.getResultSession();
+    const clips = selected.map((m) => ({ video_path: m.video_path, frame: m.matched_frame ??
+      Math.floor(((m.original_start_frame ?? m.start_frame) + (m.original_end_frame ?? m.end_frame)) / 2) }));
+    scenesSaving = true;
+    $('btn-aesthetics').textContent = '正在评估美学分…';
+    syncSceneActions();
+    try {
+      const response = await Api.scoreAesthetics(clips);
+      if (!response.ok || !response.data?.success) throw new Error(response.data?.error || '美学评分失败');
+      if (library !== eagle.library.path || generation !== navigationGeneration || current !== topic ||
+          Search.isBusy() || Search.getResultSession() !== session) throw new Error('结果已切换，请在当前结果中重新评分');
+      const values = new Map();
+      response.data.results.forEach((result, i) => {
+        if (Number.isFinite(result.aesthetic_score)) values.set(ArchiveStore.sceneKey(selected[i]), {
+          aesthetic_score: result.aesthetic_score, aesthetic_frame: result.frame,
+          aesthetic_details: result.aesthetic_details || {} });
+      });
+      if (!values.size) throw new Error(response.data.results[0]?.error || '没有片段可评分');
+      const merge = (m) => ({ ...m, ...values.get(ArchiveStore.sceneKey(m)) });
+      if (topic) {
+        const entry = store().replace({ ...topic, matches: topic.matches.map(merge) }, topic.updatedAt);
+        applySceneEdit(entry);
+      } else {
+        const matches = Search.getRawMatches();
+        matches.forEach((m) => Object.assign(m, values.get(ArchiveStore.sceneKey(m))));
+        Search.replaceResults(matches);
+      }
+      const active = Search.getActiveMatch();
+      if (active) Search.openPreviewByKey(ArchiveStore.sceneKey(active));
+      hooks.toast(`已评分 ${response.data.results.filter((r) => Number.isFinite(r.aesthetic_score)).length}/${selected.length} 个片段`);
+    } finally {
+      scenesSaving = false;
+      $('btn-aesthetics').textContent = '评估美学分';
+      syncSceneActions();
     }
   }
 
@@ -817,6 +860,7 @@ const Warehouse = (() => {
     $('topic-history')?.addEventListener('click', () => attempt(updates.topicHistory));
     $('topic-removed').addEventListener('click', () => attempt(showRemovedMatches));
     $('btn-topic-remove').addEventListener('click', () => attempt(() => removeTopicMatches(Search.getSelectedMatches())));
+    $('btn-aesthetics').addEventListener('click', () => attempt(scoreSelected));
     $('btn-topic-score').addEventListener('click', () => attempt(() => { requireTopic(); ManualAdd.editScores(current); }));
     // 预览区「⋯」：只作用于当前预览片段，不改动已选片段。
     const previewMatches = () => [Search.getActiveMatch()].filter(Boolean);
@@ -832,6 +876,7 @@ const Warehouse = (() => {
           tags: $('result-tags').value,
           membership: $('result-membership').value, videoLimit: Number($('result-video-limit').value),
           queryHits: Number($('result-query-hits').value),
+          minAesthetic: $('result-aesthetic-min').value === '' ? null : Number($('result-aesthetic-min').value),
           maxDur: maximum.value === '' ? null : Number(maximum.value) };
         const library = eagle.library.path;
         const topic = current;
@@ -864,7 +909,7 @@ const Warehouse = (() => {
       clearTimeout(sceneQueryTimer);
       applySceneFilter();
     });
-    ['result-max-dur', 'result-membership', 'result-video-limit', 'result-query-hits'].forEach((id) => $(id).addEventListener('change', () => {
+    ['result-aesthetic-min', 'result-max-dur', 'result-membership', 'result-video-limit', 'result-query-hits'].forEach((id) => $(id).addEventListener('change', () => {
       clearTimeout(sceneQueryTimer); applySceneFilter();
     }));
     $('topic-filter-threshold').addEventListener('change', () => attempt(() => {

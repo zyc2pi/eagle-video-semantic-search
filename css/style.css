@@ -168,6 +168,7 @@ input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="
 select { padding-right: 6px; }
 input::placeholder { color: var(--text-dim); opacity: 0.85; }
 input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); background: var(--bg-panel); box-shadow: 0 0 0 3px var(--accent-soft); }
+input:disabled, select:disabled { opacity: 0.5; cursor: not-allowed; }
 input[type="checkbox"], input[type="radio"], input[type="range"] { accent-color: var(--accent); }
 
 /* 状态灯 */
@@ -187,6 +188,7 @@ input[type="checkbox"], input[type="radio"], input[type="range"] { accent-color:
 }
 .badge-both { background: var(--accent); color: var(--accent-text); }
 /* AI 查询增强下被多条改写查询同时命中（悬停看命中的查询列表） */
+.badge-aesthetic { display: inline-block; margin-right: var(--space-1); padding: 1px 5px; border-radius: 3px; background: var(--bg-input); color: var(--text-dim); font-size: 10px; font-variant-numeric: tabular-nums; cursor: help; }
 .badge-multi { background: var(--text-dim); color: var(--bg); cursor: help; }
 .badge-manual { margin-right: var(--space-1); padding: 1px var(--space-1); border-radius: 3px; background: var(--bg-input); color: var(--accent); font-size: 10px; }
 .badge-new { position: absolute; left: var(--space-2); bottom: var(--space-2); z-index: 2; background: var(--accent); color: var(--accent-text); font-size: var(--font-xs); border-radius: var(--radius-sm); padding: var(--space-1) 7px; }
@@ -356,6 +358,7 @@ dialog .dialog-actions:last-child {
 .settings-form .field-pair label { flex: 1; }
 .field-pair-action { align-self: flex-end; }
 .settings-form .check-row { flex-direction: row; align-items: center; gap: 7px; cursor: pointer; user-select: none; }
+.settings-form label:has(> input:disabled) { opacity: 0.55; cursor: default; }
 .settings-group { border-radius: var(--radius-lg); padding: 10px var(--space-3); background: var(--bg-side); }
 .settings-group :is(input:not([type="checkbox"]):not([type="radio"]), select) { background: var(--bg-panel); }
 .settings-group summary { cursor: pointer; color: var(--text-dim); user-select: none; margin: -2px 0 2px; }
@@ -656,6 +659,26 @@ dialog .dialog-actions:last-child {
 #threshold-val { min-width: 28px; text-align: right; font-variant-numeric: tabular-nums; }
 .scope-btn { white-space: nowrap; }
 .scope-btn.scoped { border-color: var(--accent); color: var(--accent); }
+/* 筛选弹层中的固定范围：与下拉框同宽同高，右侧箭头表示可打开，轻阴影区分可点击 */
+.filter-section > .scope-btn {
+  position: relative; grid-column: 2; justify-self: stretch; min-width: 0; padding: 6px 28px 6px 10px;
+  border-color: var(--border); background: var(--bg-panel); box-shadow: var(--shadow-card);
+  text-align: left; font-size: var(--font-md); overflow: hidden; text-overflow: ellipsis;
+}
+.filter-section > .scope-btn::after {
+  content: ''; position: absolute; right: 10px; top: 50%; width: 12px; height: 12px; margin-top: -6px;
+  background-color: var(--text-dim); -webkit-mask: var(--icon-chevron) center / contain no-repeat; transform: rotate(-90deg);
+}
+.filter-section > .scope-btn:hover:not(:disabled) { background: var(--bg-panel); border-color: var(--border-strong); }
+.filter-section > .scope-btn.scoped { border-color: var(--border); color: var(--accent); }
+.filter-section > .scope-btn.overridden { color: var(--text-dim); }
+/* 实时跟随是独立开关，位于范围按钮下方的控件列 */
+.filter-section > .scope-follow, #topic-result-filter > label.scope-follow {
+  grid-column: 2; display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; min-width: 0;
+  margin-top: calc(-1 * var(--space-1)); color: var(--text); font-size: var(--font-sm); cursor: pointer; user-select: none;
+}
+.scope-follow-status { flex-basis: 100%; padding-left: 20px; overflow: hidden; color: var(--text-dim); font-size: var(--font-xs); white-space: nowrap; text-overflow: ellipsis; }
+.scope-follow-status:empty { display: none; }
 .time-filter { display: flex; flex-direction: column; align-items: stretch; gap: var(--space-1h); }
 .filter-section > .time-filter { display: contents; }
 .time-filter label { color: var(--text-dim); white-space: nowrap; }
@@ -952,6 +975,8 @@ body:not([data-topic="true"]) .preview-more-menu .topic-only { display: none; }
 [data-preview-layout="top"] .inspector .preview-side > * { flex-shrink: 0; }
 
 /* 4.3 搜索范围文件夹树 */
+.folder-tree-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-1); }
+.folder-tree-toolbar button { height: 28px; padding: 0 10px; font-size: var(--font-sm); }
 .folder-tree { display: flex; flex-direction: column; gap: var(--space-1); max-height: 280px; overflow-y: auto; overflow-x: hidden; padding: var(--space-2) 10px; border: 1px solid var(--border); border-radius: var(--radius-lg); }
 .folder-row {
   display: flex;
@@ -969,6 +994,8 @@ body:not([data-topic="true"]) .preview-more-menu .topic-only { display: none; }
 .folder-toggle-spacer { width: 18px; flex-shrink: 0; }
 .folder-row input { flex-shrink: 0; }
 .folder-name { overflow: hidden; text-overflow: ellipsis; }
+.folder-row.located { background: var(--accent-soft); border-radius: var(--radius-sm); }
+.folder-tree { position: relative; }
 
 /* 4.4 仓库页 */
 .warehouse-page { display: flex; flex: 1; min-height: 0; flex-direction: column; gap: var(--space-2); padding: var(--space-3) var(--space-5) 0; }

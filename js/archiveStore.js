@@ -214,6 +214,13 @@ const ArchiveStore = (() => {
       const oldIndex = findOld(match);
       const reviewedAt = oldIndex === undefined ? undefined : previous.matches[oldIndex].reviewedAt;
       match = { ...match };
+      const old = previous.matches[oldIndex];
+      const frame = match.matched_frame ?? Math.floor(((match.original_start_frame ?? match.start_frame)
+        + (match.original_end_frame ?? match.end_frame)) / 2);
+      if (match.aesthetic_score == null && Number.isFinite(old?.aesthetic_score) && (old.aesthetic_frame ?? old.matched_frame) === frame) {
+        Object.assign(match, { aesthetic_score: old.aesthetic_score, aesthetic_details: old.aesthetic_details,
+          aesthetic_frame: frame });
+      }
       delete match.reviewedAt;
       if (reviewedAt !== undefined) match.reviewedAt = reviewedAt;
       const index = findManual(match);
@@ -221,6 +228,9 @@ const ArchiveStore = (() => {
       retained.add(index);
       const stored = manual[index];
       const merged = { ...stored, ...match, manualScore: stored.manualScore, similarity: stored.manualScore.value };
+      if (match.aesthetic_score == null) {
+        delete merged.aesthetic_score; delete merged.aesthetic_details; delete merged.aesthetic_frame;
+      }
       if (!match.eagleItemId && stored.eagleItemId) {
         merged.eagleItemId = stored.eagleItemId; merged.video_path = stored.video_path;
       }

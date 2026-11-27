@@ -1,13 +1,25 @@
 const assert = require('assert');
 const path = require('path');
 const fs = require('fs');
-const { evaluate, median, percentile } = require('../tools/evaluate-search');
+const { evaluate, compare, median, percentile } = require('../tools/evaluate-search');
 
 function run(cases) { return evaluate({ schemaVersion: 1, cases }); }
 function sample(extra = {}) { return { id: 'test', judgments: {}, results: null, latencyMs: null, ...extra }; }
 const template = JSON.parse(fs.readFileSync(path.join(__dirname, '../tools/search-evaluation.template.json'), 'utf8'));
 assert.strictEqual(template.cases.length, 30);
 const baseline = evaluate(template);
+assert.strictEqual(compare(template, template).precisionEligiblePairs, 0);
+const fixed = sample({ library: 'test-library', query: '雨天', judgments: { a: true, b: false },
+  results: [{ id: 'b' }], cachePhase: 'first-request', latencyMs: 100 });
+const comparison = (overrides) => compare({ schemaVersion: 1, cases: [fixed] },
+  { schemaVersion: 1, cases: [{ ...fixed, results: [{ id: 'a' }], latencyMs: 80, ...overrides }] });
+assert.strictEqual(comparison({}).meanPrecisionAt10Delta, 0.1);
+assert.strictEqual(comparison({}).latencyByPhase['first-request'].medianDeltaMs, -20);
+assert.strictEqual(comparison({ cachePhase: 'cache' }).cases[0].latencyDeltaMs, null);
+assert.strictEqual(comparison({ results: [{ id: 'unknown' }] }).precisionEligiblePairs, 0);
+for (const changed of [{ query: '晴天' }, { library: 'other' }, { judgments: {} }, { scope: {} }, { id: 'other' }]) {
+  assert.throws(() => comparison(changed), /不一致|缺少/);
+}
 assert.strictEqual(baseline.summary.runCases, 0);
 assert.strictEqual(baseline.summary.meanPrecisionAt10, null);
 assert.strictEqual(baseline.summary.meanLabeledSubsetRecall, null);
@@ -66,3 +78,46 @@ for (const timings of [{ scoreMs: -1 }, { scoreMs: NaN }, [], 'invalid']) {
 }
 assert.throws(() => run([sample({ timings: {} })]), /未执行查询/);
 console.log('offline evaluation metrics, missing judgments and validation tests passed');
+
+// 通过搜索完成事件及标注入口检查记录归属，所有文件操作均在内存里。
+const files = new Map();
+const memoryFs = {
+  readFileSync(file) {
+    if (!files.has(file)) throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+    return files.get(file);
+  },
+  mkdirSync() {},
+  writeFileSync(file, text) { files.set(file, text); },
+  renameSync(from, to) { files.set(to, files.get(from)); files.delete(from); },
+};
+const listeners = new Map();
+const match = { eagleItemId: 'item', start_frame: 0, end_frame: 9 };
+const firstSession = Symbol();
+let session = firstSession;
+const notices = [];
+const recorder = require('vm').runInNewContext(
+  fs.readFileSync(path.join(__dirname, '../js/evalRecorder.js'), 'utf8') + '\nEvalRecorder;',
+  { process, require: (name) => name === 'fs' ? memoryFs : require(name),
+    Config: { get: () => ({ evalMode: true }) },
+    document: { addEventListener: (name, fn) => listeners.set(name, fn) },
+    Dom: { $: () => ({ addEventListener() {}, classList: { toggle() {} } }), toast: (message) => notices.push(message) },
+    Search: { getAllMatches: () => [match], getSelectedMatches: () => [match], getActiveMatch: () => match,
+      getResultSession: () => session } });
+recorder.init({ pluginPath: 'fixture' });
+const complete = () => listeners.get('search-complete')({ detail: { recipe: { kind: 'text' }, latencyMs: 5 } });
+complete();
+const [file] = files.keys();
+const original = files.get(file);
+session = null;
+recorder.judge(true, [match]);
+assert.strictEqual(files.get(file), original, '打开主题不能向此前搜索写标注');
+session = firstSession;
+recorder.judge(true, [match]);
+assert.strictEqual(JSON.parse(files.get(file)).cases[0].judgments['item:0:9'], true);
+const incompatible = '{"schemaVersion":2,"cases":[]}';
+files.set(file, incompatible);
+session = Symbol();
+complete();
+assert.match(notices.at(-1), /不支持的评测文件格式/);
+assert.strictEqual(files.get(file), incompatible);
+console.log('evaluation session ownership and incompatible file preservation passed');

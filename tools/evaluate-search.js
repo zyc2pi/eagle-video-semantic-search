@@ -124,10 +124,56 @@ function evaluate(input) {
   };
 }
 
+function compare(baseline, candidate) {
+  const left = evaluate(baseline).cases;
+  const right = evaluate(candidate).cases;
+  const candidates = new Map(candidate.cases.map((item, i) => [item.id, { item, metrics: right[i] }]));
+  if (left.length !== right.length) throw new Error('两份文件必须包含相同的 case ID');
+  const { isDeepStrictEqual } = require('util');
+  const times = new Map();
+  const difference = (a, b) => a == null || b == null ? null : b - a;
+  const cases = baseline.cases.map((item, i) => {
+    const peer = candidates.get(item.id);
+    if (!peer) throw new Error(`候选文件缺少 case：${item.id}`);
+    for (const key of ['query', 'kind', 'payload', 'scope', 'time', 'judgments']) {
+      if (!isDeepStrictEqual(item[key], peer.item[key])) throw new Error(`${item.id}：${key} 不一致`);
+    }
+    const library = item.library ?? baseline.library;
+    if (library !== (peer.item.library ?? candidate.library)) throw new Error(`${item.id}：素材库不一致`);
+    if (item.results || peer.item.results) {
+      if (!library || !item.query?.trim() || item.needsQuerySelection || item.scope?.needsSelection) {
+        throw new Error(`${item.id}：请固定素材库、查询及范围`);
+      }
+      if (item.kind === 'visual' && !Object.keys(item.payload || {}).length) throw new Error(`${item.id}：缺少视觉参考 payload`);
+    }
+    const a = left[i], b = peer.metrics;
+    const phase = a.cachePhase;
+    const latencyDeltaMs = phase === b.cachePhase && phase !== 'unspecified' ? difference(a.latencyMs, b.latencyMs) : null;
+    if (latencyDeltaMs != null) {
+      if (!times.has(phase)) times.set(phase, []);
+      times.get(phase).push(latencyDeltaMs);
+    }
+    return { id: item.id, tags: a.tags, baselineStatus: a.status, candidateStatus: b.status,
+      precisionAt10Delta: difference(a.precisionAt10, b.precisionAt10),
+      labeledSubsetRecallDelta: difference(a.labeledSubsetRecall, b.labeledSubsetRecall),
+      baselineCoverage: a.top10JudgmentCoverage, candidateCoverage: b.top10JudgmentCoverage,
+      baselineCachePhase: phase, candidateCachePhase: b.cachePhase, latencyDeltaMs };
+  });
+  const precision = cases.map((row) => row.precisionAt10Delta).filter((value) => value != null);
+  return { pairedCases: cases.length, precisionEligiblePairs: precision.length,
+    meanPrecisionAt10Delta: precision.length ? precision.reduce((sum, value) => sum + value, 0) / precision.length : null,
+    latencyByPhase: Object.fromEntries([...times].map(([phase, values]) => [phase, { pairs: values.length, medianDeltaMs: median(values) }])),
+    cases };
+}
+
 if (require.main === module) {
   try {
-    if (process.argv.length !== 3) throw new Error('用法：node tools/evaluate-search.js <离线评估.json>');
-    const result = evaluate(JSON.parse(fs.readFileSync(process.argv[2], 'utf8')));
+    const args = process.argv.slice(2);
+    const read = (file) => JSON.parse(fs.readFileSync(file, 'utf8'));
+    let result;
+    if (args.length === 3 && args[0] === '--compare') result = compare(read(args[1]), read(args[2]));
+    else if (args.length === 1) result = evaluate(read(args[0]));
+    else throw new Error('用法：node tools/evaluate-search.js <评估.json> 或 --compare <基线.json> <候选.json>');
     console.log(JSON.stringify(result, null, 2));
   } catch (error) {
     console.error(error.message);
@@ -135,4 +181,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { evaluate, median, percentile };
+module.exports = { evaluate, compare, median, percentile };

@@ -4,9 +4,11 @@ const path = require('path');
 const vm = require('vm');
 
 const requests = [];
+let jevReady = false;
 let supportsSmartFrames = true;
 let supportsLibraryPrune = true;
 const context = {
+  require,
   AbortController,
   clearTimeout,
   console,
@@ -31,7 +33,7 @@ const context = {
   fetch: async (url, options) => {
     requests.push({ url, options, body: options.body ? JSON.parse(options.body) : null });
     return { ok: true, status: 200, json: async () => ({ success: true, matches: [],
-      capabilities: { library_prune: supportsLibraryPrune,
+      capabilities: { jev_rerank: jevReady, jev_aesthetics: jevReady, library_prune: supportsLibraryPrune,
         smart_frame_selection: supportsSmartFrames, content_adaptive_frames: supportsSmartFrames } }) };
   },
   setTimeout,
@@ -43,6 +45,20 @@ const api = context.__Api;
 
 async function main() {
   const scope = new Set(['D:/library/a.mp4', 'D:/library/b.mp4']);
+
+  await assert.rejects(api.search('动画', ['index'], 0, null, { jevRerank: true }), /models\/VideoJev-2B/);
+  assert(requests.at(-1).url.endsWith('/health'));
+  jevReady = true;
+  await api.search('动画', ['index'], 0, null, { jevRerank: true, useAestheticScore: true });
+  assert.strictEqual(requests.at(-1).body.jev_rerank_top_k, 30);
+  assert.strictEqual(requests.at(-1).body.jev_rerank_threshold, 0.6);
+  assert.strictEqual(requests.at(-1).body.use_aesthetic_score, true);
+  assert(requests.at(-1).body.jev_request_id);
+  await api.scoreAesthetics([{ video_path: 'D:/video', frame: 0 }]);
+  assert.strictEqual(requests.at(-1).body.clips[0].frame, 0);
+
+  await api.listIndexJobs('current library');
+  assert(requests.at(-1).url.endsWith('/api/v1/index/jobs?summary=1&library_id=current%20library'));
 
   await api.startIndex(['D:/library/a.mp4'], 'library', 'model', false, true);
   assert.strictEqual(requests.at(-1).body.options.frame_selection, 'triplet');

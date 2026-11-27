@@ -167,16 +167,22 @@ const Bridge = (() => {
    * 只会返回同时归属于所有文件夹的素材，通常就是空数组。逐文件夹查询后
    * 再按素材 id 取并集，才能同时包含本级和全部子文件夹。
    */
-  async function collectItemsFromFolderIds(folderIds) {
-    const groups = await Promise.all(
-      (folderIds || []).map((folderId) => eagle.item.get({ folders: [folderId] })),
-    );
+  async function collectItemsFromFolderIds(folderIds = []) {
+    const items = [];
     const seen = new Set();
-    return groups.flat().filter((item) => {
-      if (!item || seen.has(item.id)) return false;
-      seen.add(item.id);
-      return true;
-    });
+    const batchSize = 8;
+    for (let i = 0; i < folderIds.length; i += batchSize) {
+      const groups = await Promise.all(folderIds.slice(i, i + batchSize)
+        .map((folderId) => eagle.item.get({ folders: [folderId] })));
+      for (const group of groups) {
+        for (const item of group) {
+          if (!item || seen.has(item.id)) continue;
+          seen.add(item.id);
+          items.push(item);
+        }
+      }
+    }
+    return items;
   }
 
   /* 取选中文件夹（含子文件夹）内的所有视频素材，按 id 去重 */

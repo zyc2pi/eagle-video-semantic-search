@@ -24,7 +24,7 @@
     { "id": "negative-02", "kind": "text", "query": "街道 -汽车", "tags": ["中文", "负向"], "judgments": {}, "results": null, "latencyMs": null },
     { "id": "negative-03", "kind": "text", "query": "beach -people", "tags": ["英文", "负向"], "judgments": {}, "results": null, "latencyMs": null },
     { "id": "visual-01", "kind": "visual", "query": "人工选择主体明确的参考图片", "payload": null, "tags": ["视觉", "图片"], "judgments": {}, "results": null, "latencyMs": null },
-    { "id": "visual-02", "kind": "visual", "query": "人工选择具有动作的参考片段", "payload": null, "tags": ["视觉", "片段"], "judgments": {}, "results": null, "latencyMs": null },
+    { "id": "visual-02", "kind": "visual", "query": "从同一参考片段的结尾找可接续的画面", "payload": null, "tags": ["视觉", "片段", "接续画面"], "judgments": {}, "results": null, "latencyMs": null },
     { "id": "visual-03", "kind": "visual", "query": "人工选择光线相似但主体不同的干扰样本", "payload": null, "tags": ["视觉", "困难负例"], "judgments": {}, "results": null, "latencyMs": null },
     { "id": "scope-01", "kind": "text", "query": "一个人在跑步", "scope": { "folderIds": [], "needsSelection": true }, "tags": ["范围", "文件夹"], "judgments": {}, "results": null, "latencyMs": null },
     { "id": "scope-02", "kind": "text", "query": "雨天夜晚的街道", "scope": { "timeStart": null, "timeEnd": null, "needsSelection": true }, "tags": ["范围", "导入时间"], "judgments": {}, "results": null, "latencyMs": null },

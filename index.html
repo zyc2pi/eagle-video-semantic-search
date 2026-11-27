@@ -88,11 +88,13 @@
           <h3>结果范围</h3>
           <span class="hint">每次搜索全库，调整条件立即筛选结果。</span>
           <div class="threshold">
-            <label for="threshold">阈值</label>
+            <label for="threshold" title="按结果相似度筛选。Jev 精搜通过后，相似度为初筛分加上通过概率 × 50。">阈值</label>
             <input id="threshold" type="range" min="0" max="35" step="0.5">
             <span id="threshold-val">11</span>
           </div>
-          <button id="btn-scope" class="scope-btn" title="设置搜索范围（含子文件夹）">范围: 整个库</button>
+          <span class="filter-label">范围</span>
+          <button id="btn-scope" class="scope-btn" type="button" title="选择固定搜索范围（含子文件夹）">整个库</button>
+          <label class="scope-follow"><input id="scope-follow" type="checkbox"> 实时跟随 Eagle 选中文件夹<span id="scope-follow-status" class="scope-follow-status"></span></label>
           <div class="time-filter" role="group" aria-label="素材加入时间">
             <label for="search-time">加入时间</label>
             <select id="search-time" aria-label="搜索时间范围">
@@ -110,8 +112,10 @@
         </section>
         <section id="topic-result-filter" class="filter-section">
           <h3>已存结果范围</h3>
-          <label>阈值 <input id="topic-filter-threshold" type="number" min="0" step="0.5" placeholder="不限" aria-label="主题结果阈值"></label>
-          <button id="topic-filter-scope" class="scope-btn" type="button">范围: 整个库</button>
+          <label title="按当前结果分数筛选。Jev 精搜使用加权后的相似度。">阈值 <input id="topic-filter-threshold" type="number" min="0" step="0.5" placeholder="不限" aria-label="主题结果阈值"></label>
+          <span class="filter-label">范围</span>
+          <button id="topic-filter-scope" class="scope-btn" type="button" title="选择固定搜索范围（含子文件夹）">整个库</button>
+          <label class="scope-follow"><input id="topic-scope-follow" type="checkbox"> 实时跟随 Eagle 选中文件夹<span id="topic-scope-follow-status" class="scope-follow-status"></span></label>
           <span class="filter-label">加入时间</span>
           <div id="topic-time-filter"></div>
         </section>
@@ -122,6 +126,8 @@
           <label for="result-tags">素材标签</label>
           <input id="result-tags" type="search" placeholder="标签，逗号分隔（全部满足）" aria-label="筛选素材标签" title="完整标签名，多个标签用中英文逗号分隔，全部满足">
           <div id="result-tag-chips" class="tag-chips hidden" role="group" aria-label="运镜与景别快捷筛选"></div>
+          <label for="result-aesthetic-min" title="只筛除已评分且低于此分数的片段，未评分的片段仍会显示。">美学分≥</label>
+          <input id="result-aesthetic-min" type="number" min="0" max="100" step="0.1" placeholder="不限" title="只筛除已评分且低于此分数的片段，未评分的片段仍会显示。">
           <label for="topic-scene-source">评分</label>
           <select id="topic-scene-source" aria-label="按人工评分筛选片段">
             <option value="all">全部片段</option><option value="manual">人工评分</option><option value="auto">未人工评分</option>
@@ -186,6 +192,7 @@
         <label>排序
           <select id="view-sort">
             <option value="sim">相似度</option>
+            <option value="aesthetic">美学分降序</option>
             <option value="dur">时长</option>
             <option value="name">视频名</option>
             <option value="continuation">接续复核顺序</option>
@@ -205,6 +212,7 @@
       <summary>整理所选</summary>
       <div class="menu-content">
         <h3>整理所选片段</h3>
+        <button id="btn-aesthetics" type="button" class="mini-btn" disabled>评估美学分</button>
         <button id="btn-topic-add" type="button" class="mini-btn" disabled>添加到主题</button>
         <button id="btn-topic-remove" type="button" class="mini-btn hidden" disabled>从主题移除</button>
         <button id="btn-topic-score" type="button" class="mini-btn hidden" disabled>调整评分</button>
@@ -431,11 +439,14 @@
   <dialog id="scope-dialog">
     <div class="settings-form">
       <h3>搜索范围</h3>
-      <p class="hint">本次打开内全局共用；重新打开后恢复整个库。</p>
+      <p class="hint">搜索和仓库主题共用此范围，按素材库记忆。选择指定或排除后会关闭“实时跟随 Eagle 选中文件夹”。</p>
       <label class="check-row"><input type="radio" name="scope-mode" value="all"> 整个库</label>
-      <label class="check-row"><input type="radio" name="scope-mode" value="selected"> 跟随 Eagle 当前选中的文件夹（含子文件夹）</label>
       <label class="check-row"><input type="radio" name="scope-mode" value="custom"> 指定以下文件夹（含子文件夹，可多选）：</label>
       <label class="check-row"><input type="radio" name="scope-mode" value="exclude"> 排除以下文件夹（含子文件夹，可多选）：</label>
+      <div class="folder-tree-toolbar">
+        <span class="hint">在下方勾选文件夹</span>
+        <button id="btn-scope-add-selected" type="button">定位并勾选 Eagle 当前选中文件夹</button>
+      </div>
       <div id="folder-tree" class="folder-tree"></div>
       <p id="scope-extra-exclusions" class="hint"></p>
       <p class="hint">包含或排除均作用于所有子文件夹；素材属于任一排除文件夹即不参与搜索。三种搜索方式（文本/以图/以片）都遵循此范围。</p>
@@ -490,7 +501,7 @@
           <label>片段时长 ≥（秒）<input id="entry-duration" type="number" min="0" step="0.5" required></label>
         </div>
         <div class="field-pair">
-          <label>排序<select id="entry-sort"><option value="sim">相似度</option><option value="dur">时长</option><option value="name">视频名</option><option value="continuation">接续复核顺序</option></select></label>
+          <label>排序<select id="entry-sort"><option value="sim">相似度</option><option value="aesthetic">美学分降序</option><option value="dur">时长</option><option value="name">视频名</option><option value="continuation">接续复核顺序</option></select></label>
           <label class="check-row"><input id="entry-grouped" type="checkbox">按视频分组</label>
         </div>
         <label><select id="entry-time" aria-label="搜索时间范围">
@@ -521,7 +532,12 @@
           <label class="check-row"><input id="entry-aiEnhance" type="checkbox">AI 查询增强</label>
           <label class="check-row"><input id="entry-aiExpand" type="checkbox">AI 语义扩展</label>
           <label>AI 模式<select id="entry-aiMode"><option value="fast">快速</option><option value="balanced">均衡</option><option value="quality">质量</option></select></label>
-          <label class="check-row"><input id="entry-miniRerank" type="checkbox">MiniCPM 精搜</label>
+          <label class="check-row"><input id="entry-jevRerank" type="checkbox"> Jev 精搜（VideoJev）</label>
+          <div class="field-pair">
+            <label>精搜候选数<input id="entry-jevRerankTopK" type="number" min="10" max="200" step="1"></label>
+            <label>精搜通过概率<input id="entry-jevRerankThreshold" type="number" min="0.1" max="0.95" step="0.01"></label>
+          </div>
+          <label class="check-row"><input id="entry-useAestheticScore" type="checkbox"> 随精搜评估美学分</label>
         </details>
       </div>
       <p id="warehouse-editor-error" class="form-error" role="alert"></p>
@@ -667,7 +683,14 @@
           <option value="quality">quality — 变体多，最全</option>
         </select>
       </label>
-      <label class="check-row"><input id="cfg-mini-rerank" type="checkbox"> 二阶段精搜（MiniCPM 复核，明显更慢、占显存大）</label>
+      <label class="check-row"><input id="cfg-jev-rerank" type="checkbox"> Jev 精搜（VideoJev 二阶段复核命中帧，更准但更耗时）</label>
+      <label>精搜候选数（复核初筛前 N 条，默认 30）
+        <input id="cfg-jev-top" type="number" min="10" max="200" step="1">
+      </label>
+      <label>精搜通过概率（0.1～0.95，默认 0.6）
+        <input id="cfg-jev-threshold" type="number" min="0.1" max="0.95" step="0.01">
+      </label>
+      <label class="check-row"><input id="cfg-jev-aesthetics" type="checkbox"> 随精搜评估美学分（仅对通过精搜的片段打分，复用同一帧特征）</label>
       <label class="check-row"><input id="cfg-eval-mode" type="checkbox"> 评测记录模式（每次搜索把排名结果和耗时记到插件 evaluation 目录，可在“整理所选”里标注相关/不相关）</label>
       <label class="check-row"><input id="cfg-auto-check-new" type="checkbox"> 自动检查主题新素材（开窗及索引完成后在后台按各主题条件探测新命中，只在左侧标数量，不改写主题；开始搜索时自动让路）</label>
       <label class="check-row"><input id="cfg-auto-index" type="checkbox"> 静默自动索引（插件随 Eagle 后台运行，每 10 分钟检查新素材并自动增量索引）</label>

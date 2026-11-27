@@ -3,7 +3,7 @@
   const { $, esc, toast, h } = Dom;
   let serviceOnline = false;
   let pluginReady = false;
-  let showPending = false;
+  let windowShown = false;
   let lastIndexSummary = null;
   let indexMode = 'all';
   let refineSource = null;
@@ -52,7 +52,7 @@
           $('index-progress-text').textContent = job.state === 'done' ? '正在补全上次全库索引的主题清理…' : '已恢复未完成索引任务的监视';
           updateButtons();
         }
-      }).catch((error) => { $('index-hint').textContent = error.message; });
+      }).catch((error) => console.warn('[索引任务恢复]', error));
     }
     // 新机器上项目路径多半不对：首次检测到路径无效时自动弹出设置页引导配置
     if (state === 'offline' && !settingsAutoOpened
@@ -269,6 +269,7 @@
   let scopeDialogExpanded = new Set(); // 展开状态按素材库记在本机，重新打开沿用
   let scopeFolderRoots = [];
   let scopeDialogTarget = null;
+  let scopeLocatedIds = new Set(); // 「勾选 Eagle 当前选中文件夹」定位到的行，高亮提示
   const scopeExpandedKey = () => `scopeFolderExpanded:${SearchRecipe.normalize(eagle.library.path)}`;
 
   function loadScopeExpanded() {
@@ -282,33 +283,106 @@
     try { localStorage.setItem(scopeExpandedKey(), JSON.stringify([...scopeDialogExpanded])); } catch { /* 仅为便利，失败不影响范围 */ }
   }
   let scopeOperation = 0;
+  let applyingScope = null;
   let scopeContextGeneration = 0;
   let excludingFolder = false;
+  // 实时跟随最近一次读到的 Eagle 选中文件夹：null 表示未开启或尚未读取，[] 表示未选中。
+  let followedFolders = null;
+  let followedKey = null;
+  let followPolling = false;
+  const FOLLOW_POLL_MS = 1500;
+  const isFollowActive = () => Config.get().scopeFollow && !!followedFolders?.length;
 
   function updateScopeButton() {
     const cfg = Config.get();
-    let label = '范围: 整个库';
-    if (cfg.scopeMode === 'selected') label = '范围: 跟随 Eagle 选中';
-    else if (cfg.scopeMode === 'custom') label = `范围: ${cfg.scopeFolderIds.length} 个文件夹`;
-    else if (cfg.scopeMode === 'exclude') label = `范围: 排除 ${cfg.scopeFolderIds.length} 个文件夹`;
+    // 固定范围（弹窗选择）
+    let label = '整个库';
+    if (cfg.scopeMode === 'custom') label = `指定 ${cfg.scopeFolderIds.length} 个文件夹`;
+    else if (cfg.scopeMode === 'exclude') label = `排除 ${cfg.scopeFolderIds.length} 个文件夹`;
     if (cfg.scopeExcludeFolderIds.length) label += `，另排除 ${cfg.scopeExcludeFolderIds.length} 个`;
+    const overridden = isFollowActive();
     for (const id of ['btn-scope', 'topic-filter-scope']) {
       $(id).textContent = label;
-      $(id).classList.toggle('scoped', cfg.scopeMode !== 'all');
+      $(id).classList.toggle('scoped', cfg.scopeMode !== 'all' || cfg.scopeExcludeFolderIds.length > 0);
+      $(id).classList.toggle('overridden', overridden);
+      $(id).title = overridden ? '实时跟随 Eagle 选中文件夹时，固定范围暂不使用（另排除的文件夹仍生效）' : '选择固定搜索范围（含子文件夹）';
+    }
+    // 实时跟随（独立开关）
+    let status = '';
+    if (cfg.scopeFollow) {
+      if (!followedFolders) status = '读取中…';
+      else if (!followedFolders.length) status = 'Eagle 未选中文件夹，使用固定范围';
+      else status = `当前「${followedFolders[0].name}」${followedFolders.length > 1 ? `等 ${followedFolders.length} 个` : ''}`;
+    }
+    for (const [box, text] of [['scope-follow', 'scope-follow-status'], ['topic-scope-follow', 'topic-scope-follow-status']]) {
+      $(box).checked = cfg.scopeFollow;
+      $(text).textContent = status;
+      $(text).title = status;
     }
   }
 
-  function resetSearchScope() {
+  function rememberFollowed(followed, key) {
+    followedFolders = followed;
+    followedKey = key ?? null;
+  }
+
+  const scopeChoiceKey = (library) => `eagle-semantic-scope:${SearchRecipe.normalize(library)}`;
+
+  function saveScopeChoice(library, config = Config.get()) {
+    const { scopeMode, scopeFollow, scopeFolderIds, scopeExcludeFolderIds } = config;
+    try {
+      localStorage.setItem(scopeChoiceKey(library), JSON.stringify({ scopeMode, scopeFollow, scopeFolderIds, scopeExcludeFolderIds }));
+    } catch (error) { console.warn('[Scope] 保存范围失败', error); }
+  }
+
+  function resetSearchScope({ restore = false } = {}) {
     scopeOperation += 1;
-    Config.setScope();
-    Search.setScopeFilter(null, eagle.library.path);
+    rememberFollowed(null, null);
+    const library = eagle.library.path;
+    Config.setScope({ scopeLibrary: library });
+    if (restore) {
+      try {
+        const saved = JSON.parse(localStorage.getItem(scopeChoiceKey(library)) || 'null');
+        if (saved) Config.setScope({ ...saved, scopeLibrary: library });
+      } catch (error) { console.warn('[Scope] 恢复范围失败', error); }
+    } else saveScopeChoice(library);
+    Search.setScopeFilter(null, library);
     updateScopeButton();
   }
 
-  /* 换库后文件夹 id 失效，自动回退为整库 */
+  /* 实时跟随：窗口打开期间定时读取 Eagle 选中文件夹，变化时立即重算本地筛选。
+     正在搜索或页面切换时跳过，下一轮再试。 */
+  async function pollFollowedFolders() {
+    if (!pluginVisible || !Config.get().scopeFollow || applyingScope !== null || followPolling || Search.isBusy()) return;
+    followPolling = true;
+    try {
+      const target = scopeContext();
+      const operation = scopeOperation;
+      const cfg = Config.get();
+      const snapshot = await SearchRecipe.scopeFromConfig(cfg);
+      if (operation !== scopeOperation || snapshot.followKey === followedKey || !pluginVisible || !isScopeContextCurrent(target)) return;
+      await applySessionScope(cfg, target, () => pluginVisible, snapshot);
+    } catch (error) {
+      console.warn('[Scope] 实时跟随读取 Eagle 选中文件夹失败', error);
+    } finally {
+      followPolling = false;
+    }
+  }
+
+  async function setScopeFollow(enabled) {
+    const cfg = Config.get();
+    try {
+      await applySessionScope({ ...cfg, scopeFollow: enabled }, scopeContext());
+    } catch (error) {
+      toast(error.message, true);
+      updateScopeButton();
+    }
+  }
+
+  /* 首次进入或换库时，读取该库上次选择的范围。 */
   function resetScopeIfLibraryChanged() {
     const cfg = Config.get();
-    if (cfg.scopeLibrary && cfg.scopeLibrary !== eagle.library.path) resetSearchScope();
+    if (cfg.scopeLibrary !== eagle.library.path) resetSearchScope({ restore: true });
   }
 
   function scopeContext() {
@@ -328,24 +402,28 @@
     return document.body.dataset.topic !== 'true';
   }
 
-  async function applySessionScope(config, target, shouldApply = () => true) {
+  async function applySessionScope(config, target, shouldApply = () => true, snapshot = null, persist = !snapshot) {
     const operation = ++scopeOperation;
-    let scope = { mode: 'all' };
-    if (config.scopeMode === 'selected') {
-      const folders = await eagle.folder.getSelected();
-      if (!folders?.length) throw new Error('请先在 Eagle 中选中要搜索的文件夹');
-      scope = { mode: 'folders', folderIds: folders.map((folder) => folder.id) };
-    } else if (['custom', 'exclude'].includes(config.scopeMode)) {
-      scope = { mode: config.scopeMode === 'custom' ? 'folders' : 'exclude', folderIds: config.scopeFolderIds };
+    applyingScope = operation;
+    try {
+      // 未写明的字段沿用当前会话（尤其是实时跟随开关）。
+      const current = Config.get();
+      const next = { scopeMode: current.scopeMode, scopeFollow: current.scopeFollow, scopeFolderIds: current.scopeFolderIds,
+        scopeExcludeFolderIds: current.scopeExcludeFolderIds, ...config };
+      if (next.scopeMode === 'selected') { next.scopeMode = 'all'; next.scopeFollow = true; }
+      const { scope, followed, followKey } = snapshot || await SearchRecipe.scopeFromConfig(next);
+      const resolved = await SearchRecipe.resolveScope(scope, { mode: 'all' });
+      if (operation !== scopeOperation || !shouldApply()) return false;
+      if (!isScopeContextCurrent(target)) throw new Error('页面或素材库已切换，请重新选择范围');
+      Config.setScope({ ...next, scopeLibrary: target.library });
+      if (persist) saveScopeChoice(target.library);
+      rememberFollowed(followed, followKey);
+      Search.setScopeFilter(resolved.paths, target.library);
+      updateScopeButton();
+      return true;
+    } finally {
+      if (applyingScope === operation) applyingScope = null;
     }
-    if (config.scopeExcludeFolderIds?.length) scope.excludeFolderIds = config.scopeExcludeFolderIds;
-    const resolved = await SearchRecipe.resolveScope(scope, { mode: 'all' });
-    if (operation !== scopeOperation || !shouldApply()) return false;
-    if (!isScopeContextCurrent(target)) throw new Error('页面或素材库已切换，请重新选择范围');
-    Config.setScope({ ...config, scopeLibrary: target.library });
-    Search.setScopeFilter(resolved.paths, target.library);
-    updateScopeButton();
-    return true;
   }
 
   function renderFolderRows(rows, container) {
@@ -354,6 +432,8 @@
     rows.forEach((r) => {
       const row = document.createElement('div');
       row.className = 'folder-row';
+      row.dataset.folderId = r.id;
+      if (scopeLocatedIds.has(r.id)) row.classList.add('located');
       row.style.paddingLeft = `${r.depth * 18}px`;
 
       if (r.hasChildren) {
@@ -411,11 +491,13 @@
     scopeDialogChecked = new Set(cfg.scopeFolderIds || []);
     scopeDialogExpanded = loadScopeExpanded();
     scopeFolderRoots = [];
+    scopeLocatedIds = new Set();
     document.querySelectorAll('input[name="scope-mode"]').forEach((r) => {
-      r.checked = r.value === (cfg.scopeMode || 'all');
+      r.checked = r.value === (['custom', 'exclude'].includes(cfg.scopeMode) ? cfg.scopeMode : 'all');
     });
     const tree = $('folder-tree');
     tree.innerHTML = '<p class="hint">读取文件夹列表…</p>';
+    $('btn-scope-add-selected').disabled = true;
     $('scope-dialog').showModal();
     $('scope-extra-exclusions').textContent = cfg.scopeExcludeFolderIds.length
       ? `当前指定范围内另排除了 ${cfg.scopeExcludeFolderIds.length} 个文件夹；点击应用将以本次选择替换完整范围。` : '';
@@ -433,10 +515,49 @@
         return;
       }
       renderFolderTree(tree);
+      $('btn-scope-add-selected').disabled = false;
     } catch (e) {
       console.error('[Scope] 读取文件夹树失败', e);
       tree.innerHTML = `<p class="hint" style="color:var(--danger)">读取文件夹失败：${esc(e.message)}</p>`;
     }
+  }
+
+  async function addSelectedScopeFolders() {
+    const target = scopeDialogTarget;
+    if (!$('scope-dialog').open || !target || !isScopeContextCurrent(target)) return;
+    const button = $('btn-scope-add-selected');
+    button.disabled = true;
+    try {
+      const folders = await eagle.folder.getSelected();
+      if (!$('scope-dialog').open || scopeDialogTarget !== target || !isScopeContextCurrent(target)) return;
+      if (!folders?.length) throw new Error('请先在 Eagle 中选中要加入的文件夹');
+      const selectedIds = folders.map((folder) => folder.id);
+      const ids = ScopeFolderTree.revealFolders(scopeFolderRoots, selectedIds, scopeDialogExpanded);
+      if (ids.length !== new Set(selectedIds).size) throw new Error('选中的文件夹不在当前文件夹列表中，请重新打开搜索范围');
+      ids.forEach((id) => scopeDialogChecked.add(id));
+      scopeLocatedIds = new Set(ids);
+      // 与手动勾选一致：排除模式保留，其他模式切到指定文件夹。
+      if (!document.querySelector('input[name="scope-mode"][value="exclude"]').checked) {
+        document.querySelector('input[name="scope-mode"][value="custom"]').checked = true;
+      }
+      saveScopeExpanded();
+      const tree = $('folder-tree');
+      renderFolderTree(tree);
+      centerFolderRow(tree, ids[0]);
+      toast(`已勾选 ${ids.length} 个 Eagle 当前选中文件夹，点击“应用”后生效`);
+    } catch (error) {
+      if ($('scope-dialog').open && scopeDialogTarget === target && isScopeContextCurrent(target)) toast(error.message, true);
+    } finally {
+      if ($('scope-dialog').open && scopeDialogTarget === target) button.disabled = false;
+    }
+  }
+
+  /* 把文件夹树滚动到让指定行位于可视区中间 */
+  function centerFolderRow(container, id) {
+    const row = container.querySelector?.(`.folder-row[data-folder-id="${CSS.escape(id)}"]`);
+    if (!row) return;
+    const offset = row.getBoundingClientRect().top - container.getBoundingClientRect().top + container.scrollTop;
+    container.scrollTop = Math.max(0, offset - (container.clientHeight - row.offsetHeight) / 2);
   }
 
   async function applyScopeDialog() {
@@ -450,10 +571,14 @@
     const shouldApply = () => $('scope-dialog').open && scopeDialogTarget === target;
     $('btn-scope-apply').disabled = true;
     try {
-      const applied = await applySessionScope({ scopeMode: mode, scopeFolderIds: ids }, target, shouldApply);
+      // 选了具体的固定范围即关闭实时跟随，否则跟随会覆盖它；选整个库则保留跟随开关。
+      const stopFollow = mode !== 'all' && Config.get().scopeFollow;
+      const applied = await applySessionScope({ scopeMode: mode, scopeFolderIds: ids, scopeExcludeFolderIds: [],
+        ...(stopFollow ? { scopeFollow: false } : {}) }, target, shouldApply);
       if (!applied || !shouldApply()) return;
       $('scope-dialog').close();
       updateScopeButton();
+      if (stopFollow) toast('已使用固定范围，并关闭“实时跟随 Eagle 选中文件夹”');
     } catch (error) { toast(error.message, true); }
     finally { $('btn-scope-apply').disabled = false; }
   }
@@ -466,6 +591,8 @@
     const context = await SearchRecipe.currentContext();
     if (operation !== scopeOperation || !isScopeContextCurrent(target)) throw new Error('搜索范围或页面已改变，请重新搜索');
     Search.setScopeFilter(context.scopePaths, context.library);
+    rememberFollowed(context.followed, context.followKey);
+    updateScopeButton();
     $('time-warning').textContent = context.missingDates
       ? `${context.missingDates} 个素材缺少导入时间，已排除` : '';
     return context;
@@ -583,32 +710,48 @@
         summary.textContent = `${labels[job.state] || job.state} · ${job.source || '未知来源'} · ${job.current || 0}/${job.total || 0} · ${new Date((job.created_at || 0) * 1000).toLocaleString()}`;
         row.appendChild(summary);
         const detail = document.createElement('pre'); detail.className = 'job-details';
-        detail.textContent = `${job.job_id}\n${job.error || ''}\n` + (job.file_results || []).map((item) => `${item.state || item.status || 'unknown'}: ${item.path}${item.reason || item.error ? ` — ${item.reason || item.error}` : ''}`).join('\n');
+        const header = `${job.job_id}\n${job.error || ''}\n`;
+        detail.textContent = header;
         row.appendChild(detail);
         const active = ['queued', 'running', 'cancelling'].includes(job.state);
-        if (active || (job.file_results || []).some((item) => item.retryable)) {
-          const action = document.createElement('button'); action.type = 'button'; action.textContent = active ? '停止此任务' : '仅重试失败项';
-          const key = require('crypto').randomUUID();
-          action.onclick = async () => {
-            action.disabled = true;
-            try {
-              if ((await Bridge.resolveLibraryIdentity()).id !== library.id) throw new Error('素材库已切换');
-              if (active) { const result = await Api.cancelIndex(job.job_id); if (!result.ok) throw new Error(result.data?.error || '取消失败'); }
-              else {
-                clearSearchCache();
-                const retry = Indexer.retry(job.job_id, key, indexHandlers());
-                updateButtons();
-                await retry;
-                $('index-bar-fill').style.width = '0%';
-                $('index-progress-text').textContent = '已提交失败项重试，等待任务开始…';
-                $('index-progress').classList.remove('hidden');
-              }
-              await openIndexJobs();
-            } catch (error) { detail.textContent += `\n${error.message}`; action.disabled = false; }
-            finally { updateButtons(); }
-          };
-          row.appendChild(action);
-        }
+        const action = document.createElement('button');
+        action.type = 'button'; action.textContent = active ? '停止此任务' : '仅重试失败项';
+        action.hidden = !active;
+        const key = require('crypto').randomUUID();
+        action.onclick = async () => {
+          action.disabled = true;
+          try {
+            if ((await Bridge.resolveLibraryIdentity()).id !== library.id) throw new Error('素材库已切换');
+            if (active) { const result = await Api.cancelIndex(job.job_id); if (!result.ok) throw new Error(result.data?.error || '取消失败'); }
+            else {
+              clearSearchCache();
+              const retry = Indexer.retry(job.job_id, key, indexHandlers());
+              updateButtons();
+              await retry;
+              $('index-bar-fill').style.width = '0%';
+              $('index-progress-text').textContent = '已提交失败项重试，等待任务开始…';
+              $('index-progress').classList.remove('hidden');
+            }
+            await openIndexJobs();
+          } catch (error) { detail.textContent += `\n${error.message}`; action.disabled = false; }
+          finally { updateButtons(); }
+        };
+        row.appendChild(action);
+        let loadingDetails = false;
+        let loadedDetails = false;
+        row.ontoggle = async () => {
+          if (!row.open || loadingDetails || loadedDetails) return;
+          loadingDetails = true;
+          detail.textContent = `${header}正在读取文件明细…`;
+          try {
+            const record = await Api.indexStatus(job.job_id);
+            const results = record.file_results || [];
+            detail.textContent = `${job.job_id}\n${record.error || ''}\n` + results.map((item) => `${item.state || item.status || 'unknown'}: ${item.path}${item.reason || item.error ? ` — ${item.reason || item.error}` : ''}`).join('\n');
+            if (!active) action.hidden = !results.some((item) => item.retryable);
+            loadedDetails = true;
+          } catch (error) { detail.textContent = `${header}读取文件明细失败：${error.message}。收起后可重新展开。`; }
+          finally { loadingDetails = false; }
+        };
         body.appendChild(row);
       }
     } catch (error) { body.textContent = error.message; }
@@ -702,12 +845,15 @@
 
   const AUTO_INDEX_INTERVAL_MS = 10 * 60 * 1000;
   let autoIndexTimer = null;
+  let pluginVisible = false;
 
   async function autoIndexTick() {
-    if (!Config.get().autoIndex || Indexer.isRunning()) return;
+    if (!pluginVisible || !Config.get().autoIndex || Indexer.isRunning()) return;
     try {
       if (!serviceOnline && !(await Service.ensure(setServiceStatus))) return;
+      if (!pluginVisible) return;
       const { missing, stale } = await countMissingVideos();
+      if (!pluginVisible) return;
       if (missing > 0 || stale > 0) {
         console.log(
           `[AutoIndex] 发现 ${missing} 个新视频、${stale} 个失效路径，自动同步索引`,
@@ -724,7 +870,7 @@
       clearInterval(autoIndexTimer);
       autoIndexTimer = null;
     }
-    if (Config.get().autoIndex) {
+    if (pluginVisible && Config.get().autoIndex) {
       autoIndexTimer = setInterval(autoIndexTick, AUTO_INDEX_INTERVAL_MS);
       autoIndexTick(); // 开启后立即检查一次
     }
@@ -927,10 +1073,11 @@
       const config = Config.get();
       const next = { scopeMode: config.scopeMode, scopeFolderIds: [...config.scopeFolderIds],
         scopeExcludeFolderIds: [...config.scopeExcludeFolderIds] };
-      if (next.scopeMode === 'all') next.scopeMode = 'exclude';
-      const ids = next.scopeMode === 'exclude' ? next.scopeFolderIds : next.scopeExcludeFolderIds;
+      // 实时跟随开启时记为另排除，跟随的文件夹变化后仍生效；否则整个库改为排除模式。
+      if (!config.scopeFollow && next.scopeMode === 'all') next.scopeMode = 'exclude';
+      const ids = !config.scopeFollow && next.scopeMode === 'exclude' ? next.scopeFolderIds : next.scopeExcludeFolderIds;
       if (!ids.includes(folder.id)) ids.push(folder.id);
-      if (await applySessionScope(next, target, stillSelected)) toast(`本次打开已排除「${folder.path}」及其子文件夹`);
+      if (await applySessionScope(next, target, stillSelected)) toast(`已排除「${folder.path}」及其子文件夹`);
     } catch (error) { toast(error.message, true); }
     finally { dialog?.remove(); excludingFolder = false; updateSelectionActions(); }
   }
@@ -1094,7 +1241,11 @@
     window.addEventListener('resize', closeContextMenu);
     window.addEventListener('blur', closeContextMenu);
     document.addEventListener('search-context', () => { scopeContextGeneration += 1; closeContextMenu(); });
-    document.addEventListener('search-scope-clear', resetSearchScope);
+    document.addEventListener('search-scope-clear', () => resetSearchScope());
+    $('scope-follow').addEventListener('change', (event) => setScopeFollow(event.target.checked));
+    $('topic-scope-follow').addEventListener('change', (event) => setScopeFollow(event.target.checked));
+    setInterval(pollFollowedFolders, FOLLOW_POLL_MS);
+    window.addEventListener('focus', () => pollFollowedFolders());
     document.addEventListener('search-busy', closeContextMenu);
     menus.forEach((menu) => {
       menu.addEventListener('toggle', () => {
@@ -1238,6 +1389,7 @@
     });
     $('btn-scope').addEventListener('click', () => openScopeDialog());
     $('topic-filter-scope').addEventListener('click', () => openScopeDialog(true));
+    $('btn-scope-add-selected').addEventListener('click', addSelectedScopeFolders);
     $('btn-scope-apply').addEventListener('click', applyScopeDialog);
     $('btn-scope-cancel').addEventListener('click', () => $('scope-dialog').close());
     document.addEventListener('paste', handlePaste);
@@ -1307,17 +1459,14 @@
     resetScopeIfLibraryChanged();
     updateScopeButton();
 
-    // serviceMode 下随 Eagle 启动即运行：开了自动索引才主动拉起 Python 服务，
-    // 否则保持安静，等用户打开窗口（onPluginShow）再连接
-    if (cfg.autoIndex) {
-      Service.ensure(setServiceStatus).then(() => applyAutoIndexSetting());
-    } else {
-      applyAutoIndexSetting();
-    }
+    // 服务和自动索引只在窗口打开期间运行，关闭后不再后台拉起。
+    applyAutoIndexSetting();
 
     // 低频心跳：服务中途崩溃时状态灯及时变灰（此前只在开窗时检查，绿灯会一直挂着）
     setInterval(async () => {
+      if (!pluginVisible) return;
       const ok = await Api.health();
+      if (!pluginVisible) return;
       if (ok && !serviceOnline) {
         setServiceStatus('online', '搜索服务已连接');
       } else if (!ok && serviceOnline) {
@@ -1325,29 +1474,44 @@
       }
     }, 60000);
     pluginReady = true;
-    if (showPending || document.visibilityState === 'visible') showPlugin({ fromInit: true });
+    if (windowShown) showPlugin();
   });
 
-  let skipInitialShow = false;
-  function showPlugin({ fromInit = false } = {}) {
-    if (!pluginReady) { showPending = true; return; }
-    // 已收到过宿主显示事件时，初始化只是重放它，不再等待第二次事件。
-    if (fromInit) skipInitialShow = !showPending;
-    else if (skipInitialShow) { skipInitialShow = false; return; }
-    showPending = false;
+  function showPlugin() {
+    windowShown = true;
+    if (!pluginReady || pluginVisible) return;
+    pluginVisible = true;
     WarehouseNavigation.save();
-    resetSearchScope();
-    WarehouseNavigation.show();
-    if (!serviceOnline) {
-      setServiceStatus('starting', '加载搜索服务…');
-      Service.ensure(setServiceStatus);
-    }
-    else if (!Indexer.isRunning()) refreshIndexHint();
+    resetScopeIfLibraryChanged();
+    const scopeAtShow = scopeOperation;
+    Promise.resolve(WarehouseNavigation.show()).then(() => {
+      if (!pluginVisible || scopeAtShow !== scopeOperation) return;
+      return applySessionScope(Config.get(), scopeContext(), () => pluginVisible, null, false);
+    }).catch((error) => toast(`恢复搜索范围失败：${error.message}`, true));
+    setServiceStatus('starting', '加载搜索服务…');
+    Service.resume(setServiceStatus).then((ok) => {
+      if (!pluginVisible || !ok) return;
+      applyAutoIndexSetting();
+      if (!Indexer.isRunning()) refreshIndexHint();
+    });
   }
 
-  // 窗口隐藏后，下一次显示一定是重开，不能当作初始化的重复事件。
-  document.addEventListener('visibilitychange', () => { if (document.hidden) skipInitialShow = false; });
-  eagle.onPluginShow(() => showPlugin());
+  eagle.onPluginShow(showPlugin);
+  // 首次开窗可能早于 onPluginShow 的注册，Eagle 在页面加载后还会派发 onPluginRun。
+  eagle.onPluginRun(() => {
+    if (!document.hidden) showPlugin();
+  });
+  function closePlugin({ immediate = false } = {}) {
+    windowShown = false;
+    if (!pluginReady) return;
+    pluginVisible = false;
+    applyAutoIndexSetting();
+    setServiceStatus('offline', immediate ? '插件退出，正在释放搜索服务' : '窗口已关闭，30秒内重开将保留模型');
+    Service.suspend({ immediate }).catch((error) => console.warn('[Service] 关闭失败', error));
+  }
+  eagle.onPluginHide(closePlugin);
+  eagle.onPluginBeforeExit(() => closePlugin({ immediate: true }));
+  window.addEventListener('beforeunload', () => closePlugin({ immediate: true }));
 
   eagle.onThemeChanged(() => applyTheme());
 

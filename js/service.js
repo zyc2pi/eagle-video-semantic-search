@@ -1,10 +1,16 @@
-/* Python 搜索服务生命周期：健康检查 + 自动拉起（关插件窗口保留，退出 Eagle 清理） */
+/* Python 搜索服务生命周期：关窗保留30秒，重开取消释放。 */
 const Service = (() => {
   const fs = require('fs');
   const path = require('path');
   const { spawn } = require('child_process');
 
   let pending = null;
+  let suspended = false;
+  const ownedServices = new Map();
+  let stopping = null;
+  let visibilityGeneration = 0;
+  let releaseTimer = null;
+  const CLOSE_GRACE_MS = 30000;
   const subscribers = new Set();
   function notify(state, message) {
     for (const listener of subscribers) { try { listener(state, message); } catch { /* UI 不影响生命周期 */ } }
@@ -45,7 +51,7 @@ const Service = (() => {
     }
   }
 
-  function spawnService(projectRoot, onFailure) {
+  function spawnService(projectRoot, port) {
     const env = { ...process.env, PYTHONPATH: projectRoot, PYTHONUTF8: '1' };
     const key = (Config.get().deepseekKey || '').trim();
     if (key) env.DEEPSEEK_API_KEY = key; // AI 查询增强用（config.json 里的 profile 读此变量）
@@ -60,25 +66,34 @@ const Service = (() => {
       } catch { /* 日志被占用时跳过轮转 */ }
       fd = fs.openSync(lp, 'a');
       fs.writeSync(fd, `\n===== ${new Date().toISOString()} 启动服务 =====\n`);
-      stdio = ['ignore', fd, fd];
+      stdio = ['pipe', fd, fd];
     } catch { /* 日志不可写时退回丢弃输出 */ }
 
     // 端口跟随设置：text_search.py 已支持 --port（不传则 5006），改端口后自动拉起才能对上健康检查
-    const args = ['text_search.py', '--port', String(Config.get().port || 5006)];
-    // Eagle 的插件 renderer 由主进程直接创建，不能绑定会随窗口重载的 renderer。
+    const args = ['text_search.py', '--port', String(port), '--plugin-stdin'];
+    // Eagle 退出由主进程句柄兜底，插件窗口关闭由标准输入管道单独控制。
     if (process.platform === 'win32') args.push('--eagle-host-pid', String(process.ppid));
     let child;
     try { child = spawn(pythonExe(projectRoot), args, {
       cwd: projectRoot,
       detached: true,
       windowsHide: true,
-      stdio,
+      stdio: stdio === 'ignore' ? ['pipe', 'ignore', 'ignore'] : stdio,
       env,
     }); } finally { if (fd !== null) fs.closeSync(fd); }
-    child.once('error', () => onFailure('进程无法启动，请检查便携 Python 与文件权限'));
-    child.once('exit', (code) => onFailure(`服务进程已退出（${code ?? '未知'}），请检查服务日志`));
+    child.stdin.on('error', () => {}); // The backend may exit before the pipe is closed.
+    const exit = new Promise((resolve) => {
+      const done = (message) => {
+        if (ownedServices.get(port)?.child === child) ownedServices.delete(port);
+        resolve(message);
+      };
+      child.once('error', () => done('进程无法启动，请检查便携 Python 与文件权限'));
+      child.once('exit', (code) => done(`服务进程已退出（${code ?? '未知'}），请检查服务日志`));
+    });
+    const service = { child, exit };
+    ownedServices.set(port, service);
     child.unref();
-    return child;
+    return service;
   }
 
   /**
@@ -92,10 +107,14 @@ const Service = (() => {
   }
 
   async function connect() {
+    if (stopping) await stopping;
+    if (suspended) return false;
     if (await Api.health()) {
+      if (suspended) return false;
       notify('online', '搜索服务已连接');
       return true;
     }
+    if (suspended) return false;
 
     const projectRoot = Config.get().projectRoot;
     const err = validateProject(projectRoot);
@@ -105,11 +124,10 @@ const Service = (() => {
     }
 
     notify('starting', '正在启动搜索服务（首次需加载模型，约 10~30 秒）…');
-    let failure = null;
-    let fail;
-    const failed = new Promise((resolve) => { fail = (message) => { failure = message; resolve(false); }; });
+    const port = Config.get().port || 5006;
+    let service;
     try {
-      spawnService(projectRoot, fail);
+      service = ownedServices.get(port) || spawnService(projectRoot, port);
     } catch (e) {
       notify('offline', '启动服务失败，请检查 Python 路径与文件权限');
       return false;
@@ -117,19 +135,63 @@ const Service = (() => {
 
     const deadline = Date.now() + 120000;
     while (Date.now() < deadline) {
+      if (suspended) return false;
       let timer;
-      await Promise.race([failed, new Promise((r) => { timer = setTimeout(r, 2000); })]);
+      const failure = await Promise.race([service.exit, new Promise((r) => { timer = setTimeout(r, 2000); })]);
       clearTimeout(timer);
+      if (suspended) return false;
       if (failure) { notify('offline', failure); return false; }
-      if (await Promise.race([Api.health(), failed])) {
+      const health = await Promise.race([Api.health(), service.exit]);
+      if (suspended) return false;
+      if (typeof health === 'string') { notify('offline', health); return false; }
+      if (health) {
         notify('online', '搜索服务已连接');
         return true;
       }
-      if (failure) { notify('offline', failure); return false; }
     }
     notify('offline', '服务启动超时（120 秒），请检查项目路径与端口设置');
     return false;
   }
 
-  return { ensure, logPath, controlHeaders };
+  function stopOwnedService() {
+    if (stopping) return stopping;
+    const services = [...ownedServices.values()];
+    // EOF also works if the renderer disappears before an async HTTP call finishes.
+    for (const { child } of services) child.stdin.end();
+    stopping = (async () => {
+      if (pending) await pending;
+      await Promise.all(services.map((service) => service.exit));
+      notify('offline', '窗口已关闭，搜索服务已释放');
+    })().finally(() => { stopping = null; });
+    return stopping;
+  }
+
+  function suspend({ immediate = false } = {}) {
+    visibilityGeneration++;
+    suspended = true;
+    if (immediate) {
+      clearTimeout(releaseTimer);
+      releaseTimer = null;
+      return stopOwnedService();
+    }
+    if (!releaseTimer && !stopping) {
+      releaseTimer = setTimeout(() => {
+        releaseTimer = null;
+        stopOwnedService().catch((error) => console.warn('[Service] 延迟关闭失败', error));
+      }, CLOSE_GRACE_MS);
+    }
+    return Promise.resolve();
+  }
+
+  async function resume(onStatus) {
+    const generation = ++visibilityGeneration;
+    clearTimeout(releaseTimer);
+    releaseTimer = null;
+    if (stopping) await stopping;
+    if (generation !== visibilityGeneration) return false;
+    suspended = false;
+    return ensure(onStatus);
+  }
+
+  return { ensure, resume, suspend, logPath, controlHeaders };
 })();

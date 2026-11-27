@@ -75,7 +75,9 @@ const Api = (() => {
   }
 
   async function listIndexJobs(libraryId) {
-    const r = await fetchJson(`${Config.baseUrl()}/api/v1/index/jobs${libraryId ? `?library_id=${encodeURIComponent(libraryId)}` : ''}`, {}, 5000);
+    const library = libraryId ? `&library_id=${encodeURIComponent(libraryId)}` : '';
+    // 服务刚启动时首次读取需要从磁盘载入完整历史。
+    const r = await fetchJson(`${Config.baseUrl()}/api/v1/index/jobs?summary=1${library}`, {}, 30000);
     if (!r.ok) throw new Error(r.data?.error || '任务列表读取失败');
     return r.data?.jobs || [];
   }
@@ -180,8 +182,29 @@ const Api = (() => {
     }, allowedVideoPaths), DEFAULT_TIMEOUT_MS, requestOptions);
   }
 
+  async function jevPost(path, body, capability, requestOptions = {}) {
+    const info = requestOptions.jevHealth || await healthInfo();
+    if (!info?.capabilities?.[capability]) {
+      throw new Error('VideoJev 未就绪，请检查模型目录 ' + (info?.capabilities?.jev_model_path || 'models/VideoJev-2B'));
+    }
+    const id = require('crypto').randomUUID();
+    try {
+      return await post(path, { ...body, jev_request_id: id }, LONG_TIMEOUT_MS, requestOptions);
+    } catch (error) {
+      if (['AbortError', 'TimeoutError'].includes(error.name)) {
+        void post('/api/v1/jev/cancel/' + id, {}, 5000).catch(() => {});
+      }
+      throw error;
+    }
+  }
+
+  function scoreAesthetics(clips, options) {
+    return jevPost('/api/v1/score_aesthetics', { clips }, 'jev_aesthetics', options);
+  }
+
   function search(query, indices, threshold, allowedVideoPaths = null, cfg = Config.get(), requestOptions = {}) {
-    return post('/api/v1/search', withSearchScope({
+    const enabled = !!(cfg.jevRerank ?? cfg.miniRerank);
+    const body = withSearchScope({
       query,
       indices,
       threshold,
@@ -192,10 +215,13 @@ const Api = (() => {
       bilingual_search: !!cfg.aiEnhance,
       ai_enhance: !!cfg.aiExpand,
       ai_mode: cfg.aiMode || 'balanced',
-      use_mini_rerank: !!cfg.miniRerank,
+      use_jev_rerank: enabled, jev_rerank_top_k: cfg.jevRerankTopK ?? 30,
+      jev_rerank_threshold: cfg.jevRerankThreshold ?? 0.6, use_aesthetic_score: enabled && !!cfg.useAestheticScore,
       // 用户在搜索前确认/编辑过的 AI 计划；后端校验后直接复用，不再调用 AI。
       ...(cfg.aiEnhance && requestOptions.aiPlan ? { precomputed_plan: requestOptions.aiPlan } : {}),
-    }, allowedVideoPaths), cfg.miniRerank ? LONG_TIMEOUT_MS : DEFAULT_TIMEOUT_MS, requestOptions);
+    }, allowedVideoPaths);
+    return enabled ? jevPost('/api/v1/search', body, 'jev_rerank', requestOptions)
+      : post('/api/v1/search', body, DEFAULT_TIMEOUT_MS, requestOptions);
   }
 
   /* AI 查询计划预览：只调用改写，不扫描索引。返回 { mode, queries:[{id,text,lang,source,reason,weight}], warnings } */
@@ -327,7 +353,7 @@ const Api = (() => {
 
   return {
     health, healthInfo, resolveLibrary, associateLibrary, listIndexJobs, listIndexes, listModels, startIndex, indexStatus, cancelIndex, retryIndex,
-    search, aiSearchPlan, searchVisual, searchHybrid, describeFrame, analyzeShot, shutdown,
+    search, scoreAesthetics, aiSearchPlan, searchVisual, searchHybrid, describeFrame, analyzeShot, shutdown,
     dedupScan, indexCoverage, indexContents, previewUrl,
     indexStats, trashIndex, searchFeedback, searchSequence,
   };

@@ -2,6 +2,14 @@
 
 > 从 AGENT.md「关键契约」拆出。改动这些行为需同步插件与后端，并更新本文件。
 
+## VideoJev 精搜与美学评分
+
+文本搜索支持 `use_jev_rerank`、`jev_rerank_top_k`（默认 30）和 `jev_rerank_threshold`（默认 0.6）。通过阈值的结果保留 `clip_similarity`、`jev_rerank_score`，相似度加上通过概率乘以 50。新搜索和主题的本地阈值均按最终 `similarity` 筛选。旧调用的 `use_mini_rerank` 在 VideoJev 就绪时使用新模型。以图生词继续使用 MiniCPM。
+
+新索引保存与向量顺序对应的绝对帧号。文本命中返回 `matched_frame`，边界偏移不移动该帧。旧三向量场景按首、中、尾回退，其余数量及合成向量回退中点。精搜开启时 `use_aesthetic_score` 仅评估通过的候选。独立批量入口 `POST /api/v1/score_aesthetics` 接收 `{clips: [{video_path, frame}]}`，按输入顺序返回 `results`，每项含 0～100 美学分与细项或抽帧错误。
+
+健康检查返回 `jev_rerank`、`jev_aesthetics`、`jev_model`、`jev_model_path`。8GB 默认读取后端 `models/VideoJev-2B`，12GB 及以上优先选已安装的 4B。`VIDEOJEV_MODEL_PATH` 可指定本地模型目录。子进程优先使用后端 `.jev-deps` 中的 transformers；`VIDEOJEV_PYTHON` 可指定独立解释器。精搜和随搜评分配置参与配方与搜索缓存键。
+
 ## 请求与分数
 
 - 相似度分数 = cosine × logit_scale(≈100)。文本阈值 fgclip2≈11 / clip≈21；视觉检索独立阈值(≈40)+相对落差截断
@@ -16,8 +24,15 @@
 
 ## 本地筛选与范围
 
-- 普通搜索及主题共用结果内组合筛选，Search 的 `archiveFilter={query,source,tags,orientation,maxDur,minScore}` 与全局 sessionScope、时间和 `view.minDur` 取交集。标签按中英文逗号拆分、完整名称忽略大小写且全部满足；画幅读 Eagle width/height，缺失或无效尺寸归 unknown；时长针对片段，边界包含，maxDur=null 不限。manual 以 manualScore 存在判断。筛选只变换显示、清除隐藏勾选，不发搜索或改写 recipe/matches，新增条件不写入持久化 view；组合条件按库和主题在会话保留，独立搜索快照可恢复，新搜索保留当前组合条件、最短时长偏好与本次打开的全局文件夹范围。
-- 原“搜索选项”并入顶栏单一“筛选”菜单，新搜索无结果时也可访问；仓库主题使用同一入口，仓库主题列表隐藏素材筛选。新搜索按全库请求，文本请求 threshold 固定为 0，显示阈值、时间及文件夹仅在本地筛选完整返回结果，放宽条件无需重搜；视觉检索仍保留其阈值、相对截断及 Top100 规则。保存新主题时按当前阈值、时间及文件夹补齐 recipe，主题更新仍按已存条件重放。文件夹范围在本次打开内全局共用，Config.setScope 只改内存，保存其他配置时剔除 scope 字段，读取旧配置也重置整库。Search 的 sessionScope 独立于主题筛选和独立搜索返回快照，范围变更即时筛选已有结果、后续搜索前重新解析；null 不限，空 Set 为零显示候选，不改主题 recipe/matches。onPluginShow 显式清除范围，兼容 serviceMode 后台仍存活的关闭重开；换库同样重置。解析校验库/主题/导航代次、范围操作编号及弹窗取消，清除筛选也清除全局范围、时间及本地阈值。菜单固定定位并在打开和缩窗时限于视口，原主题栏时间入口已移入菜单。
+- 手动范围操作优先。应用期间跳过跟随轮询；已发出的选中读取按操作编号和页面上下文校验，迟到结果丢弃。轮询用同一次选中快照判断变化和应用范围。
+
+- 整库、不限日期且没有额外排除时，范围解析直接返回不限路径。递归文件夹查询每批最多同时读取 8 个文件夹，按原文件夹顺序合并，并跨批按素材 ID 去重。
+
+- 会话范围分两项：固定范围 `scopeMode=all|custom|exclude`（范围弹窗选择）与独立开关 `scopeFollow`（筛选弹层“实时跟随 Eagle 选中文件夹”）。两者按素材库保存在 localStorage，打开插件及换库时恢复上次选择；首次进入和“清除结果筛选”使用整个库并关闭跟随。跟随开启且 Eagle 有选中文件夹时以选中项为范围（`SearchRecipe.scopeFromConfig`），覆盖固定范围（按钮变淡并提示暂不使用）；未选中时使用固定范围。窗口可见时每 1.5 秒及窗口获得焦点时读取 Eagle 选中项，变化即重算本地筛选，正在搜索或页面切换时跳过下一轮再试；每次搜索也重新读取。另排除（`scopeExcludeFolderIds`）对两者都生效；跟随开启时右键排除记为另排除，关闭时整个库改为排除模式。弹窗应用指定/排除会关闭跟随，应用整个库保留开关。旧 `scopeMode='selected'` 视为整个库加跟随。
+- 搜索范围弹窗的文件夹树上方提供“定位并勾选 Eagle 当前选中文件夹”：读取当前选择并与弹窗已有勾选取并集，去重并展开其祖先以显示已勾选项，高亮该行并把首个选中文件夹滚到树可视区中间；排除模式保留，其他模式切到指定模式，点击“应用”后才改变会话范围；后续 Eagle 选择变化不自动改动指定范围。文件夹树加载完成前禁用按钮，无选择、读取失败或选中项已失效时明确提示；弹窗取消、重开或页面/库切换后丢弃迟到结果。
+
+- 普通搜索及主题共用结果内组合筛选，Search 的 `archiveFilter={query,source,tags,orientation,maxDur,minScore}` 与全局 sessionScope、时间和 `view.minDur` 取交集。标签按中英文逗号拆分、完整名称忽略大小写且全部满足；画幅读 Eagle width/height，缺失或无效尺寸归 unknown；时长针对片段，边界包含，maxDur=null 不限。manual 以 manualScore 存在判断。筛选只变换显示、清除隐藏勾选，不发搜索或改写 recipe/matches，新增条件不写入持久化 view；组合条件按库和主题在会话保留，独立搜索快照可恢复，新搜索保留当前组合条件、最短时长偏好与当前素材库的全局文件夹范围。
+- 原“搜索选项”并入顶栏单一“筛选”菜单，新搜索无结果时也可访问；仓库主题使用同一入口，仓库主题列表隐藏素材筛选。新搜索按全库请求，文本请求 threshold 固定为 0，显示阈值、时间及文件夹仅在本地筛选完整返回结果，放宽条件无需重搜；视觉检索仍保留其阈值、相对截断及 Top100 规则。保存新主题时按当前阈值、时间及文件夹补齐 recipe，主题更新仍按已存条件重放。文件夹范围在当前素材库内全局共用，Config.setScope 只改内存，已确认的选择及清除操作单独保存。Search 的 sessionScope 独立于主题筛选和独立搜索返回快照，范围变更即时筛选已有结果、后续搜索前重新解析；null 不限，空 Set 为零显示候选，不改主题 recipe/matches。onPluginShow 在恢复仓库页面后重新解析当前素材库的范围，兼容 serviceMode 后台仍存活的关闭重开。解析校验库/主题/导航代次、范围操作编号及弹窗取消，清除筛选也清除全局范围、时间及本地阈值。菜单固定定位并在打开和缩窗时限于视口，原主题栏时间入口已移入菜单。
 - 运镜/景别快捷筛选（2026-11-05）：`#result-tag-chips` 只列当前完整结果中素材已有的 `运镜:*`/`景别:*` 标签（按视频去重计数），点击在 `#result-tags` 中切换该完整标签并沿用原组合筛选，不新增筛选字段。
 - 搜索上下文：插件 `resolveSearchScope()` 返回 `{ paths, scope, time, library, config }`；`paths` 为规范化路径 Set 或 null。三个搜索入口保存本次参数，不从后续修改过的配置推测条件。仓库重放通过 Api 的可选 cfg 参数传值，不改写全局配置。
 - 文件夹排除：Config.scopeMode 与 recipe.scope.mode 支持 `exclude`，复用 folderIds；指定/跟随范围内追加的右键排除以 Config.scopeExcludeFolderIds / recipe.scope.excludeFolderIds 与基础范围取差集。递归展开所选文件夹，按任一归属取排除并集，再与导入日期求交集。新搜索在全库返回结果上本地取交集；主题更新通过 allowed_video_paths 限制，全部排除保留空 Set，不回退整库。单素材右键排除读取最新 item 与真实文件夹树，父子同时归属只取最深归属，各独立分支由用户选择一个，不按 folders 数组顺序猜测。未分类/失效素材拒绝操作，多素材禁用；只改范围，不改 Eagle 文件夹/原素材/主题。主题已保存的 recipe 仍独立支持范围回填与重放，包含额外排除；既有人工收录片段遵循主题更新的人工保留契约。
@@ -41,5 +56,9 @@
 - 接续取帧新增 `continuationMode=start`，从原始起帧取设定秒数并截于原始末帧。单独「复核候选开头」用原配方配置及解析后的查询源重新初筛，payload.continuation_review=true，后端能力标记同名。最多复核前 20 个候选开头，每项最多采 3 帧；与源区间均值向量比较，独立 continuation_similarity（余弦×100）与 continuation_rank，不覆盖原 similarity。失败保留候选与原因，未复核项保留初筛顺序。前端提供独立 continuation 排序，主题编辑支持该排序；显式复核跳过普通 SearchCache，服务端分数缓存上限256，包含双方文件指纹、帧范围及帧率、模型和实际维度。抽帧与帧率探测有超时，候选阶段120秒预算；取消仅停止客户端等待。当前仍只比较视觉内容。
 
 ## 评测记录（2026-11-05）
+
+- 离线工具的 `--compare` 入口按固定查询 ID 对齐两份评估文件，校验素材库、查询条件与标注池，仅汇总双方均可评估的 P@10 差值；延迟按一致的缓存阶段分别比较。流程见 `EVALUATION.md`。
+
+- 标注跟随产生记录的搜索结果会话。打开主题时禁用标注，恢复原搜索可继续标注。遇到不支持的日期文件格式时提示错误并保留原文件。
 
 - `Search.runCaptured` 成功后派发 `search-complete`（recipe、往返 latencyMs、fromCache、服务端 timings）。`EvalRecorder` 在设置 `evalMode` 开启时写入插件 `evaluation/<日期>.json`（已 gitignore），schemaVersion 1，与 `tools/evaluate-search.js` 兼容：results 为当前显示顺序前 100 个去重片段 ID `素材ID:原始起帧:原始止帧`，judgments 由「整理所选」的「评测：标为相关/不相关」写入当前 case。只记录，不改变搜索或主题。「评测汇总」用同一评估器汇总全部日期文件；「性能自检」只读测量素材清单、路径映射、仓库清单、索引列表和固定词搜索两次（不经插件结果缓存）。

@@ -33,10 +33,11 @@ const Config = (() => {
     indexShotDetection: 'cosine', // 镜头切分：cosine 余弦极小值 / transnetv2 高精度（需后端权重）
     indexContentMaxFrames: 12,
     indexFp16: true,             // FP16 推理（仅 NVIDIA GPU 生效）
-    // 搜索范围只在本次打开中共用，不写入配置；重新打开恢复整库。
+    // 搜索范围由插件按素材库保存，当前库的选择映射到这些会话字段。
     scopeMode: 'all',
+    scopeFollow: false,          // 开启后，Eagle 选中文件夹优先于固定范围
     scopeFolderIds: [],          // custom/exclude 模式勾选的文件夹 id（递归展开子文件夹）
-    scopeLibrary: '',            // 勾选时所在的库路径，换库后自动重置为 all
+    scopeLibrary: '',            // 当前范围所属的库路径
     scopeExcludeFolderIds: [],   // 指定/跟随范围内额外排除的文件夹
     // 静默自动索引：插件随 Eagle 后台运行时，定时检查新素材并自动增量索引
     autoIndex: false,
@@ -54,7 +55,7 @@ const Config = (() => {
     continuationSeconds: 1,  // 找接续画面取帧时长（秒）
     autoCheckNew: true, // 开窗及索引完成后在后台检查各主题的新素材命中，只做提示不写入
     evalMode: false,    // 评测记录模式：搜索结果与耗时写入 evaluation/<日期>.json，供人工标注
-    miniRerank: false,  // MiniCPM 二阶段精搜（慢，占显存大）
+    jevRerank: false, jevRerankTopK: 30, jevRerankThreshold: 0.6, useAestheticScore: false,
     history: [],        // 最近搜索词
   };
 
@@ -63,8 +64,9 @@ const Config = (() => {
   let current = { ...DEFAULTS };
   let loadError = '';
   let errorHandler = null;
-  const SCOPE_DEFAULTS = { scopeMode: 'all', scopeFolderIds: [], scopeLibrary: '', scopeExcludeFolderIds: [] };
+  const SCOPE_DEFAULTS = { scopeMode: 'all', scopeFollow: false, scopeFolderIds: [], scopeLibrary: '', scopeExcludeFolderIds: [] };
   const NUMBER_RULES = {
+    jevRerankTopK: [10, 200, true], jevRerankThreshold: [0.1, 0.95],
     port: [1, 65535, true], threshold: [0, 120], visualThreshold: [0, 120],
     visualMargin: [1, 60], visualSceneFrames: [1, 16, true], visualVideoFrames: [1, 32, true],
     indexSampleInterval: [1, 30, true], indexResolution: [128, 512, true],
@@ -113,6 +115,8 @@ const Config = (() => {
       if (fs.existsSync(configPath)) {
         const saved = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
         if (!saved || typeof saved !== 'object' || Array.isArray(saved)) throw new Error('配置格式无效');
+        if (saved.jevRerank === undefined && saved.miniRerank !== undefined) saved.jevRerank = saved.miniRerank;
+        delete saved.miniRerank;
         current = validate({ ...DEFAULTS, ...saved, ...SCOPE_DEFAULTS });
       }
     } catch (e) {

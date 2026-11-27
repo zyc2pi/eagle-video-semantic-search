@@ -5,6 +5,7 @@ const Search = (() => {
   const PREVIEW_LEAD_IN_FRAMES = 2; // 跳过切点前两帧，避免转场/解码黑帧闪现
 
   let lastMatches = [];
+  let resultSession = null;
   let lastQuery = '';           // 最近一次查询，供保存主题使用
   let lastRecipe = null;
   let newKeys = new Set();
@@ -339,6 +340,8 @@ const Search = (() => {
     if (view.minDur > 0) {
       idxs = idxs.filter((i) => (lastMatches[i].duration_seconds || 0) >= view.minDur);
     }
+    if (archiveFilter.minAesthetic != null) idxs = idxs.filter((i) =>
+      !Number.isFinite(lastMatches[i].aesthetic_score) || lastMatches[i].aesthetic_score >= archiveFilter.minAesthetic);
     const nameQuery = archiveFilter.query.trim().toLocaleLowerCase();
     if (archiveFilter.minScore != null) {
       idxs = idxs.filter((i) => Number.isFinite(lastMatches[i].similarity) && lastMatches[i].similarity >= archiveFilter.minScore);
@@ -387,6 +390,7 @@ const Search = (() => {
       idxs = idxs.filter((i) => keep.has(i));
     }
     const cmp = {
+      aesthetic: (a, b) => (lastMatches[b].aesthetic_score ?? -1) - (lastMatches[a].aesthetic_score ?? -1),
       continuation: (a, b) => (lastMatches[a].continuation_rank ?? Infinity) - (lastMatches[b].continuation_rank ?? Infinity),
       sim: (a, b) => (lastMatches[b].similarity || 0) - (lastMatches[a].similarity || 0)
         || Number(lastMatches[b].manualScore?.mode === 'top') - Number(lastMatches[a].manualScore?.mode === 'top'),
@@ -476,11 +480,13 @@ const Search = (() => {
       document.getElementById('view-sort').value = 'sim';
     }
     lastMatches = identifyMatches(resp.data.matches || []);
+    resultSession = Symbol();
     archiveTime = SearchRecipe.clone(filters.time);
     archiveFilter = { ...filters.filter };
     lastRecipe = recipe;
     newKeys.clear();
     selectedIdx.clear(); // 勾选下标相对上一轮结果，跨搜索保留会让批量操作命中错误素材
+    syncThresholdRange();
     render();
     document.dispatchEvent(new CustomEvent('search-completed'));
     return { ok: true, count: displayList.length, extra: resp.data };
@@ -560,7 +566,9 @@ const Search = (() => {
     const cfg = SearchRecipe.options(recipe.config);
     // 加权前保留新词的完整分数，不能先按新词阈值丢掉上一轮的高分镜头。
     if (scenes) cfg.threshold = 0;
+    const jevHealth = recipe.kind === 'text' && cfg.jevRerank ? await Api.healthInfo() : null;
     const cacheParams = {
+      jevModel: jevHealth?.capabilities?.jev_model_path,
       kind: recipe.kind, query: recipe.query, payload, config: cfg,
       library: recipe.library, indexNames: indices,
       indexRevisions: snapshot.revisions,
@@ -568,7 +576,7 @@ const Search = (() => {
       allowedVideoPaths: context.paths == null ? null : Array.from(context.paths),
     };
     // 旧服务没有索引版本时仍可搜索，但不可把同路径误当作未更新。
-    const canCache = !payload?.continuation_review && snapshot.revisions.every((revision) => typeof revision === 'string' && revision.length > 0);
+    const canCache = (!jevHealth || jevHealth.capabilities?.jev_rerank) && !payload?.continuation_review && snapshot.revisions.every((revision) => typeof revision === 'string' && revision.length > 0);
     let resp;
     if (canCache && typeof SearchCache !== 'undefined') {
       const cached = SearchCache.get(cacheParams);
@@ -591,7 +599,7 @@ const Search = (() => {
         resp = await Api.searchSequence(payload.sequence, indices, cfg.threshold, context.paths, cfg, { signal });
       } else {
         resp = await Api.search(recipe.query, indices, cfg.threshold, context.paths, cfg,
-          { signal, aiPlan: payload?.aiPlan || null });
+          { signal, jevHealth, aiPlan: payload?.aiPlan || null });
       }
 
       // 缓存原始新词分数；候选镜头交集与权重在命中缓存后也要重新计算。
@@ -884,9 +892,11 @@ const Search = (() => {
     const multi = mq.length > 1
       ? `<span class="badge-multi" title="${esc(mq.map((q) => `${q.text}（${Number(q.similarity || 0).toFixed(1)}）`).join('\n'))}">×${mq.length}</span>`
       : '';
+    const aesthetics = Number.isFinite(m.aesthetic_score)
+      ? `<span class="badge-aesthetic" title="${esc(aestheticDetails(m))}">美学 ${m.aesthetic_score.toFixed(1)}</span>` : '';
     const manual = m.manualScore ? '<span class="badge-manual" title="人工分数，更新时保留">人工</span>' : '';
     sub.innerHTML = `<span>${esc(fmtTime(m.start))} – ${esc(fmtTime(m.end))}</span>`
-      + `<span>${multi}${badge}${manual}<span class="sim">${Number(m.similarity).toFixed(1)}</span></span>`;
+      + `<span>${multi}${badge}${manual}${aesthetics}<span class="sim">${Number(m.similarity).toFixed(1)}</span></span>`;
     meta.appendChild(name);
     meta.appendChild(sub);
     if (newKeys.has(ArchiveStore.sceneKey(m))) {
@@ -1065,7 +1075,7 @@ const Search = (() => {
       const values = { 'topic-scene-query': archiveFilter.query, 'topic-scene-source': archiveFilter.source,
         'result-tags': archiveFilter.tags || '', 'result-membership': archiveFilter.membership || 'all',
         'result-video-limit': archiveFilter.videoLimit || 0, 'result-query-hits': archiveFilter.queryHits || 0,
-        'result-max-dur': archiveFilter.maxDur ?? '', 'topic-filter-threshold': archiveFilter.minScore ?? '' };
+        'result-aesthetic-min': archiveFilter.minAesthetic ?? '', 'result-max-dur': archiveFilter.maxDur ?? '', 'topic-filter-threshold': archiveFilter.minScore ?? '' };
       Object.entries(values).forEach(([id, value]) => {
         const input = document.getElementById(id);
         if (input) input.value = value;
@@ -1083,7 +1093,7 @@ const Search = (() => {
     }
     const hasLocalFilter = archiveFilter.query.trim() || archiveFilter.source !== 'all'
       || archiveFilter.tags?.trim() || (archiveFilter.orientation || 'all') !== 'all' || archiveFilter.maxDur != null
-      || archiveFilter.minScore != null || (archiveFilter.membership && archiveFilter.membership !== 'all')
+      || archiveFilter.minAesthetic != null || archiveFilter.minScore != null || (archiveFilter.membership && archiveFilter.membership !== 'all')
       || archiveFilter.videoLimit > 0 || archiveFilter.queryHits > 0
       || (sessionScope.library === eagle.library.path && sessionScope.paths != null);
     document.getElementById('filter-active-indicator')?.classList.toggle('hidden', !hasLocalFilter && view.minDur <= 0 && archiveTime.mode === 'all');
@@ -1227,6 +1237,11 @@ const Search = (() => {
     });
   }
 
+  function aestheticDetails(match) {
+    return Object.entries(match.aesthetic_details || {}).filter(([, value]) => Number.isFinite(value))
+      .map(([key, value]) => key + ' ' + value.toFixed(1)).join(' · ');
+  }
+
   function renderInspectorInfo(match, item) {
     const rating = document.getElementById('preview-rating');
     const details = document.getElementById('preview-details');
@@ -1236,6 +1251,10 @@ const Search = (() => {
       ? '★'.repeat(stars) + '☆'.repeat(5 - stars) : '未获取';
     rating.innerHTML = `<dt>Eagle 评分</dt><dd class="inspector-rating-stars">${esc(eagleRating)}</dd>`
       + `<dt>${match.manualScore ? '人工评分' : '相似度'}</dt><dd>${esc(match.manualScore?.value ?? Number(match.similarity).toFixed(2))}</dd>`;
+    if (Number.isFinite(match.aesthetic_score)) rating.innerHTML +=
+      `<dt>美学评分</dt><dd title="${esc(aestheticDetails(match))}">${match.aesthetic_score.toFixed(1)}</dd>`;
+    if (Number.isFinite(match.clip_similarity)) rating.innerHTML +=
+      `<dt>初筛相似度</dt><dd>${match.clip_similarity.toFixed(2)}</dd>`;
     const formatDate = (value) => {
       const date = new Date(Number(value));
       return value != null && Number.isFinite(date.getTime()) ? date.toLocaleString('zh-CN', { hour12: false }) : '未获取';
@@ -1414,6 +1433,7 @@ const Search = (() => {
     return {
       library: SearchRecipe.normalize(lastRecipe?.library || eagle.library.path),
       matches: lastMatches.slice(), query: lastQuery,
+      resultSession,
       recipe: lastRecipe && SearchRecipe.clone(lastRecipe), view: { ...view },
       addedKeys: [...newKeys], time: SearchRecipe.clone(archiveTime),
       threshold: document.getElementById('threshold').value,
@@ -1435,10 +1455,27 @@ const Search = (() => {
     }
   }
 
+  function syncThresholdRange() {
+    const input = document.getElementById('threshold');
+    if (!input) return;
+    const hasJev = lastMatches.some((m) => Number.isFinite(m.jev_rerank_score)) || !!lastRecipe?.config?.jevRerank;
+    const nextMax = hasJev ? 100 : 35;
+    input.max = String(nextMax);
+    if (Number(input.value) > nextMax) {
+      input.value = String(nextMax);
+      const label = document.getElementById('threshold-val');
+      if (label) label.textContent = input.value;
+      if (archiveFilter.minScore != null && archiveFilter.minScore > nextMax) {
+        archiveFilter.minScore = nextMax;
+      }
+    }
+  }
+
   function restoreState(state) {
     if (busy) throw new Error('已有搜索正在进行，请稍候再返回搜索');
     if (state?.library !== SearchRecipe.normalize(eagle.library.path)) state = null;
     lastMatches = state?.matches.slice() || [];
+    resultSession = state?.resultSession ?? null;
     lastQuery = state?.query || '';
     lastRecipe = state?.recipe ? SearchRecipe.clone(state.recipe) : null;
     Object.assign(view, state?.view || { sortBy: 'sim', minDur: 0, grouped: false });
@@ -1446,6 +1483,7 @@ const Search = (() => {
     archiveTime = SearchRecipe.clone(state?.time || { mode: 'all' });
     archiveFilter = { query: '', source: 'all', ...state?.filter };
     SearchRecipe.writeTime(archiveTime);
+    syncThresholdRange();
     const threshold = state?.threshold ?? archiveFilter.minScore ?? Config.get().threshold;
     document.getElementById('threshold').value = threshold;
     document.getElementById('threshold-val').textContent = threshold;
@@ -1473,6 +1511,7 @@ const Search = (() => {
       if (options.shouldApply && !options.shouldApply()) return null;
       if (library !== eagle.library.path) throw new Error('素材库已切换，请重新打开主题');
       const byId = new Map([...pathMap.values()].map((item) => [item.id, item]));
+      resultSession = null;
       lastMatches = (Array.isArray(matches) ? matches : []).map((match) => {
         const item = byId.get(match.eagleItemId);
         return item ? { ...match, video_path: item.filePath, video_name: item.name } : match;
@@ -1537,6 +1576,7 @@ const Search = (() => {
     refreshTags() { renderShotTagChips(); if (activeMatch) renderPreviewTags(activeMatch); },
     hasResults: () => displayList.length > 0,
     getRawMatches: () => lastMatches.slice(),
+    getResultSession: () => resultSession,
     getRecipe: () => lastRecipe && SearchRecipe.clone(lastRecipe),
     getView: () => ({ ...view }),
     getArchiveFilter: () => ({ ...archiveFilter }),
@@ -1554,6 +1594,7 @@ const Search = (() => {
           || ![0, 1, 3, 5].includes(filter.videoLimit) || !Number.isInteger(filter.queryHits)
           || filter.queryHits < 0 || filter.queryHits > 8) throw new Error('片段筛选条件无效');
       if (filter.maxDur !== null && filter.maxDur < view.minDur) throw new Error('片段时长上限不能小于下限');
+      if (filter.minAesthetic != null && (!Number.isFinite(filter.minAesthetic) || filter.minAesthetic < 0 || filter.minAesthetic > 100)) throw new Error('最低美学分应在 0～100 之间');
       if (filter.minScore != null && (!Number.isFinite(filter.minScore) || filter.minScore < 0)) throw new Error('请输入有效的非负阈值');
       if (filter.scopePaths != null && (!Array.isArray(filter.scopePaths) || !filter.scopePaths.every((path) => typeof path === 'string'))) throw new Error('文件夹范围无效');
       if (JSON.stringify(archiveFilter) === JSON.stringify(filter)) return;

@@ -41,6 +41,7 @@ const SearchCache = (() => {
   function makeKey(params) {
     // 完整参数包含查询种类、帧/图片内容、设置、库身份和候选范围。
     // 哈希后缓存键不会持有大幅 base64，也不会因分隔符或对象属性顺序碰撞。
+    // 文本精搜的设置和实际模型路径也由调用方传入。
     return crypto.createHash('sha256').update(JSON.stringify(canonicalize(params))).digest('hex');
   }
 

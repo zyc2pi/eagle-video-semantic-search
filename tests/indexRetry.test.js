@@ -29,20 +29,24 @@ async function main() {
   const context = {
     require, console: { ...console, error() {} }, SearchCache, clearTimeout: () => { scheduled = null; },
     setTimeout: (callback, ms) => { scheduled = { callback, ms }; return 1; },
-    Config: { get: () => ({ scopeMode: 'all', scopeFolderIds: [], scopeExcludeFolderIds: [], modelName: 'model' }) },
+    Config: { get: () => ({ scopeMode: 'all', scopeLibrary: library.path, scopeFolderIds: [], scopeExcludeFolderIds: [], modelName: 'model' }) },
     Search: { isBusy: () => false },
     document: { addEventListener() {}, getElementById: node, querySelectorAll: () => [], body: new Element(), createElement: tag => new Element(tag), createTextNode: text => ({ textContent: text }) },
-    eagle: { library: { path: library.path }, onPluginCreate() {}, onPluginShow() {}, onThemeChanged() {}, onLibraryChanged() {} },
+    window: { addEventListener() {} },
+    eagle: { library: { path: library.path }, onPluginCreate() {}, onPluginShow() {}, onPluginRun() {}, onPluginHide() {}, onPluginBeforeExit() {}, onThemeChanged() {}, onLibraryChanged() {} },
     Bridge: {
       resolveLibraryIdentity: async () => library,
       getFolderTree: async () => { throw new Error(malicious); },
       collectLibraryVideos: async () => { throw new Error(malicious); },
     },
     Api: {
-      listIndexJobs: async () => [{ job_id: 'failed-job', source: 'semantic-search', state: jobState,
-        file_results: [{ path: 'D:/library/bad.mp4', state: 'failed', reason: 'processing failed', retryable: true }] }],
+      listIndexJobs: async () => [{ job_id: 'failed-job', source: 'semantic-search', state: jobState }],
       retryIndex: async (id, key) => { assert.strictEqual(id, 'failed-job'); assert(key); submitted++; jobState = 'running'; return { job_id: 'retry-job' }; },
-      indexStatus: async id => { assert.strictEqual(id, 'retry-job'); return { state: 'error', error: 'partially written failure' }; },
+      indexStatus: async id => {
+        if (id === 'failed-job') return { file_results: [{ path: 'D:/library/bad.mp4', state: 'failed', reason: 'processing failed', retryable: true }] };
+        assert.strictEqual(id, 'retry-job');
+        return { state: 'error', error: 'partially written failure' };
+      },
     },
   };
   vm.createContext(context);
@@ -58,6 +62,10 @@ async function main() {
   await context.hooks.openIndexJobs();
   const body = node('index-jobs-dialog').children[1];
   const row = body.children[0];
+  assert(row.children[2].hidden, '展开后才读取明细并决定是否可以重试');
+  row.open = true;
+  await row.ontoggle();
+  assert(!row.children[2].hidden);
   assert(row.children[1].textContent.includes('failed: D:/library/bad.mp4 — processing failed'), '真实 state/reason 应显示且不得出现 undefined');
   await row.children[2].onclick();
   assert.strictEqual(submitted, 1);

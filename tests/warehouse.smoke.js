@@ -60,6 +60,7 @@ async function main() {
       };
       window.require = (module) => {
         if (module === 'fs') return fsMock;
+        if (module === 'electron') return {};
         if (module === 'process') return { pid: 12345, kill: (pid) => { if (pid !== 12345) throw Object.assign(new Error('ESRCH'), { code: 'ESRCH' }); } };
         if (module === 'path') return { join: (...parts) => parts.join('/'), resolve: (value) => value, sep: '/',
           isAbsolute: (value) => /^(?:[A-Z]:|\/)/i.test(value),
@@ -90,7 +91,7 @@ async function main() {
         dialog: { showOpenDialog: async () => window.__directoryResult || { canceled: false, filePaths: ['D:/edit-clips'] } },
         library: { path: 'D:/fixture.library', info: async () => ({ folders }) },
         app: { isDarkColors: () => true, show: async () => {} },
-        folder: { getAll: async () => folders, getSelected: async () => folders,
+        folder: { getAll: async () => folders, getSelected: async () => window.__selectedFolders || [],
           create: async ({ name }) => {
             const folder = { id: `created-${window.__createdFolders.length}`, name };
             window.__createdFolders.push(folder); return folder;
@@ -103,12 +104,21 @@ async function main() {
         },
         onPluginCreate: (callback) => { window.__create = callback; },
         onPluginShow: (callback) => { window.__show = callback; },
+        onPluginRun: (callback) => { window.__run = callback; },
+        onPluginHide: (callback) => { window.__hide = callback; }, onPluginBeforeExit: () => {},
         onThemeChanged: (callback) => { window.__themeChanged = callback; }, onLibraryChanged: () => {},
       };
       window.Service = { ensure: async (callback) => {
         window.__serviceCallback = callback;
         if (!window.__delayService) callback('online', '测试搜索服务已连接');
       } };
+      window.__serviceResumes = 0;
+      window.Service.resume = async (callback) => {
+        window.__serviceResumes++;
+        await window.Service.ensure(callback);
+        return !window.__delayService;
+      };
+      window.Service.suspend = async () => {};
       const match = (id, frame, duration = 4) => ({ video_path: `D:/fixture/${id}.mp4`, video_name: id,
         original_start_frame: frame, original_end_frame: frame + duration * 25,
         start_frame: frame - 2, end_frame: frame + duration * 25 + 2,
@@ -169,17 +179,58 @@ async function main() {
     for (const file of scripts) {
       await page.addScriptTag({ path: path.join(root, file) });
     }
-    await page.evaluate(async (delay) => {
+    const initResumes = await page.evaluate((delay) => {
       window.__delayService = delay;
+      Object.defineProperty(document, 'hidden', { configurable: true, value: true });
       window.__create({ path: '/fixture-plugin' });
       // 后台“自动检查新素材”会在开窗 20 秒后发探测请求；夹具断言请求计数，统一关闭（仅内存，不写盘）。
       Config.get().autoCheckNew = false;
-      await window.__show();
+      window.__run();
+      const hiddenResumes = window.__serviceResumes;
+      delete document.hidden;
+      window.__run();
+      const visibleResumes = window.__serviceResumes;
+      window.__show();
+      window.__run();
+      return [hiddenResumes, visibleResumes, window.__serviceResumes];
     }, !!process.env.WAREHOUSE_LAYOUT_ONLY);
+    assert.deepStrictEqual(initResumes, [0, 1, 1], '隐藏运行不启动服务，首次开窗即使错过显示事件也只启动一次');
     // 无浏览历史时默认打开全部主题；以下用例从新搜索开始。
     await page.waitForFunction(() => document.body.dataset.page === 'warehouse');
     await page.locator('#topic-search').click();
     await page.waitForFunction(() => document.body.dataset.page !== 'warehouse');
+    if (process.env.WAREHOUSE_AESTHETICS_ONLY) {
+      await page.evaluate(() => {
+        Api.scoreAesthetics = async (clips) => ({ ok: true, data: { success: true,
+          results: clips.map((clip) => ({ ...clip, aesthetic_score: 78.5, aesthetic_details: { 光影: 82 } })) } });
+      });
+      await page.fill('#query', '美学评分');
+      await page.click('#btn-search');
+      await page.locator('#results .pick').first().check();
+      await revealControl(page, '#btn-aesthetics');
+      await page.click('#btn-aesthetics');
+      await page.waitForFunction(() => Search.getRawMatches().filter((m) => m.aesthetic_score === 78.5).length === 1);
+      assert((await page.locator('.badge-aesthetic').first().getAttribute('title')).includes('光影'));
+      await revealControl(page, '#view-sort');
+      await page.selectOption('#view-sort', 'aesthetic');
+      assert.strictEqual(await page.evaluate(() => Search.getAllMatches()[0].aesthetic_score), 78.5);
+      await revealControl(page, '#result-aesthetic-min');
+      await page.fill('#result-aesthetic-min', '80');
+      await page.locator('#result-aesthetic-min').blur();
+      await page.waitForFunction(() => Search.getAllMatches().length === Search.getRawMatches().length - 1);
+      await page.fill('#result-aesthetic-min', '');
+      await page.locator('#result-aesthetic-min').blur();
+      await revealControl(page, '#btn-save-results');
+      await page.click('#btn-save-results');
+      await page.fill('#entry-name', '已评美学分');
+      await page.click('#entry-submit');
+      await page.waitForFunction(() => document.body.dataset.topic === 'true');
+      assert.strictEqual(await page.evaluate(() => ArchiveStore.open(Config.pluginPath(), eagle.library.path)
+        .list().entries.find((e) => e.name === '已评美学分').matches[0].aesthetic_score), 78.5);
+      assert.deepStrictEqual(errors, []);
+      console.log('selected scoring, badges, sorting, minimum score and topic persistence passed');
+      return;
+    }
     if (process.env.WAREHOUSE_EXTENSIONS_ONLY) {
       await page.evaluate(() => {
         const original = window.fetch;
@@ -302,6 +353,7 @@ async function main() {
       assert(await page.locator('#btn-selection-exclude-folder').isDisabled(), '多个素材不执行单素材排除');
       await page.keyboard.press('Escape');
       await card('a').click();
+      assert.strictEqual(await page.evaluate(() => Config.get().scopeFollow), false, '默认关闭实时跟随');
       const before = await page.evaluate(() => ({ files: JSON.stringify([...__files]), requests: __requests.length }));
       await card('a').click({ button: 'right' }); await page.locator('#btn-selection-exclude-folder').click();
       await page.waitForFunction(() => Config.get().scopeMode === 'exclude');
@@ -318,9 +370,11 @@ async function main() {
       await card('b').click({ button: 'right' }); await page.locator('#btn-selection-exclude-folder').click();
       await page.waitForFunction(() => Config.get().scopeFolderIds.length === 2);
       assert.deepStrictEqual(await visiblePaths(), [], '排除累加且空范围不回退整库');
-      await page.evaluate(() => window.__show());
-      assert.strictEqual(await page.evaluate(() => Config.get().scopeMode), 'all', '关闭后重新打开恢复整库');
+      await page.evaluate(() => { window.__hide(); window.__show(); });
+      assert.deepStrictEqual(await page.evaluate(() => [Config.get().scopeMode, Config.get().scopeFollow]), ['exclude', false], '重新打开保留上次排除范围');
       await search('重新打开');
+      assert.deepStrictEqual(await visiblePaths(), [], '重新打开后的搜索仍使用已保存的排除范围');
+      await range('all');
       assert.deepStrictEqual(await visiblePaths(), ['D:/fixture/a.mp4', 'D:/fixture/b.mp4', 'D:/fixture/c.mp4']);
       await range('custom');
       await card('a').click({ button: 'right' }); await page.locator('#btn-selection-exclude-folder').click();
@@ -503,6 +557,41 @@ async function main() {
       return;
     }
     if (process.env.WAREHOUSE_SCOPE_ONLY) {
+      assert.strictEqual(await page.locator('#btn-scope').textContent(), '整个库', '固定范围默认整个库');
+      assert(!(await page.locator('#scope-follow').isChecked()), '默认关闭实时跟随');
+      await revealControl(page, '#scope-follow');
+      await page.locator('#scope-follow').check();
+      await page.waitForFunction(() => document.getElementById('scope-follow-status').textContent.includes('未选中'));
+      // 实时跟随：Eagle 选中文件夹变化后自动更新范围，固定范围显示为暂不使用
+      await page.evaluate(() => { window.__selectedFolders = [{ id: 'child', name: '夜景' }]; });
+      await page.waitForFunction(() => document.getElementById('scope-follow-status').textContent.includes('夜景'));
+      assert(await page.locator('#btn-scope').evaluate((el) => el.classList.contains('overridden')));
+      await revealControl(page, '#btn-scope');
+      if (process.env.SCOPE_SCREENSHOT) await page.locator('#new-search-filter').screenshot({ path: process.env.SCOPE_SCREENSHOT.replace(/\.png$/, '-filter.png') });
+      await page.evaluate(() => { window.__selectedFolders = undefined; });
+      await page.waitForFunction(() => document.getElementById('scope-follow-status').textContent.includes('未选中'));
+      assert(!(await page.locator('#btn-scope').evaluate((el) => el.classList.contains('overridden'))));
+      // 「定位并勾选 Eagle 当前选中文件夹」展开祖先、勾选并把该行滚到树中间
+      await page.evaluate(() => {
+        for (let i = 0; i < 30; i += 1) __folders.push({ id: `filler-${i}`, name: `填充${i}`, children: [] });
+        __folders.push({ id: 'deep-root', name: '中间分类', children: [{ id: 'deep', name: '深层目标', children: [] }] });
+        for (let i = 30; i < 60; i += 1) __folders.push({ id: `filler-${i}`, name: `填充${i}`, children: [] });
+        window.__selectedFolders = [{ id: 'deep', name: '深层目标' }];
+      });
+      await revealControl(page, '#btn-scope');
+      await page.locator('#btn-scope').click();
+      await page.locator('#btn-scope-add-selected:not([disabled])').click();
+      assert(await page.locator('#folder-tree .folder-row[data-folder-id="deep"] input').isChecked(), '展开祖先并勾选 Eagle 选中文件夹');
+      assert(await page.locator('input[name="scope-mode"][value="custom"]').isChecked());
+      const offset = await page.locator('#folder-tree').evaluate((tree) => {
+        const row = tree.querySelector('.folder-row.located[data-folder-id="deep"]');
+        const t = tree.getBoundingClientRect(); const r = row.getBoundingClientRect();
+        return Math.abs((r.top + r.height / 2) - (t.top + t.height / 2));
+      });
+      assert(offset < 20, `定位行应在树中间，偏移 ${offset}`);
+      if (process.env.SCOPE_SCREENSHOT) await page.locator('#scope-dialog').screenshot({ path: process.env.SCOPE_SCREENSHOT });
+      await page.locator('#btn-scope-cancel').click();
+      await page.evaluate(() => { __folders.splice(1); window.__selectedFolders = undefined; });
       await revealControl(page, '#btn-scope');
       await page.locator('#btn-scope').click();
       await page.locator('input[name="scope-mode"][value="exclude"]').check();
@@ -512,7 +601,8 @@ async function main() {
       await page.locator('#folder-tree input[type=checkbox]').nth(1).check();
       assert(await page.locator('input[name="scope-mode"][value="exclude"]').isChecked(), '勾选不退出排除模式');
       await page.locator('#btn-scope-apply').click();
-      assert.strictEqual(await page.locator('#btn-scope').textContent(), '范围: 排除 1 个文件夹');
+      assert.strictEqual(await page.locator('#btn-scope').textContent(), '排除 1 个文件夹');
+      assert(!(await page.locator('#scope-follow').isChecked()), '选择固定排除范围后关闭实时跟随');
       await page.locator('#query').fill('文件夹排除');
       await page.locator('#btn-search').click();
       await page.waitForFunction(() => Search.getRawMatches().length > 0 && !Search.isBusy());

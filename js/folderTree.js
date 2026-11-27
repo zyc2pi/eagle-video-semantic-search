@@ -32,5 +32,26 @@
     return rows;
   }
 
-  return { flattenVisible };
+  function revealFolders(roots, folderIds, expandedIds) {
+    const selected = new Set(folderIds);
+    const found = [];
+    const visited = new Set();
+    const walk = (node, ancestors) => {
+      if (!node || typeof node !== 'object') return;
+      const id = node.id || node.folderId;
+      if (!id || visited.has(id)) return;
+      visited.add(id);
+      if (selected.has(id)) {
+        found.push(id);
+        ancestors.forEach((parentId) => expandedIds.add(parentId));
+      }
+      if (Array.isArray(node.children)) {
+        node.children.forEach((child) => walk(child, [...ancestors, id]));
+      }
+    };
+    (roots || []).forEach((node) => walk(node, []));
+    return found;
+  }
+
+  return { flattenVisible, revealFolders };
 }));

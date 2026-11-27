@@ -16,6 +16,6 @@
     "resizable": true,
     "frame": true,
     "multiple": false,
-    "serviceMode": true
+    "keepAlive": true
   }
 }

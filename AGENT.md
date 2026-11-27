@@ -14,7 +14,7 @@ Eagle（素材管理软件）的窗口插件，提供视频的语义检索：中
 ## 运行环境
 
 - Eagle 4.0（Electron 22 / Chromium 108 / Node 16），插件内可 `require()` Node 内置模块，**CORS 已禁用**
-- manifest `serviceMode: true`：随 Eagle 启动后台运行；开了"静默自动索引"才主动拉起 Python 服务
+- 插件由用户打开后才加载；manifest 的 `keepAlive` 仅缓存已打开过的窗口。关窗暂停自动索引并保留模型30秒，期间重开取消释放，超时退出由插件启动的 Python 服务。
 - 开发调试：Eagle 按 `P` → 开发者选项 → 导入本地项目；插件窗口 F12 开 DevTools
 
 ## 文件地图
@@ -22,7 +22,7 @@ Eagle（素材管理软件）的窗口插件，提供视频的语义检索：中
 | 文件 | 职责 |
 |---|---|
 | `js/config.js` | 配置持久化（插件目录 config.json；**含 DeepSeek key，已 gitignore**）|
-| `js/service.js` | Python 服务生命周期：spawn text_search.py（detached，Windows 绑定 Eagle 主进程）、health 轮询、日志重定向到 service.log、注入 DEEPSEEK_API_KEY |
+| `js/service.js` | Python 服务生命周期：spawn text_search.py（--plugin-stdin 管道绑定插件窗口，Windows 另绑定 Eagle 主进程）、health 轮询、日志重定向到 service.log、注入 DEEPSEEK_API_KEY |
 | `js/api.js` | 5006 `/api/v1/*` 客户端封装；搜索请求里聚合设置页的全部参数；含 AI 计划、反馈/时序检索、索引统计/回收 |
 | `js/eagleBridge.js` | Eagle API 桥：filePath↔item 映射、文件夹树/递归、定位（folder.open+select）、找/建文件夹 |
 | `js/indexer.js` | 建索引：收集视频 → POST /index → 轮询 /index/status（服务端队列）|

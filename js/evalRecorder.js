@@ -37,6 +37,7 @@ const EvalRecorder = (() => {
     try {
       const data = JSON.parse(fs.readFileSync(file, 'utf8'));
       if (data?.schemaVersion === 1 && Array.isArray(data.cases)) return data;
+      throw new Error('不支持的评测文件格式，已保留原文件');
     } catch (error) {
       if (error.code !== 'ENOENT') throw new Error(`评测文件无法读取：${error.message}`);
     }
@@ -75,7 +76,7 @@ const EvalRecorder = (() => {
         judgments: {},
       });
       write(file, data);
-      current = { file, caseId };
+      current = { file, caseId, session: Search.getResultSession() };
       updateButtons();
     } catch (error) {
       toast(`评测记录写入失败：${error.message}`, true, 5000);
@@ -85,7 +86,7 @@ const EvalRecorder = (() => {
   /* target 省略时标注已选片段；预览区传入当前预览片段，标注后不清除选择。 */
   function judge(relevant, target = null) {
     try {
-      if (!current) throw new Error('当前结果不是在评测记录模式下搜索得到的');
+      if (!canJudge()) throw new Error('当前结果没有对应的评测记录');
       const matches = (target || Search.getSelectedMatches()) || [];
       if (!matches.length) throw new Error('请先选中要标注的片段');
       const data = read(current.file);
@@ -195,15 +196,19 @@ const EvalRecorder = (() => {
     return report;
   }
 
+  function canJudge() {
+    return enabled() && current != null && current.session === Search.getResultSession();
+  }
+
   function updateButtons() {
     const on = enabled();
     ['btn-eval-relevant', 'btn-eval-irrelevant'].forEach((id) => {
       $(id).classList.toggle('hidden', !on);
-      $(id).disabled = !current || !(Search.getSelectedMatches()?.length);
+      $(id).disabled = !canJudge() || !(Search.getSelectedMatches()?.length);
     });
     ['btn-preview-eval-relevant', 'btn-preview-eval-irrelevant'].forEach((id) => {
       $(id).classList.toggle('hidden', !on);
-      $(id).disabled = !current || !Search.getActiveMatch();
+      $(id).disabled = !canJudge() || !Search.getActiveMatch();
     });
   }
 

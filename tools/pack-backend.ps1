@@ -3,7 +3,8 @@
 # 用法（PowerShell）:
 #   .\pack-backend.ps1                          # 最小包：FG-CLIP2 + ffmpeg（约 7~8 GB）
 #   .\pack-backend.ps1 -IncludeCLIP             # 附带 openai-clip 模型（英文搜索）
-#   .\pack-backend.ps1 -IncludeMiniCPM          # 附带 MiniCPM 精搜模型（+2.5 GB）
+#   .\pack-backend.ps1 -IncludeMiniCPM          # 附带 MiniCPM 以图生词模型
+#   .\pack-backend.ps1 -IncludeVideoJev         # 附带 VideoJev-2B 模型与子进程依赖
 #   .\pack-backend.ps1 -Zip                     # 完成后压缩为 zip
 #   .\pack-backend.ps1 -DryRun                  # 只列出会复制什么，不实际复制
 #
@@ -17,6 +18,7 @@ param(
     [string]$Dest = 'D:\VideoSemanticSearch-dist',
     [switch]$IncludeCLIP,
     [switch]$IncludeMiniCPM,
+    [switch]$IncludeVideoJev,
     [switch]$Zip,
     [switch]$DryRun
 )
@@ -41,9 +43,10 @@ if (-not (Test-Path -LiteralPath $defaultConfig)) {
 }
 if (Test-Path -LiteralPath $backend) {
     $sensitiveFiles = @(Get-ChildItem -LiteralPath $backend -File | Where-Object {
-        $_.Name -like 'config.json.*' -or $_.Name -like 'service.log*'
+        $_.Name -like 'config.json.*' -or $_.Name -like 'service.log*' -or $_.Name -eq 'logic_keywords.json.bak'
     })
-    if ((Test-Path -LiteralPath (Join-Path $backend 'state')) -or $sensitiveFiles.Count) {
+    if ((Test-Path -LiteralPath (Join-Path $backend 'state')) -or
+        (Test-Path -LiteralPath (Join-Path $backend 'purify_work')) -or $sensitiveFiles.Count) {
         throw '分发目录含旧服务凭据、配置备份或日志，请改用空的 Dest；为保护原数据，未删除残留文件'
     }
     $existingConfig = Join-Path $backend 'config.json'
@@ -51,6 +54,19 @@ if (Test-Path -LiteralPath $backend) {
         (Get-FileHash -LiteralPath $existingConfig -Algorithm SHA256).Hash -ne
         (Get-FileHash -LiteralPath $defaultConfig -Algorithm SHA256).Hash) {
         throw '分发目录已有非默认配置，请改用空的 Dest；未输出或覆盖其配置内容'
+    }
+}
+if ($IncludeVideoJev) {
+    $jevModel = Join-Path $Source 'models\VideoJev-2B'
+    $jevDeps = Join-Path $Source '.jev-deps'
+    $index = Get-Content -Raw -LiteralPath (Join-Path $jevModel 'model.safetensors.index.json') | ConvertFrom-Json
+    $shards = @($index.weight_map.PSObject.Properties.Value | Sort-Object -Unique)
+    if (!$shards.Count) { throw '缺少 VideoJev-2B 权重分片清单' }
+    foreach ($file in (@('config.json', 'processor_config.json') + $shards)) {
+        if (!(Test-Path -LiteralPath (Join-Path $jevModel $file) -PathType Leaf)) { throw "缺少 VideoJev 模型文件：$file" }
+    }
+    if (!(Test-Path -LiteralPath (Join-Path $jevDeps 'transformers\__init__.py') -PathType Leaf)) {
+        throw '缺少 .jev-deps，请按安装说明准备 VideoJev 的隔离依赖'
     }
 }
 $listOnly = if ($DryRun) { '/L' } else { $null }
@@ -66,9 +82,11 @@ function Invoke-Robocopy {
 Write-Host "== 1/4 复制服务主体（排除 索引/临时/导出/全部模型）=="
 # state 包含本机服务控制凭据；config/备份可能含 API key，不能随分发包复制
 Invoke-Robocopy $Source $backend @(
-    '/XD', 'indexes', 'temp', 'output', 'models', '__pycache__', '.git', (Join-Path $Source 'state'),
-    '/XF', '*.pyc', (Join-Path $Source 'config.json'), (Join-Path $Source 'config.json.*'),
-    (Join-Path $Source 'service.log'), (Join-Path $Source 'service.log.*')
+    '/XD', (Join-Path $Source 'indexes'), (Join-Path $Source 'temp'), (Join-Path $Source 'output'),
+    (Join-Path $Source 'models'), (Join-Path $Source '.jev-deps'), (Join-Path $Source 'purify_work'),
+    '__pycache__', '.git', (Join-Path $Source 'state'),
+    '/XF', '*.pyc', (Join-Path $Source 'config.json'), 'config.json.*',
+    (Join-Path $Source 'service.log'), 'service.log.*', (Join-Path $Source 'logic_keywords.json.bak')
 )
 if ($DryRun) {
     Write-Host '分发配置：使用固定默认模板，不复制本机 API key 或配置备份'
@@ -93,8 +111,14 @@ if ($IncludeCLIP) {
         @('/XF', 'pytorch_model.bin', 'tf_model.h5', 'flax_model.msgpack')
 }
 
+if ($IncludeVideoJev) {
+    Write-Host '== 复制 VideoJev-2B 和 .jev-deps（Jev 精搜与美学评分）=='
+    Invoke-Robocopy $jevModel (Join-Path $backend 'models\VideoJev-2B') @('/XD', '.cache', '__pycache__')
+    Invoke-Robocopy $jevDeps (Join-Path $backend '.jev-deps') @('/XD', '__pycache__')
+}
+
 if ($IncludeMiniCPM) {
-    Write-Host "== 复制 MiniCPM-V-4-6（二阶段精搜用）=="
+    Write-Host "== 复制 MiniCPM-V-4-6（以图生词）=="
     Invoke-Robocopy (Join-Path $Source 'models\MiniCPM-V-4-6') (Join-Path $backend 'models\MiniCPM-V-4-6')
 }
 

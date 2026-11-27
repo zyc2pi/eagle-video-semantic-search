@@ -11,8 +11,23 @@ const WarehouseEditor = (() => {
     let savingMatches = [];
     let savingView = null;
     let editorToken = 0;
-    const boolKeys = ['visualCentered', 'aiEnhance', 'aiExpand', 'miniRerank'];
-    const numberKeys = ['visualThreshold', 'visualMargin', 'visualSceneFrames', 'visualVideoFrames'];
+    const boolKeys = ['visualCentered', 'aiEnhance', 'aiExpand', 'jevRerank', 'useAestheticScore'];
+    const numberKeys = ['visualThreshold', 'visualMargin', 'visualSceneFrames', 'visualVideoFrames', 'jevRerankTopK', 'jevRerankThreshold'];
+
+    function editorConfig(config) {
+      const normalized = SearchRecipe.options(config);
+      for (const key of ['jevRerank', 'jevRerankTopK', 'jevRerankThreshold', 'useAestheticScore']) {
+        normalized[key] ??= Config.DEFAULTS[key];
+      }
+      return normalized;
+    }
+
+    function syncJevControls() {
+      const disabled = !editing || !$('entry-jevRerank')?.checked;
+      for (const id of ['entry-jevRerankTopK', 'entry-jevRerankThreshold', 'entry-useAestheticScore']) {
+        if ($(id)) $(id).disabled = disabled;
+      }
+    }
 
     function fillEditor(entry, recipe, view) {
       $('warehouse-editor-error').textContent = '';
@@ -34,8 +49,9 @@ const WarehouseEditor = (() => {
       $('entry-sort').value = view.sortBy;
       $('entry-grouped').checked = view.grouped;
       $('entry-model').value = recipe.config.modelName;
-      boolKeys.forEach((key) => { $(`entry-${key}`).checked = !!recipe.config[key]; });
-      numberKeys.forEach((key) => { $(`entry-${key}`).value = recipe.config[key] ?? ''; });
+      const config = editorConfig(recipe.config);
+      boolKeys.forEach((key) => { $(`entry-${key}`).checked = !!config[key]; });
+      numberKeys.forEach((key) => { $(`entry-${key}`).value = config[key] ?? ''; });
       $('entry-visualAgg').value = recipe.config.visualAgg || 'mean';
       $('entry-aiMode').value = recipe.config.aiMode || 'balanced';
       SearchRecipe.writeTime(recipe.time, 'entry-time');
@@ -53,6 +69,7 @@ const WarehouseEditor = (() => {
       $('entry-refine-controls').classList.toggle('hidden', !recipe.refinement);
       $('entry-refine-weight').disabled = !recipe.refinement;
       $('entry-refine-weight').value = recipe.refinement?.weight ?? 10;
+      syncJevControls();
     }
 
     async function fillFolders(recipe, token) {
@@ -170,6 +187,7 @@ const WarehouseEditor = (() => {
       recipe.config.modelName = $('entry-model').value.trim();
       boolKeys.forEach((key) => { recipe.config[key] = $(`entry-${key}`).checked; });
       numberKeys.forEach((key) => {
+        if (!$(`entry-${key}`).validity.valid) throw new Error('主题搜索参数超出范围');
         if ($(`entry-${key}`).value !== '') recipe.config[key] = Number($(`entry-${key}`).value);
       });
       recipe.config.visualAgg = $('entry-visualAgg').value;
@@ -194,6 +212,7 @@ const WarehouseEditor = (() => {
       // 文件夹显示名称不影响搜索，顺序也不影响范围。
       const clean = (value) => {
         const copy = SearchRecipe.clone(value);
+        if (copy?.config) copy.config = editorConfig(copy.config);
         if (copy?.scope) {
           delete copy.scope.names;
           if (copy.scope.folderIds) copy.scope.folderIds.sort();
@@ -256,6 +275,7 @@ const WarehouseEditor = (() => {
     }
 
     function init() {
+      $('entry-jevRerank')?.addEventListener('change', syncJevControls);
       $('entry-time').addEventListener('change', () => $('entry-time-dates').classList.toggle('hidden', $('entry-time').value !== 'custom'));
       $('entry-scope').addEventListener('change', () => $('entry-folders').classList.toggle('hidden', $('entry-scope').value === 'all'));
       $('entry-copy')?.addEventListener('click', () => attempt(() => hooks.copyTopic(editing, editingLibrary)));

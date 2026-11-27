@@ -47,6 +47,10 @@ assert.strictEqual(captured.scope.folderIds[0], 'parent');
 console.log('search recipe dates, boundary, scope intersection and config isolation tests passed');
 
 async function checkExcludedFolders() {
+  // 此时未提供 Eagle 素材 API，整库不限时间应直接完成范围解析。
+  const unrestricted = await recipe.resolveScope({ mode: 'all' }, { mode: 'all' });
+  assert.strictEqual(unrestricted.paths, null);
+  assert.strictEqual(unrestricted.scopePaths, null);
   const folders = [
     { id: 'parent', children: [{ id: 'child', children: [] }] },
     { id: 'other', children: [] }, { id: 'empty', children: [] },
